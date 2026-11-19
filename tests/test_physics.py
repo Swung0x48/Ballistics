@@ -98,3 +98,19 @@ def test_one_tick_ahead_against_the_engine():
     assert np.median(e["air"]) < 1e-4                    # free flight is the engine's own update
     assert np.median(e["floor"]) < 0.02 and np.median(e["rail"]) < 0.03
     assert len(e["floor"]) > 800 and len(e["air"]) > 800
+
+
+def test_a_landing_stops_at_the_surface_and_keeps_a_quarter_of_the_approach_speed():
+    # measured on 65 landings of the engine: gap 0.010 at the hit, 0.245 of the approach speed back (floor and rail alike)
+    m = plane()
+    s = ph.State(np.array([0.0, 2.1, 0.0]), np.array([0.0, -12.0, 0.0]))
+    n, info = ph.step(m, ph.WOOD, s, np.zeros(3))
+    assert info["hit"]
+    assert n.pos[1] - 2.0 == pytest.approx(0.0099, abs=2e-4)                   # stopped where the engine stops it
+    approach = 12.0 * (1.0 - 0.9 / 66.0) + 20.0 / 66.0                         # the tick's own update comes first
+    assert n.vel[1] == pytest.approx(math.sqrt(0.2 * 0.3) * approach, rel=1e-6)
+    # a ball that comes down spinning as if it rolled keeps its sideways speed; one that does not spin loses some to friction
+    v = np.array([10.0, -12.0, 0.0])
+    rolling, _ = ph.step(m, ph.WOOD, ph.State(s.pos.copy(), v, ph.rolling_spin(v * [1, 0, 1], (0, 1, 0))), np.zeros(3))
+    dead, _ = ph.step(m, ph.WOOD, ph.State(s.pos.copy(), v), np.zeros(3))
+    assert rolling.vel[0] == pytest.approx(10.0 * (1.0 - 0.9 / 66.0), abs=0.05) and dead.vel[0] < rolling.vel[0] - 1.0

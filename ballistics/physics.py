@@ -13,6 +13,12 @@ Per tick, in the order the game's own state shows:
    and across it by friction, up to the pair's friction times the normal impulse. A surface that is near but not
    yet touched only limits how fast the ball may approach it: it may close the remaining gap within the tick.
 
+Hitting something inside a tick, as measured on the engine's landings (65 of them in one level 1 run): the ball's
+move stops where its gap to the surface is 0.010, the tick's velocity update is applied first, and the ball leaves
+with 0.245 of its approach speed along the normal whatever that speed is. 0.245 is the geometric mean of the two
+elasticities (wood 0.2, floor and rail 0.3). Friction at the contact is the product of the two frictions (the
+engine's own contact record says 0.8 x 0.7 = 0.56).
+
 Rolling is not a separate rule. Friction at the contact point turns part of the push into spin, and the familiar
 rolling behaviour falls out: a push accelerates the ball by F / (1.4 m), a slope by 5/7 of gravity along it. Two
 rails, a kerb's edge and a wall are the same rule with other contact points.
@@ -78,8 +84,9 @@ class Params:
     touch: float = 0.02            # a surface with a gap up to this is touched: the ball rests or rolls on it (the engine holds 0.010 to 0.020)
     floor: float = 0.0099          # the smallest gap seen in the engine; a surface not yet touched may be approached down to it within the tick
     friction_scale: float = 1.0    # contact friction = ball friction * surface friction * this
-    restitution_scale: float = 1.0  # contact restitution = ball elasticity * surface elasticity * this
+    restitution_scale: float = 1.0  # contact restitution = sqrt(ball elasticity * surface elasticity) * this
     bounce_speed: float = 1.0      # arriving slower than this along the normal, the ball does not bounce
+    sweep: bool = True             # stop the tick's move where the ball first reaches a surface (as the engine does)
     iterations: int = 8            # passes of the contact solver when several points touch
 
 
@@ -118,7 +125,19 @@ def step(mesh: Mesh, ball: Ball, s: State, push, params: Params | None = None, m
     info has the merged contacts used and the normal impulse on each."""
     P = params or Params()
     r = ball.radius
-    pos = s.pos + s.vel * DT
+    move = s.vel * DT
+    pos = s.pos + move
+    hit = False
+    if P.sweep and mesh.distance(pos, r + 1.0)[0] - r < P.floor and mesh.distance(s.pos, r + 1.0)[0] - r > P.floor:
+        lo, hi = 0.0, 1.0                        # the move would go into a surface: stop where the gap is the engine's minimum
+        for _ in range(24):
+            mid = 0.5 * (lo + hi)
+            if mesh.distance(s.pos + mid * move, r + 1.0)[0] - r > P.floor:
+                lo = mid
+            else:
+                hi = mid
+        pos = s.pos + lo * move
+        hit = True
     vel = s.vel * (1.0 - ball.lin_damp * DT) + ball.push * np.asarray(push, float) + np.array([0.0, -GRAVITY * DT, 0.0])
     omega = s.omega * (1.0 - ball.rot_damp * DT)
     contacts = merge_contacts(mesh.contacts(pos, r, P.reach))
@@ -130,7 +149,7 @@ def step(mesh: Mesh, ball: Ball, s: State, push, params: Params | None = None, m
         for c in contacts:
             e = mesh.entities[c.entity] if mesh.entities else {}
             fr.append(ball.friction * float(e.get("friction", 0.7)) * P.friction_scale)
-            el.append(ball.elasticity * float(e.get("elasticity", 0.3)) * P.restitution_scale)
+            el.append(math.sqrt(ball.elasticity * float(e.get("elasticity", 0.3))) * P.restitution_scale)
             vn = float(vel @ c.normal)
             if c.gap <= P.touch:
                 target.append(-el[-1] * vn if vn < -P.bounce_speed else 0.0)
@@ -159,7 +178,7 @@ def step(mesh: Mesh, ball: Ball, s: State, push, params: Params | None = None, m
                 jt, t_imp[i] = acc - t_imp[i], acc
                 vel = vel + jt * inv_m
                 omega = omega + np.cross(arm, jt) * inv_i
-    return State(pos, vel, omega), dict(contacts=contacts, normal_impulse=n_imp)
+    return State(pos, vel, omega), dict(contacts=contacts, normal_impulse=n_imp, hit=hit)
 
 
 def settle(mesh: Mesh, s: State, radius: float = BALL_R, margin: float = CONTACT_MARGIN, reach: float = 0.2) -> State:

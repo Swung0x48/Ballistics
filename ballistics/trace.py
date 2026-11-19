@@ -43,12 +43,13 @@ class Run:
     min_normal: np.ndarray    # (n, 3)
     n_friction: np.ndarray    # (n,) the engine's count of friction (rolling / resting) contacts
     meta: dict
+    omega: np.ndarray | None = None   # (n, 3) spin, world frame, where it could be recovered from recorded orientations (nan elsewhere)
 
     @classmethod
     def load(cls, path) -> "Run":
         with np.load(path, allow_pickle=False) as z:
             return cls(z["pos"], z["vel"], z["ball_type"], z["quarter"], z["keys"], z["frames_done"], z["min_gap"], z["min_normal"],
-                       z["n_friction"], json.loads(str(z["meta"])))
+                       z["n_friction"], json.loads(str(z["meta"])), z["omega"] if "omega" in z.files else None)
 
     def ticks(self):
         """Indices of the observations at which the physics state changed: one per physics tick. Between ticks the

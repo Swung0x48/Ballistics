@@ -33,15 +33,21 @@ def _kind(mesh: Mesh, contacts) -> str:
     return "rail+floor" if any(rail) else "floor"
 
 
-def _start(mesh: Mesh, run: Run, i: int, P: ph.Params):
+def _start(mesh: Mesh, run: Run, i: int, P: ph.Params, spin_from: str = "auto"):
+    """spin_from: 'rolling' = a ball that touches something rolls on it without slipping, a ball in the air does
+    not spin; 'recorded' = the spin recovered from the run's orientations; 'auto' = rolling where it touches,
+    recorded in the air when the run has it."""
     ball = ph.BALLS[int(run.ball_type[i])]
     touching = ph.merge_contacts(mesh.contacts(run.pos[i], ball.radius, P.touch))
-    # the run does not record spin: a ball that touches something is taken to roll on it without slipping
-    spin = ph.rolling_spin(run.vel[i], touching[0].normal, ball.radius) if touching else np.zeros(3)
+    have = run.omega is not None and bool(np.isfinite(run.omega[i]).all())
+    if spin_from == "recorded" and have or (spin_from == "auto" and have and not touching):
+        spin = run.omega[i].copy()
+    else:
+        spin = ph.rolling_spin(run.vel[i], touching[0].normal, ball.radius) if touching else np.zeros(3)
     return ball, ph.State(run.pos[i].copy(), run.vel[i].copy(), spin), touching
 
 
-def one_tick(mesh: Mesh, run: Run, params: ph.Params | None = None, every: int = 1) -> dict:
+def one_tick(mesh: Mesh, run: Run, params: ph.Params | None = None, every: int = 1, spin_from: str = "auto") -> dict:
     """{class: velocity errors (units / physics second)} over the run's ticks. Classes: what the model had the
     ball pressing on after the tick; 'landing' when it touched nothing before; '(impact)' when the engine moved the
     ball off its own straight step, i.e. something was hit inside the tick."""
@@ -52,7 +58,7 @@ def one_tick(mesh: Mesh, run: Run, params: ph.Params | None = None, every: int =
         i0, i1 = t[k], t[k + 1]
         if run.ball_type[i0] != run.ball_type[i1] or run.quarter[i1] < 0:
             continue
-        ball, s0, touching = _start(mesh, run, i0, P)
+        ball, s0, touching = _start(mesh, run, i0, P, spin_from)
         s1, info = ph.step(mesh, ball, s0, ph.key_push(run.keys_before(i1), int(run.quarter[i1])), P)
         pressed = [c for c, j in zip(info["contacts"], info["normal_impulse"]) if j > 0]
         kind = _kind(mesh, pressed)
