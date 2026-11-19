@@ -182,9 +182,11 @@ def _rollout(pos, vel, omega, pushes, holds, ball, par, margin, ox, oz, cell, nx
              N, tri_fr, tri_el, tri_placed, tri_rail, hang_limit, boxes, spheres, y_min, low, low_ox, low_oz, low_cell, stamp, tickbox, ci, cd, cq, cf, cn, cg, order,
              n_imp, t_imp, fr, el, target, trace, stats):
     """Hold pushes[k] for holds[k] ticks each, in place. Stops early when the ball's centre enters a death box or
-    falls below everything near it (DEAD), hangs on an edge for more than hang_limit ticks on end (HANG; 0 = allowed), enters a trigger sphere (TRIGGER) or touches a placed object (PLACED).
-    Returns (status, ticks done). trace (T, 7), if not empty, gets after every tick: position, how many points
-    it touches, whether one is an edge or corner, whether the tick began with a hit, speed.
+    falls below everything near it (DEAD), hangs on edges for more than hang_limit ticks between two moments of
+    being carried (HANG; 0 = allowed), enters a trigger sphere (TRIGGER) or touches a placed object (PLACED).
+    Returns (status, ticks done). trace (T, 9), if not empty, gets after every tick: position, how many points
+    it touches, whether one is an edge or corner, whether the tick began with a hit, speed, whether something
+    carries it (a rail, or a face under it), whether it touches a rail.
     stats[7] on entry: how many ticks the ball has been hanging already; on return: the same, updated.
     stats: [0] ticks that began with a hit, [1] ticks touching an edge or corner, [2] ticks touching two or more
     points, [3] ticks touching nothing, [4] top speed, [5] touching at the end (1/0), [6] the last touching
@@ -197,13 +199,15 @@ def _rollout(pos, vel, omega, pushes, holds, ball, par, margin, ox, oz, cell, nx
         for _ in range(holds[k]):
             hit, m = _step(pos, vel, omega, pushes[k], ball, par, ox, oz, cell, nx, nz, start, items, A, B, C, lo_y, hi_y,
                            N, tri_fr, tri_el, stamp, tickbox, ci, cd, cq, cf, cn, cg, order, n_imp, t_imp, fr, el, target)
-            touching, edge, best_ny, carried = 0, False, -1.0, False
+            touching, edge, best_ny, carried, on_rail = 0, False, -1.0, False, False
             for i in range(m):
                 c = order[i]
                 if cg[c] <= touch:
                     touching += 1
                     if cf[c] != FACE:
                         edge = True
+                    if tri_rail[ci[c]]:
+                        on_rail = True
                     if tri_rail[ci[c]] or (cf[c] == FACE and cn[c, 1] >= 0.6):
                         carried = True            # on a rail, or a face under it
                     if cn[c, 1] > best_ny:
@@ -213,7 +217,10 @@ def _rollout(pos, vel, omega, pushes, holds, ball, par, margin, ox, oz, cell, nx
             _settle(pos, r, margin, 0.2, ox, oz, cell, nx, nz, start, items, A, B, C, lo_y, hi_y, N, stamp, tickbox,
                     ci, cd, cq, cf, cn, cg, order)
             done += 1
-            hanging = hanging + 1 if (touching > 0 and not carried) else 0
+            if carried:
+                hanging = 0
+            elif touching > 0:
+                hanging += 1                      # ticks in the air neither count nor clear it
             stats[7] = hanging
             if hang_limit > 0 and hanging > hang_limit:
                 return HANG, done
@@ -234,6 +241,7 @@ def _rollout(pos, vel, omega, pushes, holds, ball, par, margin, ox, oz, cell, nx
                 trace[done - 1, 0], trace[done - 1, 1], trace[done - 1, 2] = pos[0], pos[1], pos[2]
                 trace[done - 1, 3], trace[done - 1, 4], trace[done - 1, 5] = touching, 1.0 if edge else 0.0, 1.0 if hit else 0.0
                 trace[done - 1, 6] = speed
+                trace[done - 1, 7], trace[done - 1, 8] = 1.0 if carried else 0.0, 1.0 if on_rail else 0.0
             if pos[1] < y_min:
                 return DEAD, done
             gi, gj = int(math.floor((pos[0] - low_ox) / low_cell)), int(math.floor((pos[2] - low_oz) / low_cell))
@@ -267,7 +275,7 @@ class World:
     spheres: np.ndarray      # (S, 4) trigger spheres the ball must stay out of: x y z, distance
     y_min: float
     stop_on_placed: bool = True
-    hang_limit: int = 0      # a rollout ends when the ball touches only edges that are not rails for more ticks than this on end (0: allowed)
+    hang_limit: int = 0      # a rollout ends when, since a rail or a face under it last carried the ball, it has touched only other things (edges, walls) for more ticks than this (0: allowed)
 
     def __post_init__(self):
         m = self.mesh
@@ -325,7 +333,7 @@ class World:
         pos, vel, omega = np.array(pos, np.float64), np.array(vel, np.float64), np.array(omega, np.float64)
         pushes = np.ascontiguousarray(pushes, np.float64).reshape(-1, 3)
         holds = np.ascontiguousarray(holds, np.int64)
-        tr = np.empty((int(holds.sum()) if trace else 0, 7))
+        tr = np.empty((int(holds.sum()) if trace else 0, 9))
         stats = np.zeros(8)
         stats[7] = hanging
         status, done = _rollout(pos, vel, omega, pushes, holds, ball_array(ball), params_array(P),

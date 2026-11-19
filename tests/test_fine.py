@@ -56,12 +56,12 @@ def test_a_wall_is_not_crossed_and_that_is_reported_as_not_found():
 
 
 def test_hanging_on_an_edge_can_be_ruled_out():
-    # a ball pressed against the side of a floor from beyond its border: touching the border edge only
+    # a ball pressed against the border of a floor from beyond it, touching the border edge only: with the key held
+    # the kernel lets it hang there; in a world with a hang limit the rollout ends
     parts = [quad(0, 20, 0, 8, 0.0)]
-    start = ph.State(np.array([10.0, 1.2, 9.55]), np.zeros(3), np.zeros(3))      # centre 1.55 beyond the border z = 8, 1.2 above it
-    free, strict = world(parts), world(parts, hang_limit=10)
+    pos = [10.0, 1.62, 9.2]                          # centre 1.2 beyond the border z = 8 and 1.62 above the floor
     push = np.array([[0.0, 0.0, -1.0]])
-    a = free.rollout(ph.WOOD, ph.Params(), start.pos, start.vel, start.omega, push, [40])
-    b = strict.rollout(ph.WOOD, ph.Params(), start.pos, start.vel, start.omega, push, [40])
-    assert a[0] == OK
-    assert b[0] in (HANG, OK) and (b[0] == HANG or b[5][7] <= 10)
+    a = world(parts).rollout(ph.WOOD, ph.Params(), pos, np.zeros(3), np.zeros(3), push, [60], trace=True)
+    b = world(parts, hang_limit=10).rollout(ph.WOOD, ph.Params(), pos, np.zeros(3), np.zeros(3), push, [60])
+    assert a[0] == OK and int(((a[6][:, 3] > 0) & (a[6][:, 7] == 0)).sum()) > 40
+    assert b[0] == HANG and b[1] == 11
