@@ -55,12 +55,21 @@ def test_a_straight_tube_gives_back_its_axis_and_radius():
     assert axis_distance(np.array(path), seg).max() < 2e-3
 
 
-def test_an_open_profile_is_still_centred_on_its_circle():
-    # three quarters of a circle: the centroid of a ring is not the tube's centre, the fit must not be fooled
+def test_the_cross_section_is_a_polygon_on_a_circle_complete_or_not():
+    # in the game a rail is an octagon, or its upper half (five corners) where the underside is left open; the
+    # corners lie on the tube's circle either way, so the centre and radius come out exactly, while the average
+    # position of a half ring's corners would be off the axis
     path = [(x, 5.0, 2.0) for x in np.arange(0.0, 20.1, 2.0)]
-    seg, _ = rails.fit_tubes(*tube(path, 0.25, sides=7, arc=1.5 * math.pi))
-    assert np.allclose(seg[:, 6], 0.25, atol=0.02)
-    assert axis_distance(np.array(path), seg).max() < 0.02
+    for sides, arc in ((8, 2 * math.pi), (5, math.pi), (7, 1.5 * math.pi)):
+        seg, info = rails.fit_tubes(*tube(path, 0.3513, sides=sides, arc=arc))
+        assert info["corners_per_ring"] == {sides: len(path)}
+        assert np.allclose(seg[:, 6], 0.3513, atol=1e-6)
+        assert axis_distance(np.array(path), seg).max() < 1e-6
+
+
+def test_a_long_stretch_between_two_rings_is_one_segment():
+    seg, _ = rails.fit_tubes(*tube([(0.0, 3.0, 0.0), (20.7, 3.0, 0.0)], 0.35))
+    assert len(seg) == 1 and np.linalg.norm(seg[0, 3:6] - seg[0, :3]) == pytest.approx(20.7)
 
 
 def test_a_curved_tube_is_followed():
@@ -98,16 +107,16 @@ def test_level_1_rails():
     m = Mesh.load(L1_MESH)
     assert len(m.tubes) > 900
     r = m.tubes[:, 6]
-    assert ((np.abs(r - 0.25) < 0.02) | (np.abs(r - 0.36) < 0.03)).all()                  # the two tube sizes of the game
-    # every rail vertex lies on a fitted tube's surface, apart from end caps and the few pieces the fit leaves out
-    V = np.unique(np.round(np.concatenate([m.A[m.rail], m.B[m.rail], m.C[m.rail]]), 4), axis=0)[::9]
+    assert ((np.abs(r - 0.247) < 0.01) | (np.abs(r - 0.357) < 0.012)).all()               # the two tube sizes of the game
+    # every rail vertex lies on a fitted tube's surface
+    V = np.unique(np.round(np.concatenate([m.A[m.rail], m.B[m.rail], m.C[m.rail]]), 4), axis=0)[::5]
     a, b = m.tubes[:, :3], m.tubes[:, 3:6]
     d = b - a
     off = []
     for p in V:
         t = np.clip(((p - a) * d).sum(1) / np.maximum((d * d).sum(1), 1e-12), 0, 1)
         off.append(np.abs(np.linalg.norm(a + t[:, None] * d - p, axis=1) - m.tubes[:, 6]).min())
-    assert np.median(off) < 0.005 and np.percentile(off, 95) < 0.05
+    assert np.median(off) < 0.005 and max(off) < 0.05
     ln = rails.lanes(m.tubes)
     double = sorted((l for l in ln if l["double"] and not l["thin"]), key=lambda l: -rails.length(l["points"]))
     assert len(double) >= 8
@@ -116,4 +125,7 @@ def test_level_1_rails():
     if L1_GAME.is_file():                                                                  # another project's fit of the same rails
         ref = Mesh.load(L1_GAME).tubes
         mid = (m.tubes[:, :3] + m.tubes[:, 3:6]) / 2
-        assert axis_distance(mid, ref).max() < 0.05
+        assert axis_distance(mid, ref).max() < 0.02                                        # nothing of mine off its axes
+        assert axis_distance((ref[:, :3] + ref[:, 3:6]) / 2, m.tubes).max() < 0.02          # and nothing of its missing here
+        total = lambda t: float(np.linalg.norm(t[:, 3:6] - t[:, :3], axis=1).sum())
+        assert total(m.tubes) == pytest.approx(total(ref), rel=0.005)

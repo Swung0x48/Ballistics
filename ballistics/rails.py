@@ -3,10 +3,9 @@
 The collision shape of a rail is its triangles, and contacts are computed on those (`ballistics.geometry`). This
 module recovers what the triangles are a tessellation of, for everything that needs to know where a rail runs:
 
-* `fit_tubes`: every rail is a tube. The vertices of one cross-section ring all lie one tube radius away from the
-  same point of the axis, along their outward normals; moving each vertex back along its normal by the right radius
-  makes each ring collapse into one axis point. The radius is the one that collapses them best, found per connected
-  piece of mesh. The result is axis segments with a radius.
+* `fit_tubes`: every rail is a tube whose cross-section is a polygon with its corners on a circle. The corners of
+  one ring are found together, the circle through them gives the ring's centre and the tube's radius, and the
+  ring centres joined along the mesh are the axis. The result is axis segments with a radius.
 * `polylines`: the axis segments welded into runs between junctions and ends.
 * `lanes`: two parallel tubes a ball fits between are a double rail, and the ball's centre runs above the middle
   of them; any other tube is a single rail with the ball's centre straight above it. Thick tubes (0.35) are the
@@ -83,8 +82,34 @@ def _collapse(V, N, radius: float, tol: float):
     return pts / counts[:, None], inv, counts
 
 
-def fit_tubes(A, B, C, radii=np.arange(0.20, 0.45, 0.01), tol: float = 0.06):
-    """Tube axis segments of rail triangles. Returns (segments (S, 7): x0 y0 z0 x1 y1 z1 radius, info dict)."""
+def _circle(P):
+    """Least-squares circle through points that lie in a plane: (centre, radius, rms distance of the points from the
+    circle), or None when the points are too few or in a line."""
+    if len(P) < 3:
+        return None
+    c0 = P.mean(0)
+    _, sv, vt = np.linalg.svd(P - c0)
+    if sv[1] < 1e-3:
+        return None
+    x, y = (P - c0) @ vt[0], (P - c0) @ vt[1]
+    sol = np.linalg.lstsq(np.c_[2 * x, 2 * y, np.ones(len(x))], x * x + y * y, rcond=None)[0]
+    rad = math.sqrt(max(float(sol[2] + sol[0] ** 2 + sol[1] ** 2), 0.0))
+    rms = float(np.sqrt(np.mean((np.hypot(x - sol[0], y - sol[1]) - rad) ** 2)))
+    return c0 + sol[0] * vt[0] + sol[1] * vt[1], rad, rms, vt[2]
+
+
+def fit_tubes(A, B, C, radii=np.arange(0.20, 0.45, 0.01), tol: float = 0.06, gather: float = 0.15):
+    """Tube axis segments of rail triangles. Returns (segments (S, 7): x0 y0 z0 x1 y1 z1 radius, info dict).
+
+    A rail's cross-section is a polygon whose corners lie on a circle (in the game an octagon, or part of one where
+    the underside is left open). Steps, per connected piece of mesh:
+
+    1. which vertices form a ring: moved back along their normals by about the tube radius, the corners of one ring
+       fall together; stragglers (corners on an open rim or a mitred joint, whose normals lean) join the ring
+       they land next to;
+    2. the ring's centre and radius: the circle through its corners, which is exact for a polygon inscribed in a
+       circle whether or not the ring is complete; the piece's radius is the median over its good rings;
+    3. the axis: ring centres joined wherever the mesh has an edge from one ring to the next."""
     A, B, C = (np.asarray(x, np.float64).reshape(-1, 3) for x in (A, B, C))
     if not len(A):
         return np.zeros((0, 7)), dict(pieces=0)
@@ -97,7 +122,7 @@ def fit_tubes(A, B, C, radii=np.arange(0.20, 0.45, 0.01), tol: float = 0.06):
     ln = np.linalg.norm(N, axis=1)
     N = N / np.where(ln > 0, ln, 1)[:, None]
     comp = _components(len(V), np.concatenate([F[:, [0, 1]], F[:, [1, 2]], F[:, [2, 0]]]))
-    segs, pieces, loose = [], 0, 0
+    segs, pieces, loose, rings, corners = [], 0, 0, 0, {}
     for c in np.unique(comp):
         idx = np.flatnonzero(comp == c)
         if len(idx) < 6:
@@ -109,38 +134,83 @@ def fit_tubes(A, B, C, radii=np.arange(0.20, 0.45, 0.01), tol: float = 0.06):
         for sign in (1.0, -1.0):                      # the triangles may be wound either way
             for r in radii:
                 pts, _, counts = _collapse(v, sign * n, float(r), tol)
-                score = len(pts)                      # the right radius leaves the fewest axis points
-                if best is None or score < best[0]:
-                    best = (score, sign, float(r))
-        _, sign, r = best
-        _, node, counts = _collapse(v, sign * n, r, tol)
-        # the collapse only tells which vertices form a ring. The radius is then the one that brings each ring's
-        # vertices closest together when moved back along their normals (least squares over the piece's rings;
-        # a rail's cross-section need not be a full circle, so the ring's centroid is not its centre), and the
-        # axis point of a ring is where its vertices land
-        vm, nm = np.zeros((len(counts), 3)), np.zeros((len(counts), 3))
-        np.add.at(vm, node, v)
-        np.add.at(nm, node, sign * n)
-        vm, nm = vm / counts[:, None], nm / counts[:, None]
-        ring = counts[node] >= 3
-        dv, dn = v[ring] - vm[node[ring]], sign * n[ring] - nm[node[ring]]
-        den = float((dn * dn).sum())
-        if den > 1e-9:
-            r = float((dv * dn).sum() / den)
-        pts = vm - r * nm
+                if best is None or len(pts) < best[0]:      # the right radius leaves the fewest gathered points
+                    best = (len(pts), sign, float(r))
+        _, sign, r0 = best
+        pts, node, counts = _collapse(v, sign * n, r0, tol)
+        # corners whose normals lean (an open rim, a mitred joint) land apart: gather those among themselves with a
+        # wider reach first, so that a ring made only of such corners is still found
+        small = np.flatnonzero(counts[node] < 3)
+        if len(small) >= 3:
+            again = _cluster((v - sign * r0 * n)[small], gather)
+            node[small] = len(counts) + again
+            counts = np.bincount(node)
+            pts = np.zeros((len(counts), 3))
+            np.add.at(pts, node, v - sign * r0 * n)
+            pts = pts / np.maximum(counts, 1)[:, None]
+        # stragglers join the nearest ring they land next to
+        big = np.flatnonzero(counts >= 3)
+        if len(big):
+            for g in np.flatnonzero(counts < 3):
+                d = np.linalg.norm(pts[big] - pts[g], axis=1)
+                k = int(d.argmin())
+                if d[k] <= gather:
+                    node[node == g] = big[k]
+            counts = np.bincount(node, minlength=len(counts))
+        # a corner still on its own belongs to the ring whose circle it lies on (same plane, same distance from the centre)
+        left = np.flatnonzero(counts[node] < 3)
+        if len(left):
+            circles = [(g, _circle(v[node == g])) for g in np.flatnonzero(counts >= 3)]
+            circles = [(g, c) for g, c in circles if c is not None and c[2] < 0.03]
+            for i in left:
+                for g, (cc, rad, _, axis) in circles:
+                    d = v[i] - cc
+                    off = float(d @ axis)
+                    if abs(off) < 0.03 and abs(float(np.linalg.norm(d - off * axis)) - rad) < 0.03:
+                        node[i] = g
+                        break
+            counts = np.bincount(node, minlength=len(counts))
+        centre = np.full((len(counts), 3), np.nan)
+        good = []
+        for g in np.flatnonzero(counts >= 3):
+            fit = _circle(v[node == g])
+            if fit is not None and fit[2] < 0.03 and 0.1 < fit[1] < 0.8:
+                centre[g] = fit[0]
+                corners[int(counts[g])] = corners.get(int(counts[g]), 0) + 1
+                if counts[g] >= 5 and fit[2] < 0.01:
+                    good.append(fit[1])
+            else:
+                centre[g] = pts[g]                    # not a clean ring: keep where its vertices landed
+        r = float(np.median(good)) if good else r0
+        rings += int((counts >= 3).sum())
         local = {int(g): k for k, g in enumerate(idx)}
         seen = set()
         f = F[np.isin(F[:, 0], idx)]
         for a, b in np.concatenate([f[:, [0, 1]], f[:, [1, 2]], f[:, [2, 0]]]):
             p, q = int(node[local[int(a)]]), int(node[local[int(b)]])
-            if p == q or counts[p] < 3 or counts[q] < 3:      # a ring has at least three vertices; caps and seams do not
+            if p == q or counts[p] < 3 or counts[q] < 3:      # a ring has at least three corners; caps do not
                 continue
-            key = (min(p, q), max(p, q))
-            if key not in seen:
-                seen.add(key)
-                segs.append([*pts[key[0]], *pts[key[1]], r])
+            seen.add((min(p, q), max(p, q)))
+        # an edge that skips a ring lying on it (a long triangle across a short ring spacing) is not a segment of its
+        # own: longest first, an edge goes when two shorter ones that are still there cover the same stretch
+        span = {e: float(np.linalg.norm(centre[e[0]] - centre[e[1]])) for e in seen}
+        alive = set(seen)
+        near: dict = {}
+        for p, q in seen:
+            near.setdefault(p, set()).add(q)
+            near.setdefault(q, set()).add(p)
+        for p, q in sorted(seen, key=lambda e: -span[e]):
+            for m in near[p] & near[q]:
+                e1, e2 = (min(p, m), max(p, m)), (min(m, q), max(m, q))
+                if e1 in alive and e2 in alive and span[e1] + span[e2] < span[(p, q)] * 1.02 + 1e-6:
+                    alive.discard((p, q))
+                    break
+        for p, q in sorted(alive):
+            if span[(p, q)] > 1e-6:
+                segs.append([*centre[p], *centre[q], r])
     segs = np.array(segs, np.float64).reshape(-1, 7)
-    return segs, dict(pieces=pieces, segments=len(segs), radii=sorted({round(float(x), 3) for x in segs[:, 6]}) if len(segs) else [], loose_vertices=loose)
+    return segs, dict(pieces=pieces, rings=rings, segments=len(segs), radii=sorted({round(float(x), 3) for x in segs[:, 6]}) if len(segs) else [],
+                      corners_per_ring=dict(sorted(corners.items())), loose_vertices=loose)
 
 
 # ---- polylines and lanes
