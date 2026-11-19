@@ -4,11 +4,10 @@ Everything that goes into a proof is computed here, on the triangles themselves:
 (face, edge or vertex), how far it is from the nearest surface, where it comes to rest when lowered. Kerbs,
 chamfers, wall tops and rail tubes keep their real shape; nothing is rasterised.
 
-A mesh file (`L<nn>-mesh.npz`) holds the fixed physicalized entities the player ball collides with, in world
-coordinates: triangles A, B, C; per triangle the owning entity and whether it belongs to a rail; the analytic
-tube segments fitted to the rail triangles (for rail topology; contacts use the triangles, as the engine does);
-and per entity its name, groups, friction and elasticity. The file is written by an exporter that has the engine
-load the level once and reads the collision meshes from the level data; this package only reads it."""
+A mesh file (`<name>-mesh.npz`) holds the fixed bodies the player ball collides with, in world coordinates:
+triangles A, B, C; per triangle the owning body and whether it belongs to a rail; optionally analytic tube
+segments fitted to the rail triangles (for rail topology; contacts use the triangles, as the game does); and per
+body its name, groups, friction and elasticity. It is written from a map file by `ballistics.export`."""
 from __future__ import annotations
 
 import json

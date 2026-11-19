@@ -10,7 +10,7 @@ from ballistics.geometry import Mesh
 from ballistics.trace import read_trace
 
 DATA = Path(os.environ.get("BALLISTICS_DATA", Path(__file__).resolve().parent.parent / "data"))
-L1_MESH = DATA / "L01-mesh.npz"
+L1_MESH = DATA / "Level_01-mesh.npz"
 L1_TRACE = DATA / "traces" / "SR01_1_14_457_264.txt"
 
 
