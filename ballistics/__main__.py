@@ -13,7 +13,18 @@ def main(argv=None):
     e.add_argument("--out", type=Path, default=Path("data"), help="folder for <name>-mesh.npz and <name>-map.json")
     e.add_argument("--name", help="name for the output files (default: the map file's name without extension)")
     e.add_argument("--bmap", type=Path, help="folder that contains the pybmap package (default: BALLISTICS_BMAP, then an installed bbp_ng)")
+    c = sub.add_parser("calibrate", help="measure how far the hand-written physics is from a recorded engine run")
+    c.add_argument("--mesh", type=Path, required=True, help="<name>-mesh.npz of the map the run was played on")
+    c.add_argument("--run", type=Path, required=True, help="a recorded run file (.npz)")
+    c.add_argument("--every", type=int, default=30, help="start an open-loop roll every this many ticks")
     a = ap.parse_args(argv)
+    if a.command == "calibrate":
+        from .calibrate import report
+        from .geometry import Mesh
+        from .trace import Run
+
+        report(Mesh.load(a.mesh), Run.load(a.run), every=a.every)
+        return
     if a.command == "export":
         from .export import export_map
 
