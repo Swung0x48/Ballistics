@@ -137,9 +137,23 @@ def merge_contacts(contacts, tol: float = 1e-3) -> list:
     return out
 
 
-def step(mesh: Mesh, ball: Ball, s: State, push, params: Params | None = None, mu: dict | None = None):
+def step(mesh: Mesh, ball: Ball, s: State, push, params: Params | None = None):
     """One tick. push: world push direction from `key_push` (zero vector for no keys). Returns (new state, info);
-    info has the merged contacts used and the normal impulse on each."""
+    info has the merged contacts used and the normal impulse on each. Runs the compiled tick of `kernel`, which is
+    `step_reference` operation for operation (held together by tests/test_kernel.py)."""
+    from .geometry import FEATURE, Contact
+    from .kernel import World
+    w = getattr(mesh, "_world", None)
+    if w is None:
+        w = mesh._world = World.of(mesh, stop_on_placed=False)
+    P = params or Params()
+    pos, vel, omega, hit, rows, n_imp = w.step(ball, P, s.pos, s.vel, s.omega, push)
+    contacts = [Contact(t, q, float(np.linalg.norm(pos - q)), gap, FEATURE[f], n, int(mesh.owner[t])) for t, q, f, n, gap in rows]
+    return State(pos, vel, omega), dict(contacts=contacts, normal_impulse=n_imp, hit=hit)
+
+
+def step_reference(mesh: Mesh, ball: Ball, s: State, push, params: Params | None = None):
+    """The tick written out in plain Python: the definition the compiled tick is checked against."""
     P = params or Params()
     r = ball.radius
     move = s.vel * DT

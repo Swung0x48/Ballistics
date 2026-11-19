@@ -1,0 +1,313 @@
+"""The fine level: key tapes found by running the physics kernel.
+
+The coarse level proposes where a ball might get to; this level asks the kernel. From states a ball can have (at
+rest on a place the coarse level reaches), it searches over which arrow keys to hold for how long until the ball
+is rolling on a target place, and returns the keys and the trajectory.
+
+What a result is worth: it is a trajectory of the hand-written kernel, not of the game. The kernel's measured
+error grows with time and at impacts (README, calibration tables), and a search finds whatever the kernel allows,
+its weak spots included. So every crossing comes with what it leans on (impacts, edge contacts, several contacts at
+once, flight) and how often it survives small changes of the start and of the key timing. It stays a *candidate*
+until the engine has run it. "Not found" means not found within the stated budget, never "impossible".
+
+The search keeps one state per cell of (position, heading, speed, on the ground or not) and grows from them:
+pick a kept state, hold one of the nine pushes for a while, keep what is new or quicker. Half the picks go to the
+states nearest the target, half to any, both preferring the less tried.
+"""
+from __future__ import annotations
+
+import math
+import time
+from dataclasses import dataclass, field
+
+import numpy as np
+
+from . import physics as ph
+from .geometry import CONTACT_MARGIN
+from .kernel import OK, World
+
+# The nine pushes the arrow keys can give: each held key is one unit push along a camera axis, and the camera's
+# four quarter turns map the axes onto each other, so the set is the same for every camera position.
+PUSHES = np.array([(0, 0, 0), (1, 0, 0), (-1, 0, 0), (0, 0, 1), (0, 0, -1), (1, 0, 1), (1, 0, -1), (-1, 0, 1), (-1, 0, -1)], np.float64)
+PUSH_NAMES = ("-", "+x", "-x", "+z", "-z", "+x+z", "+x-z", "-x+z", "-x-z")
+CHUNK = 8                       # ticks between kept states
+HOLDS = (1, 2, 4, 8)            # how many chunks one pick holds its push
+CELL = 1.0
+WALK_NY = 0.6
+SPEED_EDGES = (0.5, 3.0, 8.0, 13.0, 18.0)
+
+
+@dataclass
+class Crossing:
+    found: bool
+    expansions: int
+    seconds: float
+    kept: int
+    best_distance: float                 # how near the target the search got
+    ticks: int = 0
+    tape: list = field(default_factory=list)      # [(push index, ticks)]
+    trace: np.ndarray | None = None               # ball centre after every tick
+    start: np.ndarray | None = None
+    end: np.ndarray | None = None
+    stats: dict = field(default_factory=dict)
+    nearest: np.ndarray | None = None             # the kept state nearest the target when nothing was found
+
+    def keys(self) -> str:
+        return " ".join("%s×%d" % (PUSH_NAMES[a], n) for a, n in self.tape)
+
+
+def guide(graph, goal: int, near: float = 4.0, far: float = 25.0) -> np.ndarray:
+    """How far each coarse place is from the goal place, counted generously: along the coarse level's own edges,
+    and also straight across to any place within `near`, and from ledges and lane points to others within `far`
+    (dearer). It only steers the search, so being generous costs time, never correctness: wherever the coarse level
+    fails to connect, the search is still drawn across and the kernel decides."""
+    import heapq
+    P = graph.pos
+    n = len(P)
+    back = [[] for _ in range(n)]
+    for u in range(n):
+        for e in graph.adj[u]:
+            back[e[0]].append((u, e[1]))
+    grid: dict = {}
+    for i, p in enumerate(P):
+        grid.setdefault((int(p[0] // near), int(p[1] // near), int(p[2] // near)), []).append(i)
+    for (a, b, c), ids in grid.items():
+        other = [k for da in (-1, 0, 1) for db in (-1, 0, 1) for dc in (-1, 0, 1) for k in grid.get((a + da, b + db, c + dc), ())]
+        Q = P[other]
+        for i in ids:
+            d = np.sqrt(((Q - P[i]) ** 2).sum(1))
+            for k in np.flatnonzero((d <= near) & (d > 0)):
+                back[i].append((other[k], 2.0 * float(d[k]) + 2.0))
+    edge = np.zeros(n, bool)
+    edge[:graph.info["rest_places"]] = graph.info["edge_node"][:graph.info["rest_places"]]
+    edge[graph.info["rest_places"]:] = True
+    E = np.flatnonzero(edge)
+    for lo in range(0, len(E), 512):
+        chunk = E[lo:lo + 512]
+        D = np.sqrt(((P[chunk][:, None, :] - P[E][None, :, :]) ** 2).sum(2))
+        for r, i in enumerate(chunk):
+            for k in np.flatnonzero((D[r] <= far) & (D[r] > near)):
+                back[i].append((int(E[k]), 3.0 * float(D[r, k]) + 15.0))
+    togo = np.full(n, np.inf)
+    togo[goal] = 0.0
+    heap = [(0.0, goal)]
+    while heap:
+        d, u = heapq.heappop(heap)
+        if d > togo[u]:
+            continue
+        for v, c in back[u]:
+            if d + c < togo[v]:
+                togo[v] = d + c
+                heapq.heappush(heap, (d + c, v))
+    return togo
+
+
+def rest_state(world: World, x: float, z: float, from_y: float) -> ph.State:
+    """A ball at rest on whatever is under (x, from_y, z)."""
+    y = world.mesh.rest(x, z, from_y)
+    if math.isnan(y):
+        raise ValueError("nothing under (%.2f, %.2f)" % (x, z))
+    return ph.State(np.array([x, y + CONTACT_MARGIN, z]), np.zeros(3), np.zeros(3))
+
+
+class Search:
+    def __init__(self, world: World, targets, ball: ph.Ball = ph.WOOD, params: ph.Params | None = None, reach: float = 1.2, seed: int = 0,
+                 places=None, togo=None):
+        """targets: the places to arrive on. places + togo (from `guide`), if given, steer the search by how far
+        each place still is from the goal; without them it is steered by the straight distance to the targets."""
+        self.w, self.ball, self.P = world, ball, params or ph.Params()
+        self.T = np.ascontiguousarray(targets, np.float64).reshape(-1, 3)
+        self.reach = reach
+        self.G = None
+        if places is not None:
+            ok = np.isfinite(togo)
+            self.G, self.togo = np.ascontiguousarray(places, np.float64)[ok], np.asarray(togo, np.float64)[ok]
+            self._ggrid: dict = {}
+            for i, p in enumerate(self.G):
+                self._ggrid.setdefault((int(p[0] // 6), int(p[2] // 6)), []).append(i)
+        self.rng = np.random.default_rng(seed)
+        # every state ever kept (never changed afterwards: later states hang on them by `parent`)
+        self.pos, self.vel, self.omega = [], [], []
+        self.parent, self.act, self.hold, self.ticks, self.hang = [], [], [], [], []
+        # one slot per cell: the quickest state known for it, how near the target it is, how often it was picked
+        self.cell: dict = {}
+        self.slot, self.h, self.visits, self.ground = [], [], [], []
+        self.goal = -1
+        self.expansions = 0
+        self._tgrid: dict = {}
+        for i, p in enumerate(self.T):
+            self._tgrid.setdefault((int(p[0] // 4), int(p[2] // 4)), []).append(i)
+
+    # ---- the target
+    def distance(self, p) -> float:
+        """Distance from p to the nearest target place."""
+        i, j = int(p[0] // 4), int(p[2] // 4)
+        near = [k for di in (-2, -1, 0, 1, 2) for dj in (-2, -1, 0, 1, 2) for k in self._tgrid.get((i + di, j + dj), ())]
+        if near:
+            d = float(np.sqrt(((self.T[near] - p) ** 2).sum(1)).min())
+            if d <= 8.0:
+                return d                           # nothing outside the cells looked at can be nearer
+        return float(np.sqrt(((self.T - p) ** 2).sum(1)).min())
+
+    def score(self, p) -> float:
+        """What the search steers by: lower is nearer the goal."""
+        if self.G is None:
+            return self.distance(p)
+        i, j = int(p[0] // 6), int(p[2] // 6)
+        near = [k for di in (-1, 0, 1) for dj in (-1, 0, 1) for k in self._ggrid.get((i + di, j + dj), ())]
+        if not near:
+            return float((3.0 * np.sqrt(((self.G - p) ** 2).sum(1)) + self.togo).min())
+        return float((3.0 * np.sqrt(((self.G[near] - p) ** 2).sum(1)) + self.togo[near]).min())
+
+    def arrived(self, pos, vel, stats) -> bool:
+        """Rolling on a target place: touching something that carries the ball, at a target place's height and spot."""
+        return bool(stats[5] > 0 and stats[6] >= WALK_NY and self.distance(pos) <= self.reach)
+
+    # ---- the kept states
+    def _key(self, pos, vel, stats):
+        hs = math.hypot(vel[0], vel[2])
+        heading = 8 if hs < 1.5 else int(((math.atan2(vel[2], vel[0]) + math.pi) / (math.pi / 4)) % 8)
+        speed = sum(hs >= e for e in SPEED_EDGES)
+        return (int(pos[0] // CELL), int(pos[1] // CELL), int(pos[2] // CELL), heading, speed, int(stats[5] > 0))
+
+    def _keep(self, pos, vel, omega, parent, act, hold, ticks, stats) -> int:
+        """Keep the state if its cell is new or it got there sooner; returns its index, or -1."""
+        key = self._key(pos, vel, stats)
+        k = self.cell.get(key)
+        if k is not None and self.ticks[self.slot[k]] <= ticks:
+            return -1
+        i = len(self.pos)
+        for a, v in ((self.pos, pos.copy()), (self.vel, vel.copy()), (self.omega, omega.copy()), (self.parent, parent), (self.act, act),
+                     (self.hold, hold), (self.ticks, ticks), (self.hang, int(stats[7]))):
+            a.append(v)
+        if k is None:
+            self.cell[key] = len(self.slot)
+            for a, v in ((self.slot, i), (self.h, self.score(pos)), (self.visits, 0), (self.ground, bool(stats[5] > 0))):
+                a.append(v)
+        else:
+            self.slot[k], self.h[k] = i, self.score(pos)
+        return i
+
+    def add_start(self, s: ph.State):
+        st = np.zeros(8)
+        st[5], st[6] = 1.0, 1.0
+        self._keep(np.array(s.pos, float), np.array(s.vel, float), np.array(s.omega, float), -1, 0, 0, 0, st)
+
+    def _pick(self) -> int:
+        n = len(self.slot)
+        if self.rng.random() < 0.5 and len(self._front) > 0:
+            pool = self._front[self.rng.integers(0, len(self._front), 6)]
+        else:
+            pool = self.rng.integers(0, n, 6)
+        return int(min(pool, key=lambda k: self.visits[k]))
+
+    def run(self, max_expansions: int = 200_000, max_seconds: float = 120.0) -> Crossing:
+        t0 = time.time()
+        self._front = np.zeros(0, np.int64)
+        zero = np.zeros((1, 3))
+        while self.expansions < max_expansions and time.time() - t0 < max_seconds and self.goal < 0:
+            if self.expansions % 256 == 0:           # the front: the cells on the ground nearest the target
+                on = np.flatnonzero(np.array(self.ground))
+                h = np.array(self.h)[on]
+                self._front = on[np.argsort(h)[:max(32, len(h) // 20)]]
+            self.expansions += 1
+            k = self._pick()
+            self.visits[k] += 1
+            i = self.slot[k]
+            a = self.act[i] if (self.parent[i] >= 0 and self.rng.random() < 0.4) else int(self.rng.integers(0, len(PUSHES)))
+            pos, vel, omega, parent, ticks, held, hang = self.pos[i], self.vel[i], self.omega[i], i, self.ticks[i], 0, self.hang[i]
+            for _ in range(HOLDS[int(self.rng.integers(0, len(HOLDS)))]):
+                status, done, pos, vel, omega, stats, _ = self.w.rollout(self.ball, self.P, pos, vel, omega, PUSHES[a:a + 1], [CHUNK], hanging=hang)
+                if status != OK:
+                    break
+                hang = int(stats[7])
+                ticks += done
+                held += done
+                j = self._keep(pos, vel, omega, parent, a, held, ticks, stats)
+                if j < 0:
+                    continue                       # nothing new at this point of the hold; it may still lead somewhere new
+                parent, held = j, 0
+                if self.arrived(pos, vel, stats):
+                    # it has to stay: let it roll on with no keys for half a physics second
+                    s2, _d, p2, _v, _o, st2, _ = self.w.rollout(self.ball, self.P, pos, vel, omega, zero, [33])
+                    if s2 == OK and self.distance(p2) <= self.reach + 2.0:
+                        self.goal = j
+                        break
+        return self._result(time.time() - t0)
+
+    def tape_of(self, i: int):
+        chain = []
+        while self.parent[i] >= 0:
+            chain.append((self.act[i], self.hold[i]))
+            i = self.parent[i]
+        chain.reverse()
+        tape = []
+        for a, n in chain:
+            if tape and tape[-1][0] == a:
+                tape[-1][1] += n
+            else:
+                tape.append([a, n])
+        return i, [(a, n) for a, n in tape]
+
+    def _result(self, seconds: float) -> Crossing:
+        h = np.where(np.array(self.ground), np.array(self.h), np.inf)
+        best = int(h.argmin())
+        if self.goal < 0:
+            return Crossing(False, self.expansions, seconds, len(self.slot), float(h[best]), nearest=self.pos[self.slot[best]].copy())
+        root, tape = self.tape_of(self.goal)
+        out = replay(self.w, self.ball, self.P, ph.State(self.pos[root], self.vel[root], self.omega[root]), tape)
+        if out["ticks"] != self.ticks[self.goal] or np.abs(out["pos"] - self.pos[self.goal]).max() > 1e-6:
+            raise RuntimeError("the key tape does not reproduce the state the search arrived at")
+        return Crossing(True, self.expansions, seconds, len(self.slot), self.distance(self.pos[self.goal]), ticks=out["ticks"], tape=tape,
+                        trace=out["trace"], start=self.pos[root].copy(), end=out["pos"], stats=out["stats"])
+
+
+def replay(world: World, ball: ph.Ball, P: ph.Params, start: ph.State, tape) -> dict:
+    """Run a key tape from a state: the trajectory and what it met."""
+    pushes = np.array([PUSHES[a] for a, _ in tape]).reshape(-1, 3)
+    holds = [n for _, n in tape]
+    status, done, pos, vel, omega, st, trace = world.rollout(ball, P, start.pos, start.vel, start.omega, pushes, holds, trace=True)
+    return dict(status=status, ticks=done, pos=pos, vel=vel, omega=omega, trace=trace,
+                stats=dict(impact_ticks=int(st[0]), edge_ticks=int(st[1]), multi_contact_ticks=int(st[2]), air_ticks=int(st[3]),
+                           top_speed=float(st[4]), touching_at_end=bool(st[5] > 0)))
+
+
+def robustness(search: Search, crossing: Crossing, trials: int = 60, shift: float = 0.25, jitter: int = 2, seed: int = 1) -> dict:
+    """How often the crossing still arrives when the ball starts up to `shift` away (at rest on the same floor) and
+    every key change comes up to `jitter` ticks early or late. A crossing that only works to the tick is a find
+    about the kernel, not about the level."""
+    rng = np.random.default_rng(seed)
+    w, ball, P = search.w, search.ball, search.P
+    ok = 0
+    for _ in range(trials):
+        dx, dz = rng.uniform(-shift, shift, 2)
+        try:
+            s = rest_state(w, crossing.start[0] + dx, crossing.start[2] + dz, crossing.start[1] + 1.0)
+        except ValueError:
+            continue
+        if abs(s.pos[1] - crossing.start[1]) > 0.5:
+            continue                                 # not the same floor any more: counts as a failure
+        pos, vel, omega = s.pos, s.vel, s.omega
+        good = False
+        for a, n in crossing.tape:
+            n = max(1, n + int(rng.integers(-jitter, jitter + 1)))
+            status, _d, pos, vel, omega, st, _ = w.rollout(ball, P, pos, vel, omega, PUSHES[a:a + 1], [n])
+            if status != OK:
+                break
+        else:
+            good = search.arrived(pos, vel, st)
+            if not good:                             # a little early or late: give it the half second the search gives
+                status, _d, pos, vel, omega, st, _ = w.rollout(ball, P, pos, vel, omega, np.zeros((1, 3)), [33])
+                good = status == OK and search.distance(pos) <= search.reach + 2.0 and st[5] > 0
+        ok += good
+    return dict(trials=trials, arrived=int(ok), shift=shift, jitter=jitter)
+
+
+def describe(c: Crossing) -> str:
+    """What kind of crossing it is, from what the trajectory met."""
+    if not c.found:
+        return "not found"
+    s = c.stats
+    if s["air_ticks"] <= 6 and s["impact_ticks"] == 0:
+        return "rolling only"
+    return "with flight or impact"

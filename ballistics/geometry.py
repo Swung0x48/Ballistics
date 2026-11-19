@@ -251,7 +251,7 @@ class Mesh:
                   self.A, self.B, self.C, self._lo_y, self._hi_y, self._stamp, self._tick, out_i, out_d, out_q, out_f)
         c = np.asarray(centre, np.float64)
         res = []
-        for k in np.argsort(out_d[:n]):
+        for k in np.argsort(out_d[:n], kind="stable"):
             d = float(out_d[k])
             nrm = (c - out_q[k]) / d if d > 1e-12 else self.N[out_i[k]]
             f = int(out_f[k])
