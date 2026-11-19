@@ -2,7 +2,8 @@
 
 Input: a Ballance map (.nmo). Output, per map, in the output folder:
 
-* `<name>-mesh.npz`: the static collision triangles (see `ballistics.geometry.Mesh`).
+* `<name>-mesh.npz`: the static collision triangles, and the tube axes fitted to the rails (see
+  `ballistics.geometry.Mesh`, `ballistics.rails`).
 * `<name>-map.json`: spawn, reset points, checkpoints in order, airship, sectors and what is placed in them, and
   the death boxes.
 
@@ -23,6 +24,7 @@ import numpy as np
 
 from .geometry import Mesh
 from .nmo import NmoLevel, read_nmo
+from .rails import fit_tubes
 
 FLOOR_GROUP, RAIL_GROUP, STOPPER_GROUP = "Phys_Floors", "Phys_FloorRails", "Phys_FloorStopper"
 # friction and elasticity the game gives these bodies when it builds a level (read from the running game on level
@@ -68,10 +70,11 @@ def build_mesh(level: NmoLevel, fixture: bool = True) -> Mesh:
         return Mesh(z, z, z, np.zeros(0, np.int64), np.zeros(0, bool), np.zeros((0, 7)), ents, {})
     A, B, C = np.concatenate(A), np.concatenate(B), np.concatenate(C)
     owner, rail = np.concatenate(owner), np.concatenate(rail)
+    tubes, fit = fit_tubes(A[rail], B[rail], C[rail]) if rail.any() else (np.zeros((0, 7)), {})
     meta = dict(source="map file: objects in %s and %s, plus the game's fixed cube at the origin" % (FLOOR_GROUP, RAIL_GROUP),
                 map=Path(level.path).name, triangles=int(len(A)), rail_triangles=int(rail.sum()),
-                stoppers_left_out=len(level.groups.get(STOPPER_GROUP, [])))
-    return Mesh(A, B, C, owner, rail, np.zeros((0, 7)), ents, meta)
+                stoppers_left_out=len(level.groups.get(STOPPER_GROUP, [])), tubes=int(len(tubes)), tube_radii=fit.get("radii", []))
+    return Mesh(A, B, C, owner, rail, tubes, ents, meta)
 
 
 def _number(name: str) -> int:
@@ -127,6 +130,6 @@ def export_map(nmo_path, out_dir, name: str | None = None, bmap=None) -> dict:
     mesh.save(out_dir / (name + "-mesh.npz"))
     info = build_map(level)
     (out_dir / (name + "-map.json")).write_text(json.dumps(info, indent=1, ensure_ascii=False), encoding="utf8")
-    return dict(name=name, objects=len(level.objects), triangles=len(mesh), rail_triangles=int(mesh.rail.sum()), entities=len(mesh.entities),
+    return dict(name=name, objects=len(level.objects), triangles=len(mesh), rail_triangles=int(mesh.rail.sum()), entities=len(mesh.entities), tubes=len(mesh.tubes),
                 checkpoints=len(info["checkpoints"]), reset_points=len(info["reset_points"]), sectors=info["sectors"],
                 placements=len(info["placements"]), airship=info["airship"] is not None)

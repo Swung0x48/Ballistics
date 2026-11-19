@@ -29,8 +29,8 @@ def main(argv=None):
         from .export import export_map
 
         r = export_map(a.map, a.out, a.name, a.bmap)
-        print("%s: %d objects, %d collision triangles (%d on rails) in %d bodies; %d sectors, %d reset points, %d checkpoints, airship %s, %d placements -> %s" % (
-            r["name"], r["objects"], r["triangles"], r["rail_triangles"], r["entities"], r["sectors"], r["reset_points"], r["checkpoints"],
+        print("%s: %d objects, %d collision triangles (%d on rails, %d rail tube segments) in %d bodies; %d sectors, %d reset points, %d checkpoints, airship %s, %d placements -> %s" % (
+            r["name"], r["objects"], r["triangles"], r["rail_triangles"], r["tubes"], r["entities"], r["sectors"], r["reset_points"], r["checkpoints"],
             "found" if r["airship"] else "not found", r["placements"], a.out))
 
 
