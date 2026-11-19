@@ -1,0 +1,10 @@
+# level data and recorded traces are derived from the game and stay local
+data/
+out/
+
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+*.egg-info/
+.ruff_cache/
