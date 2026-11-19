@@ -94,7 +94,8 @@ def test_one_tick_ahead_against_the_engine():
     from ballistics.calibrate import one_tick
     from ballistics.trace import Run
 
-    e = one_tick(Mesh.load(L1_MESH), Run.load(L1_RUN), every=4)
+    m = Mesh.load(L1_MESH)
+    e = one_tick(m.subset(~m.placed), Run.load(L1_RUN), every=4)
     assert np.median(e["air"]) < 1e-4                    # free flight is the engine's own update
     assert np.median(e["floor"]) < 0.02 and np.median(e["rail"]) < 0.03
     assert len(e["floor"]) > 800 and len(e["air"]) > 800

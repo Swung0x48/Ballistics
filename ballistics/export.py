@@ -45,8 +45,46 @@ def _cube(h: float):
     return np.array(A), np.array(B), np.array(C)
 
 
-def build_mesh(level: NmoLevel, fixture: bool = True) -> Mesh:
-    """The fixed bodies the player ball collides with, as triangles in world coordinates."""
+SKIP_TEMPLATES = ("P_Extra_", "P_Trafo_")   # pickups do not hinder; a transformer matters by its trigger distance (see the map file), not its body
+SKIP_PARTS = ("Shadow",)
+
+
+def placed_parts(level: NmoLevel, templates, bmap=None) -> list:
+    """The objects placed on the map, each part at its rest pose: [(placement name, type, sector, part name, world
+    vertices, faces)]. A map only holds a marker for each placed object; its parts come from the game's template
+    file of that type (`<templates>/<type>.nmo`) and sit where the marker's world matrix puts them."""
+    templates = Path(templates)
+    sector_of = {}
+    for g, names in level.groups.items():
+        m = SECTOR.match(g)
+        if m:
+            for n in names:
+                sector_of[n] = int(m.group(1))
+    cache: dict = {}
+    out = []
+    for o in level.objects.values():
+        kinds = [g for g in o.groups if g.startswith("P_")]
+        if not kinds or kinds[0].startswith(SKIP_TEMPLATES):
+            continue
+        kind = kinds[0]
+        if kind not in cache:
+            f = templates / (kind + ".nmo")
+            cache[kind] = read_nmo(f, bmap) if f.is_file() else None
+        if cache[kind] is None:
+            continue
+        m = np.asarray(o.matrix, np.float64)
+        for part in cache[kind].objects.values():
+            if part.vertices is None or part.name.endswith(SKIP_PARTS):
+                continue
+            V = part.world_vertices() @ m[:3, :3] + m[3, :3]
+            out.append((o.name, kind, sector_of.get(o.name), part.name, V, part.faces))
+    return out
+
+
+def build_mesh(level: NmoLevel, fixture: bool = True, templates=None, bmap=None) -> Mesh:
+    """The fixed bodies the player ball collides with, as triangles in world coordinates. With `templates` (the
+    game's folder of placed-object templates), the placed objects' parts are added at their rest poses and marked
+    `placed`: they are what stands on the map before anything is touched, not fixed geometry."""
     A, B, C, owner, rail, ents = [], [], [], [], [], []
     seen = set()
     for group in (FLOOR_GROUP, RAIL_GROUP):
@@ -65,6 +103,14 @@ def build_mesh(level: NmoLevel, fixture: bool = True) -> Mesh:
         ents.append(dict(name=FIXTURE["name"], groups=[], friction=FIXTURE["friction"], elasticity=FIXTURE["elasticity"], fixture=True))
         A.append(a); B.append(b); C.append(c)
         owner.append(np.full(len(a), idx)); rail.append(np.zeros(len(a), bool))
+    n_placed = 0
+    if templates is not None:
+        for place, kind, sector, part, V, F in placed_parts(level, templates, bmap):
+            idx = len(ents)
+            ents.append(dict(name=part, groups=[], placed=True, type=kind, placement=place, sector=sector))
+            A.append(V[F[:, 0]]); B.append(V[F[:, 1]]); C.append(V[F[:, 2]])
+            owner.append(np.full(len(F), idx)); rail.append(np.zeros(len(F), bool))
+            n_placed += 1
     if not A:
         z = np.zeros((0, 3))
         return Mesh(z, z, z, np.zeros(0, np.int64), np.zeros(0, bool), np.zeros((0, 7)), ents, {})
@@ -73,7 +119,8 @@ def build_mesh(level: NmoLevel, fixture: bool = True) -> Mesh:
     tubes, fit = fit_tubes(A[rail], B[rail], C[rail]) if rail.any() else (np.zeros((0, 7)), {})
     meta = dict(source="map file: objects in %s and %s, plus the game's fixed cube at the origin" % (FLOOR_GROUP, RAIL_GROUP),
                 map=Path(level.path).name, triangles=int(len(A)), rail_triangles=int(rail.sum()),
-                stoppers_left_out=len(level.groups.get(STOPPER_GROUP, [])), tubes=int(len(tubes)), tube_radii=fit.get("radii", []))
+                stoppers_left_out=len(level.groups.get(STOPPER_GROUP, [])), tubes=int(len(tubes)), tube_radii=fit.get("radii", []),
+                placed_parts=n_placed)
     return Mesh(A, B, C, owner, rail, tubes, ents, meta)
 
 
@@ -120,16 +167,17 @@ def build_map(level: NmoLevel) -> dict:
                 source="read from the map file's groups by python -m ballistics export")
 
 
-def export_map(nmo_path, out_dir, name: str | None = None, bmap=None) -> dict:
+def export_map(nmo_path, out_dir, name: str | None = None, bmap=None, templates=None) -> dict:
     """Read a map file and write `<name>-mesh.npz` and `<name>-map.json` into out_dir. Returns a summary."""
     level = read_nmo(nmo_path, bmap)
     name = name or Path(nmo_path).stem
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    mesh = build_mesh(level)
+    mesh = build_mesh(level, templates=templates, bmap=bmap)
     mesh.save(out_dir / (name + "-mesh.npz"))
     info = build_map(level)
     (out_dir / (name + "-map.json")).write_text(json.dumps(info, indent=1, ensure_ascii=False), encoding="utf8")
     return dict(name=name, objects=len(level.objects), triangles=len(mesh), rail_triangles=int(mesh.rail.sum()), entities=len(mesh.entities), tubes=len(mesh.tubes),
+                placed_parts=int(mesh.meta.get("placed_parts", 0)), placed_triangles=int(mesh.placed.sum()),
                 checkpoints=len(info["checkpoints"]), reset_points=len(info["reset_points"]), sectors=info["sectors"],
                 placements=len(info["placements"]), airship=info["airship"] is not None)

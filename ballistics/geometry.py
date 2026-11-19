@@ -214,6 +214,15 @@ class Mesh:
         n = np.cross(self.B - self.A, self.C - self.A)
         ln = np.linalg.norm(n, axis=1)
         self.N = n / np.where(ln == 0, 1, ln)[:, None]
+        # per triangle: part of an object placed on the map (a mechanism, a box, a loose ball) at its rest pose,
+        # rather than of the map's own fixed geometry
+        flag = np.array([bool(e.get("placed")) for e in self.entities], bool) if self.entities else np.zeros(0, bool)
+        self.placed = flag[self.owner] if len(flag) and len(self.owner) else np.zeros(len(self.A), bool)
+
+    def subset(self, keep) -> "Mesh":
+        """The mesh with only the triangles where `keep` is true."""
+        keep = np.asarray(keep, bool)
+        return Mesh(self.A[keep], self.B[keep], self.C[keep], self.owner[keep], self.rail[keep], self.tubes, self.entities, dict(self.meta))
 
     def __len__(self):
         return len(self.A)

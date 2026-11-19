@@ -91,7 +91,12 @@ def read_nmo(path, bmap=None, encodings=ENCODINGS) -> NmoLevel:
                     F = np.array([f.to_const() for f in mesh.get_face_indices()], np.int64).reshape(-1, 3)
                 objects[name] = Object3D(name, matrix, V, F)
             for g in r.get_groups():
-                names = [o.get_name() for o in g.get_objects()]
+                names = []
+                for o in g.get_objects():
+                    try:
+                        names.append(o.get_name())
+                    except Exception:          # a member that is not a 3D object of this file (templates list such members)
+                        continue
                 groups[g.get_name()] = names
                 for n in names:
                     if n in objects:

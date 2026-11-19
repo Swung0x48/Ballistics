@@ -70,6 +70,7 @@ def test_the_engine_ball_never_enters_the_exported_triangles():
     """Over a whole recorded level 1 run (20,483 frames) the ball centre is never closer than its radius to the
     exported triangles, and while it rolls it stays about a hundredth above them: the engine's contact margin."""
     m = Mesh.load(L1_MESH)
+    m = m.subset(~m.placed)              # the run pushed the loose objects about; the fixed geometry is what it never entered
     _, names, P = read_trace(L1_TRACE)
     assert set(names) == {"Ball_Wood"}
     gap = m.distances(P)[0] - 2.0
