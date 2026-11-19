@@ -23,9 +23,24 @@ Rolling is not a separate rule. Friction at the contact point turns part of the 
 rolling behaviour falls out: a push accelerates the ball by F / (1.4 m), a slope by 5/7 of gravity along it. Two
 rails, a kerb's edge and a wall are the same rule with other contact points.
 
-Constants: the ball rows are the game's own Physicalize_GameBall table; gravity, the tick and the push are read
-from the game. Which of this agrees with the engine, and how closely, is measured by `ballistics.calibrate`, not
-assumed."""
+Where each rule comes from (MEASURED on engine data, READ from the game, ASSUMED):
+
+* move with the old velocity, then update it: MEASURED, exact in free flight (3,824 ticks, median error 0);
+* damping, gravity 20, the tick of 1/66, the push of force / mass per held key: READ from the game's tables and
+  MEASURED exact in free flight;
+* the push direction per camera quarter (`key_push`): MEASURED exact for quarters 1 and 2 with the key sets UP,
+  UP+LEFT, UP+RIGHT, RIGHT, DOWN+RIGHT (1,609 free-flight ticks); quarters 0 and 3 and the other key sets follow
+  by the same formula but are NOT in the data;
+* the tick's velocity update comes before a bounce: MEASURED (21 single-contact landings: restitution spreads
+  0.2423 to 0.2449 that way, 0.2449 to 0.2659 the other way);
+* rolling as a consequence of friction at the contact point: not a measurement but a derivation; what it predicts
+  is MEASURED to agree (plateau speeds 15.9 and 22.5, one-tick error on the floor 0.008);
+* contact impulses solved one point after another (sequential impulses): ASSUMED as a method; its agreement where
+  several points touch (rails, kerbs, walls) is only as good as the calibration tables say;
+* stone and paper balls: their table rows are READ, but nothing about them has been compared with the engine
+  here, and the paper ball is not a sphere in the game.
+
+Which of this agrees with the engine, and how closely, is measured by `ballistics.calibrate`."""
 from __future__ import annotations
 
 import math
@@ -79,15 +94,17 @@ def key_push(keys: int, quarter: int) -> np.ndarray:
 
 @dataclass
 class Params:
-    """What the hand-written rules leave open; the defaults are the calibrated values."""
-    reach: float = 0.35            # surfaces within radius + reach of the centre are looked at this tick
-    touch: float = 0.02            # a surface with a gap up to this is touched: the ball rests or rolls on it (the engine holds 0.010 to 0.020)
-    floor: float = 0.0099          # the smallest gap seen in the engine; a surface not yet touched may be approached down to it within the tick
-    friction_scale: float = 1.0    # contact friction = ball friction * surface friction * this
-    restitution_scale: float = 1.0  # contact restitution = sqrt(ball elasticity * surface elasticity) * this
-    bounce_speed: float = 1.0      # arriving slower than this along the normal, the ball does not bounce
-    sweep: bool = True             # stop the tick's move where the ball first reaches a surface (as the engine does)
-    iterations: int = 8            # passes of the contact solver when several points touch
+    """What the rules leave open. Each value says where it comes from: MEASURED on engine data (level 1, one wood
+    ball run unless said otherwise), READ from the game, or ASSUMED (not checked; nothing called a proof may rest
+    on an assumed value alone)."""
+    reach: float = 0.35            # ASSUMED: how far ahead surfaces are looked at in a tick; only has to exceed one tick's travel (about 0.3 at speed 20)
+    touch: float = 0.02            # MEASURED: a rolling ball's gap to its surface is 0.010 to 0.020 (57.8% of 20,483 frames), median 0.0141
+    floor: float = 0.0099          # MEASURED: the smallest gap in 20,483 frames, and the gap at which every one of 65 landings was left
+    friction_scale: float = 1.0    # READ: contact friction = ball friction x surface friction (the engine's own contact record: 0.8 x 0.7 = 0.56)
+    restitution_scale: float = 1.0  # MEASURED: restitution = sqrt(ball elasticity x surface elasticity): 0.245 on 65 landings at approach speeds 2 to 21, wood on floor and rail
+    bounce_speed: float = 1.0      # ASSUMED: below this approach speed there is no bounce. The data has no landing slower than 2, so the real threshold is unknown
+    sweep: bool = True             # MEASURED: on a landing tick the ball is left where its gap is 0.010 (all 65 landings)
+    iterations: int = 8            # ASSUMED: passes of the contact solver when several points touch; the engine's own solver is not known
 
 
 @dataclass

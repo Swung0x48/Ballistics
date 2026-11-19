@@ -19,10 +19,13 @@ import numpy as np
 
 from .geometry import BALL_R
 
-THIN_R = 0.3      # tubes thinner than this are guard rails, posts and trim
-POST = 0.9        # a segment steeper than this (|dy| / length) is a post
-PAIR_MIN, PAIR_MAX = 1.5, 5.5   # distance between the two axes of a double rail
-SPACING = 1.0     # lane points are this far apart
+# Where these come from: MEASURED on level 1's rails, or ASSUMED (a working threshold, not checked against anything).
+THIN_R = 0.3      # MEASURED: the game's tubes come in two radii, 0.247 and 0.351; this only has to lie between them
+POST = 0.9        # ASSUMED: a segment steeper than this (|dy| / length) is a post
+PAIR_MIN, PAIR_MAX = 1.5, 5.5   # ASSUMED bounds; MEASURED: every double rail of level 1 has its two axes 3.80 apart
+SPACING = 1.0     # a choice, not a fact: lane points are this far apart
+# That thick tubes are the rails meant to be ridden and thin ones are guard rails and trim is a READING of level 1's
+# layout, not something the game states; a ball can physically ride either.
 
 
 # ---- tubes
