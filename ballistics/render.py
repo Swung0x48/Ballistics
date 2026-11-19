@@ -6,7 +6,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 from .geometry import Mesh
 
-BG, FLOOR, EDGE, RAIL, PLACED, INK, WARN, FLY = (248, 249, 251), (150, 164, 182), (70, 84, 104), (158, 110, 46), (126, 92, 168), (20, 28, 40), (196, 60, 48), (212, 122, 28)
+BG, FLOOR, EDGE, RAIL, PLACED, INK, WARN, FLY, SEEN = (248, 249, 251), (150, 164, 182), (70, 84, 104), (158, 110, 46), (126, 92, 168), (20, 28, 40), (196, 60, 48), (212, 122, 28), (16, 132, 120)
 
 
 def _font(size: int):
@@ -27,7 +27,7 @@ class TopView:
         x0, x1, z0, z1 = (lo[0], hi[0], lo[2], hi[2]) if box is None else box
         self.x0, self.z0 = x0 - margin, z0 - margin
         self.k = width / (x1 - x0 + 2 * margin)
-        self.top = 70
+        self.top = 104
         self.img = Image.new("RGB", (width, int((z1 - z0 + 2 * margin) * self.k) + self.top), BG)
         self.pen = ImageDraw.Draw(self.img, "RGBA")
         y = mesh.A[:, 1]
@@ -70,8 +70,8 @@ class TopView:
         x = 16
         f = _font(20)
         for colour, text in rows:
-            self.pen.line([(x, 60), (x + 36, 60)], fill=colour, width=5)
-            self.pen.text((x + 42, 48), text, fill=INK, font=f)
+            self.pen.line([(x, 80), (x + 36, 80)], fill=colour, width=5)
+            self.pen.text((x + 42, 66), text, fill=INK, font=f)
             x += 60 + int(self.pen.textlength(text, font=f))
 
     def save(self, path):

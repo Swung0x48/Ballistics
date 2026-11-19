@@ -66,3 +66,22 @@ def test_a_placed_object_blocks_and_a_trigger_is_kept_out_of():
     # a transformer trigger in the middle of a road as wide as the trigger: no way past for a ball that must not change
     kept = coarse.build(mesh([(road, False)]), avoid=coarse.keep_out([dict(type="P_Trafo_Stone", position=[15.0, 0.0, 2.5])]))
     assert kept.route(kept.nearest((2, 2, 2.5)), kept.nearest((28, 2, 2.5)))[0] is None
+
+
+def test_a_low_step_is_proposed_upwards_only_and_a_high_one_is_not():
+    def stair(h):
+        riser = [(np.array((10.0, 0.0, 0.0)), np.array((10.0, h, 0.0)), np.array((10.0, h, 8.0))), (np.array((10.0, 0.0, 0.0)), np.array((10.0, h, 8.0)), np.array((10.0, 0.0, 8.0)))]
+        return mesh([(quad(0, 10, 0, 8, 0.0) + riser, False), (quad(10, 20, 0, 8, h), False)])
+    m = stair(1.2)
+    g = coarse.build(m)
+    low, high = g.nearest((3, 2, 4)), g.nearest((17, 3.2, 4))
+    assert g.route(low, high)[0] is None                       # rolling does not get up it
+    assert coarse.add_steps(g, m) > 0
+    path, _ = g.route(low, high)
+    assert [g.edge_kind(u, v) for u, v in zip(path, path[1:])].count("step") == 1
+    back, _ = g.route(high, low)
+    assert back is not None and "step" not in [g.edge_kind(u, v) for u, v in zip(back, back[1:])]      # down is a drop
+    m = stair(coarse.STEP_UP + 0.4)
+    g = coarse.build(m)
+    coarse.add_steps(g, m)
+    assert g.route(g.nearest((3, 2, 4)), g.nearest((17, coarse.STEP_UP + 2.4, 4)))[0] is None

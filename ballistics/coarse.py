@@ -26,6 +26,9 @@ from .geometry import BALL_R, Mesh, _distance as _distance_near, _lower
 STEP = 1.0            # spacing of the rest samples
 WALK_NY = 0.6         # a face this upright (normal y) or more can hold a resting ball
 ROLL_SLOPE = 0.55     # rise over run between neighbouring rest places that still counts as rolling up (READ: a wood ball holds 0.75 from a standstill; kept well inside)
+STEP_UP = 1.5         # MEASURED once: the recorded level 1 run takes a wood ball up a step 1.45 high (floor at -4.15, ramp edge at -2.70) beside the sector 2 ramp, arriving about 15 across with keys held, and the physics kernel replays that passage. Higher steps are not proposed
+SNAP = 0.75           # a sample this close to the border of a floor is moved onto it (just over half the diagonal of a sample cell, so no floor is missed)
+STEP_REACH = 3.6      # below a step the ball is held no closer than its radius to the riser, above it from the edge on; plus the sample spacing and SNAP
 DROP_MAX = 30.0       # a ledge drop no deeper than this is proposed
 TRIGGER_R = 4.3       # READ (game script and wiki): a transformer acts on a ball of another kind within this distance
 
@@ -41,7 +44,14 @@ def _rest_columns(X, Z, top, floor_y, radius, levels, ox, oz, cell, nx, nz, star
             if np.isnan(r):
                 break
             out[k, l] = r
-            y = r - 2.0 * radius - 0.3          # under what it rests on: a ball's height further down at least
+            # go on down through what it touched, in small steps, to where the ball is free again (the next place
+            # can be right below a grazed edge, or a ball's height and more below a floor)
+            y = r - 0.05
+            while y > floor_y:
+                d, _t = _distance_near(X[k], y, Z[k], radius + 1.0, ox, oz, cell, nx, nz, start, items, A, B, C, lo_y, hi_y)
+                if d - radius > 1e-6:
+                    break
+                y -= 0.05
     return out
 
 
@@ -105,6 +115,45 @@ def keep_out(placements) -> list:
     return out
 
 
+_ROUND = np.stack([np.cos(np.arange(36) * math.pi / 18), np.sin(np.arange(36) * math.pi / 18)], axis=1)
+
+
+def _held(mesh: Mesh, contacts) -> bool:
+    """Whether what the ball touches can carry it. Statics, not a tuned rule:
+    * a face no steeper than WALK_NY under it; or
+    * a ridge: an edge or corner where two such faces meet, touched from between them (the push of the contact lies
+      between the two faces' own normals); or
+    * edges and corners on opposite sides (the horizontal parts of their pushes surround the centre).
+    A ball that touches the border of a floor and hangs over it is not held: it would roll off."""
+    if any(q.feature == "face" and q.normal[1] >= WALK_NY for q in contacts):
+        return True
+    groups: list = []
+    for q in contacts:
+        for grp in groups:
+            if np.abs(grp[0].point - q.point).max() < 1e-3:
+                grp.append(q)
+                break
+        else:
+            groups.append([q])
+    for grp in groups:
+        N = mesh.N[[q.triangle for q in grp]]
+        N = N[N[:, 1] >= WALK_NY]                         # the faces at this point that can carry a ball
+        if len(N) < 2:
+            continue
+        C = np.clip(N @ N.T, -1.0, 1.0)
+        a, b = np.unravel_index(int(C.argmin()), C.shape)                 # the two that lean furthest apart
+        if C[a, b] > 1.0 - 1e-9:
+            continue                                      # one flat floor: its border, not a ridge
+        to = np.arccos(np.clip(N[[a, b]] @ grp[0].normal, -1.0, 1.0))
+        if float(to.sum()) <= float(np.arccos(C[a, b])) + 0.02:
+            return True                                   # pushed from between the two faces: on the ridge
+    up = [q.normal for q in contacts if q.normal[1] > 0.05]
+    if len(up) < 2:
+        return False
+    H = np.array([(n[0], n[2]) for n in up])
+    return bool(((H @ _ROUND.T).max(axis=0) >= -1e-3).all())
+
+
 def build(mesh: Mesh, avoid=(), radius: float = BALL_R, log=lambda *a: None) -> Graph:
     """avoid: [(x, y, z, distance)] places the ball must stay out of (see `keep_out`)."""
     loose = np.array([bool(e.get("placed")) and str(e.get("type", "")).startswith(LOOSE) for e in mesh.entities], bool)
@@ -123,24 +172,39 @@ def build(mesh: Mesh, avoid=(), radius: float = BALL_R, log=lambda *a: None) -> 
     ii, jj = np.nonzero(occ)
     X, Z = x0 + ii * STEP, z0 + jj * STEP
     top, bottom = float(mesh._hi_y.max()) + radius + 1.0, float(mesh._lo_y.min()) - 5.0
-    rest = _rest_columns(X.astype(np.float64), Z.astype(np.float64), top, bottom, radius, 4, *mesh._args())
+    rest = _rest_columns(X.astype(np.float64), Z.astype(np.float64), top, bottom, radius, 6, *mesh._args())
     pos, cell = [], {}
+    snapped = 0
     for k in range(len(X)):
         for l in range(rest.shape[1]):
             y = rest[k, l]
             if np.isnan(y):
                 break
-            c = mesh.contacts((X[k], y, Z[k]), radius, 0.02)
-            if not c or mesh.rail[c[0].triangle] or max(q.normal[1] for q in c) < WALK_NY:
-                continue                                  # resting on a rail from the side, on a wall top's edge only, ...
+            x, z = float(X[k]), float(Z[k])
+            c = mesh.contacts((x, y, z), radius, 0.02)
+            if not c or c[0].gap < -0.02 or mesh.rail[c[0].triangle]:
+                continue                                  # nothing there, squeezed in, or on a rail from the side
+            if not _held(mesh, c):
+                # hanging over the border of a floor. A floor narrower than the sample spacing, or one that runs
+                # askew to it, would be missed altogether, so a sample within SNAP of a border moves onto the border
+                q = max(c, key=lambda q: q.normal[1])
+                h = math.hypot(q.normal[0], q.normal[2])
+                if h * radius > SNAP or h < 1e-9:
+                    continue
+                x, z = float(q.point[0] - 0.02 * q.normal[0] / h), float(q.point[2] - 0.02 * q.normal[2] / h)
+                y = mesh.rest(x, z, y + 0.5)
+                c = mesh.contacts((x, y, z), radius, 0.02)
+                if not c or c[0].gap < -0.02 or mesh.rail[c[0].triangle] or not _held(mesh, c):
+                    continue
+                snapped += 1
             if any(mesh.placed[q.triangle] for q in c):
                 continue                                  # on or against a placed object: not a place to count on
-            if any(math.hypot(X[k] - t[0], Z[k] - t[2]) <= t[3] and abs(y - 2.0 - t[1]) <= 5.0 for t in avoid):
+            if any(math.hypot(x - t[0], z - t[2]) <= t[3] and abs(y - 2.0 - t[1]) <= 5.0 for t in avoid):
                 continue
             cell.setdefault((int(ii[k]), int(jj[k])), []).append(len(pos))
-            pos.append((X[k], y, Z[k]))
+            pos.append((x, y, z))
     n_floor = len(pos)
-    log("rest places: %d over %d columns" % (n_floor, len(X)))
+    log("rest places: %d over %d columns, %d of them moved onto a border" % (n_floor, len(X), snapped))
     lns = rails.lanes(mesh.tubes, radius)
     kind, lane_of, chains = [0] * n_floor, [-1] * n_floor, []
     for li, l in enumerate(lns):
@@ -161,19 +225,24 @@ def build(mesh: Mesh, avoid=(), radius: float = BALL_R, log=lambda *a: None) -> 
     # rolling and ledge drops between neighbouring rest places
     edge_node = np.zeros(len(P), bool)
     for (i, j), ids in cell.items():
-        for di, dj in ((1, 0), (0, 1), (1, 1), (1, -1)):
-            other = cell.get((i + di, j + dj))
+        for di, dj in ((1, 0), (0, 1), (1, 1), (1, -1), (-1, 0), (0, -1), (-1, -1), (-1, 1)):
             run = STEP * math.hypot(di, dj)
-            for a_ids, b_ids in ((ids, other or ()), (other or (), ids)):
-                for u in a_ids:
-                    level = [v for v in b_ids if abs(P[v, 1] - P[u, 1]) <= ROLL_SLOPE * run]
-                    for v in level:
-                        if a_ids is ids:
-                            link(u, v, "roll", both=True)
-                    if not level:                         # no floor at this height next door: the ball drops onto the first one below
-                        under = [v for v in b_ids if -DROP_MAX <= P[v, 1] - P[u, 1] < 0]
-                        if under:
-                            link(u, max(under, key=lambda v: P[v, 1]), "drop")
+            for u in ids:
+                level = [v for v in cell.get((i + di, j + dj), ()) if abs(P[v, 1] - P[u, 1]) <= ROLL_SLOPE * run]
+                for v in level:
+                    link(u, v, "roll")
+                if level:
+                    continue
+                # no floor at this height next door: the ball drops onto the first floor below, which begins up to a
+                # ball's width further out (next to a wall the ball cannot be held closer than its radius)
+                for k in (1, 2, 3):
+                    there = cell.get((i + k * di, j + k * dj), ())
+                    if any(abs(P[v, 1] - P[u, 1]) <= ROLL_SLOPE * run * k for v in there):
+                        break                             # floor at this height again: a slot, not a ledge
+                    under = [v for v in there if -DROP_MAX <= P[v, 1] - P[u, 1] < 0]
+                    if under:
+                        link(u, max(under, key=lambda v: P[v, 1]), "drop")
+                        break
         for u in ids:                                    # a rest place with a missing neighbour is at an edge
             if any((i + di, j + dj) not in cell for di in (-1, 0, 1) for dj in (-1, 0, 1)):
                 edge_node[u] = True
@@ -209,6 +278,41 @@ def build(mesh: Mesh, avoid=(), radius: float = BALL_R, log=lambda *a: None) -> 
 
 
 # ---- flights
+def add_steps(g: Graph, mesh: Mesh, radius: float = BALL_R, log=lambda *a: None) -> int:
+    """Step edges: from a rest place up to one within STEP_REACH and at most STEP_UP higher, where rolling does
+    not link them and nothing stands higher than the upper floor in between. A step is taken with speed; how much,
+    and whether the ball can have it there, is for the fine level."""
+    n = g.info["rest_places"]
+    F = g.pos[:n]
+    grid: dict = {}
+    for k in range(n):
+        grid.setdefault((int(round(F[k, 0] / STEP)), int(round(F[k, 2] / STEP))), []).append(k)
+    loose = np.array([bool(e.get("placed")) and str(e.get("type", "")).startswith(LOOSE) for e in mesh.entities], bool)
+    solid = mesh.subset(~loose[mesh.owner]) if loose.any() else mesh
+    added = 0
+    for (i, j), ids in grid.items():
+        for di in range(-4, 5):
+            for dj in range(-4, 5):
+                other = grid.get((i + di, j + dj))
+                if not other or (di, dj) == (0, 0):
+                    continue
+                run = STEP * math.hypot(di, dj)
+                for u in ids:
+                    have = {e[0] for e in g.adj[u]}
+                    for v in other:
+                        rise = F[v, 1] - F[u, 1]
+                        if v in have or not (ROLL_SLOPE * run < rise <= STEP_UP) or math.hypot(F[v, 0] - F[u, 0], F[v, 2] - F[u, 2]) > STEP_REACH:
+                            continue
+                        top = F[v, 1] + 0.05
+                        if any(solid.distance((F[u, 0] + f * (F[v, 0] - F[u, 0]), top, F[u, 2] + f * (F[v, 2] - F[u, 2])), radius + 1.0)[0] < radius - 0.05
+                               for f in (0.25, 0.5, 0.75)):
+                            continue                          # a kerb, a wall or a placed object stands in the way
+                        g.adj[u].append((v, run + 10.0, "step"))
+                        added += 1
+    log("steps: %d step edges of up to %.1f" % (added, STEP_UP))
+    return added
+
+
 LAUNCH_SPEEDS = (10.0, 15.9, 22.5)      # READ: 15.9 and 22.5 are the wood ball's rolling plateaus with one and two keys; 10 is a working value
 FLIGHT_TICKS = 220
 AIR_DAMP = 1.0 - 0.9 / 66.0             # READ: the wood ball's linear damping per tick
