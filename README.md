@@ -69,6 +69,19 @@ python -m ballistics calibrate --mesh data/Level_01-mesh.npz --run data/runs/<�
 | [docs/solver.md](docs/solver.md) | 求解器怎么工作，有哪些界限和不足 |
 | [docs/level-1.md](docs/level-1.md) | 第 1 关的结果 |
 | [docs/files.md](docs/files.md) | 输入的地图文件、导出的文件和路线文件的格式 |
+| [docs/design.md](docs/design.md) | 思路：每个决定的理由、放弃过的做法、还没解决的问题 |
+
+关于游戏本身（和这个工具无关的事实，每条标了依据）：
+
+| 文件 | 内容 |
+|---|---|
+| [docs/game/reading-game-data.md](docs/game/reading-game-data.md) | 游戏数据在哪、怎么读：地图文件、脚本、数据表、引擎轨迹 |
+| [docs/game/scripts.md](docs/game/scripts.md) | 有哪些脚本和数据表，各管什么 |
+| [docs/game/physics.md](docs/game/physics.md) | 引擎的物理：时间、按键、三种球、极速、坡和台阶、接触 |
+| [docs/game/rules.md](docs/game/rules.md) | 关卡规则：小节、盘点、死亡复位、变球器、成绩 |
+| [docs/game/mechanisms.md](docs/game/mechanisms.md) | 各种机关的参数和行为 |
+| [docs/game/levels.md](docs/game/levels.md) | 每关的机关，第 1 关的细节和已知走法 |
+| [docs/game/terminology.md](docs/game/terminology.md) | 术语 |
 
 ## 本地数据
 
