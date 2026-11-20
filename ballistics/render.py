@@ -168,101 +168,137 @@ class TopView:
         self.img.save(path)
 
 
-def draw_staged(mesh: Mesh, res: dict, path, title: str | None = None, width: int = 2000):
-    """Top view of one sector solved coarse-first: the stretches the plain follower rolled (thin), the crossings the
-    fine level searched (thick, coloured by what the ball is doing), a gap where a break stayed unresolved, and the
-    breaks by number."""
-    GROUND, RAILC, CROSS = (20, 28, 40), (40, 90, 200), (30, 140, 70)
-    pts = [sg["trace"][:, :3] for sg in res["segments"] if sg["type"] != "assumed" and len(sg["trace"])]
-    pts += [np.array([b["near"], b["far"]]) for b in res["breaks"]] + [np.array([res["start"], res["goal"]])]
-    A = np.concatenate(pts)
-    box = (A[:, 0].min() - 8, A[:, 0].max() + 8, A[:, 2].min() - 8, A[:, 2].max() + 8)
-    state = "到达目标" if res["solved"] else "不通，留有断点 " + "、".join(res["unresolved"])
-    v = TopView(mesh, box=box, width=width, title=title or "第 %d 小节：先粗后细（%s，轨迹 %.1f 游戏秒）；线上的数字是水平速度" % (res["sector"], state, res["ticks"] / 132), margin=2.0)
-    v.legend([(GROUND, "跟随器沿粗层通路滚（细线）"), (RAILC, "在钢轨上"), (CROSS, "细搜出来的过断点段（粗线）"), (FLY, "腾空"), ((170, 175, 185), "断点之后（淡色，不算到达）")])
-    after = False                                          # past a break that was left: drawn faint, it does not count as reached
-    for sg in res["segments"]:
-        if sg["type"] == "assumed":
-            after = True
-            continue
-        if not len(sg["trace"]):
-            continue
-        tr = sg["trace"]
-        cross = sg["type"] == "cross"
-        kind = np.where(tr[:, 3] == 0, 0, np.where(tr[:, 8] > 0, 1, 4))
-        colour = {0: FLY, 1: RAILC, 4: CROSS if cross else GROUND}
-        i = 0
-        while i < len(tr) - 1:
-            j = i
-            while j + 1 < len(tr) - 1 and kind[j + 1] == kind[i]:
-                j += 1
-            c = colour[int(kind[i])]
-            if after:                                      # an opaque pale tint: see-through strokes pile up where they overlap
-                c = tuple(int(0.3 * a + 0.7 * b) for a, b in zip(c, BG))
-            v.line(tr[i:j + 2, :3], c, 7 if cross else 3)
-            i = j + 1
-    v.speed_labels([None if sg["type"] == "assumed" else sg["trace"] for sg in res["segments"]], every=90.0)
-    for b in res["breaks"]:
-        if b["status"] == "crossed":
-            v.dot(b["near"], "%s 已过" % b["no"], CROSS, 8, 22)
-        elif b["status"] == "unresolved":
-            w = b.get("would_pass")
-            why = "" if not w else "（去掉道具球才能过）"
-            v.dot(b["near"], "断点 %s 未过%s" % (b["no"], why), WARN, 10, 24)
-            v.dot(b["far"], "", WARN, 6)
-        elif b["status"] == "rolled":
-            v.dot(b["near"], "", (120, 130, 140), 4)
-    v.dot(res["start"], "起点")
-    v.dot(res["goal"], "目标")
-    v.save(path)
+SPEED_TOP = 20.0                # speeds are coloured on a fixed scale from 0 to this (faster is drawn as this)
+SPEED_RAMP = [(0xfb, 0xd2, 0xb9), (0xf3, 0x9a, 0x6a), (0xeb, 0x68, 0x34), (0xb8, 0x45, 0x1a), (0x7d, 0x2a, 0x0c), (0x4a, 0x17, 0x05)]      # one hue (not the map's), light slow to dark fast
+PATTERN = {"floor": None, "rail": (18.0, 8.0), "air": (3.0, 8.0)}       # how the stroke is broken, in pixels: drawn, skipped
 
 
-def draw_level(mesh: Mesh, results: list, path, names=None, anchors=None, title: str | None = None, width: int = 2400):
-    """The whole level from above, coloured by height, with the route of every sector on it: thin where the plain
-    follower rolled, thick where the fine level searched a crossing, dashed in the air, faint past a break that was
-    left (that part does not count as reached). Breaks that were left are marked and named."""
-    v = TopView(mesh, width=width, title=title or "整关俯视图（按路面高度上色）和现在的线路；线上的数字是水平速度", margin=12.0, height=True)
-    f = _font(20)
-    x = 16
-    for kind, text in (("thin", "跟随器沿粗层通路滚"), ("thick", "细搜出来的过断点段"), ("dash", "腾空"), ("faint", "留下的断点之后（不算到达）")):
-        y = 80
-        if kind == "dash":
-            for k in range(3):
-                v.pen.line([(x + 14 * k, y), (x + 14 * k + 8, y)], fill=INK, width=4)
+def speed_colour(v: float):
+    f = min(max(float(v) / SPEED_TOP, 0.0), 1.0) * (len(SPEED_RAMP) - 1)
+    k = min(int(f), len(SPEED_RAMP) - 2)
+    a, b, t = SPEED_RAMP[k], SPEED_RAMP[k + 1], f - k
+    return tuple(int(round(a[c] + (b[c] - a[c]) * t)) for c in range(3))
+
+
+def _states(tr) -> np.ndarray:
+    """Per tick: 0 on the floor, 1 on a rail, 2 in the air; runs shorter than 10 ticks take the state before them
+    (a rolling ball loses touch for a tick or two all the time)."""
+    st = np.where(tr[:, 3] == 0, 2, np.where(tr[:, 8] > 0, 1, 0))
+    i = 0
+    while i < len(st):
+        j = i
+        while j + 1 < len(st) and st[j + 1] == st[i]:
+            j += 1
+        if j - i + 1 < 10 and i > 0:
+            st[i:j + 1] = st[i - 1]
+        i = j + 1
+    return st
+
+
+def _speeds(tr) -> np.ndarray:
+    """Horizontal speed per tick, over the last 8 ticks (one tick's stop at a landing does not show)."""
+    out = np.zeros(len(tr))
+    k = np.arange(len(tr))
+    b = np.maximum(k - 8, 0)
+    out = np.hypot(tr[k, 0] - tr[b, 0], tr[k, 2] - tr[b, 2]) * 66.0 / np.maximum(k - b, 1)
+    return out
+
+
+def draw_route(v: "TopView", tr, width: int, faint: bool = False):
+    """One stretch of a route: coloured by the ball's speed, solid on the floor, long dashes on a rail, dots in the
+    air; in a pale grey when it lies past a break that was left."""
+    if len(tr) < 2:
+        return
+    q = np.array([v.P(p[0], p[2]) for p in tr[:, :3]])
+    st, sp = _states(tr), _speeds(tr)
+    names = {0: "floor", 1: "rail", 2: "air"}
+    pieces = []                                            # (pixel points, speeds) of every drawn piece
+    i = 0
+    while i < len(tr) - 1:
+        j = i
+        while j + 1 < len(tr) - 1 and st[j + 1] == st[i]:
+            j += 1
+        pts, spd = q[i:j + 2], sp[i:j + 2]
+        pat = PATTERN[names[int(st[i])]]
+        if pat is None:
+            pieces.append((pts, spd))
         else:
-            v.pen.line([(x, y), (x + 36, y)], fill=FAINT if kind == "faint" else INK, width=8 if kind == "thick" else 4)
-        v.pen.text((x + 44, y - 14), text, fill=INK2, font=f)
-        x += 70 + int(v.pen.textlength(text, font=f))
-    v.pen.ellipse((x, 70, x + 20, 90), outline=CRITICAL, width=5)
-    v.pen.text((x + 28, 66), "留下的断点", fill=INK2, font=f)
-    x += 60 + int(v.pen.textlength("留下的断点", font=f))
-    v.pen.rectangle((x, 72, x + 18, 90), fill=NEUTRAL + (200,))
-    v.pen.text((x + 26, 66), "摆放的东西（机关、箱子、道具球）", fill=INK2, font=f)
+            d = np.r_[0.0, np.cumsum(np.hypot(*(pts[1:] - pts[:-1]).T))]
+            on, off = pat
+            t = 0.0
+            while t < d[-1]:
+                a, b = t, min(t + on, d[-1])
+                xs = np.r_[a, d[(d > a) & (d < b)], b]
+                pieces.append((np.c_[np.interp(xs, d, pts[:, 0]), np.interp(xs, d, pts[:, 1])], np.interp(xs, d, spd)))
+                t += on + off
+        i = j + 1
+    for pts, _spd in pieces:                               # the ring of the surface colour first, under every piece
+        v.pen.line([tuple(x) for x in pts], fill=SURFACE, width=width + 4, joint="curve")
+        if len(pts) == 2 and np.hypot(*(pts[1] - pts[0])) < width:      # a dot
+            c = pts.mean(0)
+            v.pen.ellipse((c[0] - width / 2 - 2, c[1] - width / 2 - 2, c[0] + width / 2 + 2, c[1] + width / 2 + 2), fill=SURFACE)
+    for pts, spd in pieces:
+        for k in range(0, len(pts) - 1, 6):                # short runs, each in the colour of its own speed
+            run = pts[k:k + 7]
+            colour = FAINT if faint else speed_colour(float(spd[k:k + 7].mean()))
+            v.pen.line([tuple(x) for x in run], fill=colour, width=width, joint="curve")
+        if len(pts) == 2 and np.hypot(*(pts[1] - pts[0])) < width:
+            c = pts.mean(0)
+            v.pen.ellipse((c[0] - width / 2, c[1] - width / 2, c[0] + width / 2, c[1] + width / 2), fill=FAINT if faint else speed_colour(float(spd.mean())))
+
+
+def route_key(v: "TopView", x: int, y: int):
+    """What the line styles and the line colour mean, drawn from (x, y) to the right; returns the x after it."""
+    f = _font(20)
+    mid = speed_colour(10.0)
+    for name, text in (("floor", "在路面上"), ("rail", "在钢轨上"), ("air", "腾空")):
+        pat = PATTERN[name]
+        if pat is None:
+            v.pen.line([(x, y), (x + 54, y)], fill=mid, width=5)
+        else:
+            t = 0.0
+            while t < 54:
+                v.pen.line([(x + t, y), (x + min(t + pat[0], 54), y)], fill=mid, width=5)
+                t += pat[0] + pat[1]
+        v.pen.text((x + 62, y - 14), text, fill=INK2, font=f)
+        x += 92 + int(v.pen.textlength(text, font=f))
+    v.pen.line([(x, y), (x + 40, y)], fill=mid, width=5)
+    v.pen.text((x + 46, y - 14), "跟随器", fill=INK2, font=f)
+    x += 76 + int(v.pen.textlength("跟随器", font=f))
+    v.pen.line([(x, y), (x + 40, y)], fill=mid, width=10)
+    v.pen.text((x + 46, y - 14), "细搜出来的", fill=INK2, font=f)
+    x += 76 + int(v.pen.textlength("细搜出来的", font=f))
+    v.pen.line([(x, y), (x + 40, y)], fill=FAINT, width=5)
+    v.pen.text((x + 46, y - 14), "留下的断点之后（不算到达）", fill=INK2, font=f)
+    return x + 76 + int(v.pen.textlength("留下的断点之后（不算到达）", font=f))
+
+
+def speed_key(v: "TopView", x: int, y: int, w: int = 420, h: int = 22):
+    for k in range(w):
+        v.pen.line([(x + k, y), (x + k, y + h)], fill=speed_colour(SPEED_TOP * k / (w - 1)))
+    v.pen.rectangle((x, y, x + w, y + h), outline=MUTED)
+    f = _font(20)
+    v.pen.text((x, y - 28), "线的颜色：球的水平速度", fill=INK2, font=f)
+    for frac, t in ((0.0, "0"), (0.5, "%.0f" % (SPEED_TOP / 2)), (1.0, "%.0f 以上" % SPEED_TOP)):
+        v.pen.line([(x + frac * w, y + h), (x + frac * w, y + h + 6)], fill=MUTED)
+        v.pen.text((x + frac * w - v.pen.textlength(t, font=f) / 2, y + h + 8), t, fill=INK2, font=f)
+
+
+def _routes(v: "TopView", results, label_every: float, label_size: int, numbers: bool):
+    """Every sector's route, its speed labels, and its breaks."""
     for res in results:
         after = False
         for sg in res["segments"]:
             if sg["type"] == "assumed":
                 after = True
                 continue
-            tr = sg["trace"]
-            if not len(tr):
-                continue
-            air = tr[:, 3] == 0
-            wide = 9 if sg["type"] == "cross" else 4
-            i = 0
-            while i < len(tr) - 1:
-                j = i
-                while j + 1 < len(tr) - 1 and air[j + 1] == air[i]:
-                    j += 1
-                flying = bool(air[i]) and j - i >= 10
-                v.halo_line(tr[i:j + 2, :3], FAINT if after else INK, wide, dash=10.0 if flying else 0.0)
-                i = j + 1
+            draw_route(v, sg["trace"], 10 if sg["type"] == "cross" else 5, faint=after)
     for res in results:
-        v.speed_labels([None if sg["type"] == "assumed" else sg["trace"] for sg in res["segments"]], every=110.0, size=18)
+        v.speed_labels([None if sg["type"] == "assumed" else sg["trace"] for sg in res["segments"]], every=label_every, size=label_size)
     for res in results:
         for b in res["breaks"]:
+            px, py = v.P(b["near"][0], b["near"][2])
             if b["status"] == "unresolved":
-                px, py = v.P(b["near"][0], b["near"][2])
                 v.pen.ellipse((px - 16, py - 16, px + 16, py + 16), fill=SURFACE, outline=CRITICAL, width=6)
                 why = "（去掉道具球才能过）" if b.get("would_pass") else ""
                 text, ft = "第 %d 小节 断点 %s 未过%s" % (res["sector"], b["no"], why), _font(24)
@@ -271,10 +307,47 @@ def draw_level(mesh: Mesh, results: list, path, names=None, anchors=None, title:
                 v.pen.rectangle((tx - 8, ty - 4, tx + tw + 8, ty + 34), fill=SURFACE + (235,), outline=CRITICAL)
                 v.pen.text((tx, ty), text, fill=INK, font=ft)
                 v.pen.line([(tx + tw + 8, ty + 34), (px - 12, py - 12)], fill=CRITICAL, width=2)
+            elif b["status"] == "crossed" and numbers:
+                ft = _font(20)
+                tw = int(v.pen.textlength(b["no"], font=ft))
+                v.pen.rectangle((px + 10, py + 8, px + 18 + tw, py + 34), fill=SURFACE + (235,), outline=INK2)
+                v.pen.text((px + 14, py + 8), b["no"], fill=INK, font=ft)
+                v.pen.ellipse((px - 6, py - 6, px + 6, py + 6), fill=SURFACE, outline=INK, width=3)
+
+
+def draw_staged(mesh: Mesh, res: dict, path, title: str | None = None, width: int = 2200):
+    """Top view of one sector solved coarse-first, coloured by height, with its route: the colour of the line is the
+    ball's speed, its style what carries the ball (solid on the floor, dashes on a rail, dots in the air), its
+    width who made it (thin: the plain follower; thick: the fine search). A gap where a break was left, and pale
+    grey after it. The breaks that were crossed carry their numbers."""
+    pts = [sg["trace"][:, :3] for sg in res["segments"] if sg["type"] != "assumed" and len(sg["trace"])]
+    pts += [np.array([b["near"], b["far"]]) for b in res["breaks"]] + [np.array([res["start"], res["goal"]])]
+    A = np.concatenate(pts)
+    box = (A[:, 0].min() - 8, A[:, 0].max() + 8, A[:, 2].min() - 8, A[:, 2].max() + 8)
+    state = "通" if res["solved"] else "不通，留有断点 " + "、".join(res["unresolved"])
+    v = TopView(mesh, box=box, width=width, title=title or "第 %d 小节（%s，轨迹 %.1f 游戏秒）" % (res["sector"], state, res["ticks"] / 132), margin=2.0, height=True)
+    route_key(v, 16, 82)
+    _routes(v, [res], 90.0, 20, True)
+    for name, p in (("起点", res["start"]), ("目标", res["goal"])):
+        px, py = v.P(p[0], p[2])
+        v.pen.ellipse((px - 10, py - 10, px + 10, py + 10), fill=INK, outline=SURFACE, width=3)
+        v.pen.text((px + 14, py + 4), name, fill=INK, font=_font(24))
+    speed_key(v, v.img.size[0] - 1010, v.img.size[1] - 70)
+    v.height_key(v.img.size[0] - 480, v.img.size[1] - 70)
+    v.save(path)
+
+
+def draw_level(mesh: Mesh, results: list, path, names=None, anchors=None, title: str | None = None, width: int = 2400):
+    """The whole level from above, coloured by height, with the route of every sector on it, drawn as in
+    `draw_staged`. Breaks that were left are marked and named."""
+    v = TopView(mesh, width=width, title=title or "整关俯视图和现在的线路", margin=12.0, height=True)
+    route_key(v, 16, 82)
+    _routes(v, results, 110.0, 18, False)
     if anchors is not None:
         for n, p in zip(names, anchors):
             px, py = v.P(p[0], p[2])
             v.pen.ellipse((px - 10, py - 10, px + 10, py + 10), fill=INK, outline=SURFACE, width=3)
             v.pen.text((px + 14, py + 4), n, fill=INK, font=_font(24))
+    speed_key(v, v.img.size[0] - 1010, v.img.size[1] - 90)
     v.height_key(v.img.size[0] - 480, v.img.size[1] - 90)
     v.save(path)
