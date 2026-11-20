@@ -9,6 +9,7 @@ from .geometry import Mesh
 BG, FLOOR, EDGE, RAIL, PLACED, INK, WARN, FLY, SEEN = (248, 249, 251), (150, 164, 182), (70, 84, 104), (158, 110, 46), (126, 92, 168), (20, 28, 40), (196, 60, 48), (212, 122, 28), (16, 132, 120)
 
 
+FAINT = (168, 170, 176)        # a route past a break that was left
 SURFACE, INK2, MUTED, NEUTRAL, RAIL_GREY, CRITICAL = (252, 252, 251), (82, 81, 78), (150, 149, 144), (82, 81, 78), (128, 127, 122), (208, 59, 59)
 RAMP = [(0xcd, 0xe2, 0xfb), (0xb7, 0xd3, 0xf6), (0x9e, 0xc5, 0xf4), (0x86, 0xb6, 0xef), (0x6d, 0xa7, 0xec), (0x55, 0x98, 0xe7), (0x39, 0x87, 0xe5),
         (0x2a, 0x78, 0xd6), (0x25, 0x6a, 0xbf), (0x1c, 0x5c, 0xab), (0x18, 0x4f, 0x95), (0x10, 0x42, 0x81), (0x0d, 0x36, 0x6b)]      # one hue, light to dark
@@ -165,7 +166,10 @@ def draw_staged(mesh: Mesh, res: dict, path, title: str | None = None, width: in
             j = i
             while j + 1 < len(tr) - 1 and kind[j + 1] == kind[i]:
                 j += 1
-            v.line(tr[i:j + 2, :3], colour[int(kind[i])] + ((90,) if after else ()), 7 if cross else 3)
+            c = colour[int(kind[i])]
+            if after:                                      # an opaque pale tint: see-through strokes pile up where they overlap
+                c = tuple(int(0.3 * a + 0.7 * b) for a, b in zip(c, BG))
+            v.line(tr[i:j + 2, :3], c, 7 if cross else 3)
             i = j + 1
     for b in res["breaks"]:
         if b["status"] == "crossed":
@@ -195,7 +199,7 @@ def draw_level(mesh: Mesh, results: list, path, names=None, anchors=None, title:
             for k in range(3):
                 v.pen.line([(x + 14 * k, y), (x + 14 * k + 8, y)], fill=INK, width=4)
         else:
-            v.pen.line([(x, y), (x + 36, y)], fill=INK + ((90,) if kind == "faint" else (255,)), width=8 if kind == "thick" else 4)
+            v.pen.line([(x, y), (x + 36, y)], fill=FAINT if kind == "faint" else INK, width=8 if kind == "thick" else 4)
         v.pen.text((x + 44, y - 14), text, fill=INK2, font=f)
         x += 70 + int(v.pen.textlength(text, font=f))
     v.pen.ellipse((x, 70, x + 20, 90), outline=CRITICAL, width=5)
@@ -220,7 +224,7 @@ def draw_level(mesh: Mesh, results: list, path, names=None, anchors=None, title:
                 while j + 1 < len(tr) - 1 and air[j + 1] == air[i]:
                     j += 1
                 flying = bool(air[i]) and j - i >= 10
-                v.halo_line(tr[i:j + 2, :3], INK, wide, dash=10.0 if flying else 0.0, alpha=90 if after else 255)
+                v.halo_line(tr[i:j + 2, :3], FAINT if after else INK, wide, dash=10.0 if flying else 0.0)
                 i = j + 1
     for res in results:
         for b in res["breaks"]:
