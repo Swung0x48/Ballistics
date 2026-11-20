@@ -122,7 +122,13 @@ def add_launches(g: Graph, world: World, ball: ph.Ball = ph.WOOD, log=lambda *a:
                 continue                                   # it only hopped: rolling covers that
             ticks = j + 1
             if (w, v) not in best or ticks < best[(w, v)]["ticks"]:
+                way, last = [], None                       # where the ball was carried on the way: the run-up, then the landing
+                for q in tr2[:j + 1][tr2[:j + 1, 7] > 0, :3]:
+                    if last is None or np.linalg.norm(q - last) >= 1.0:
+                        way.append(q)
+                        last = q
                 best[(w, v)] = dict(tape=[(a, n1), (b, ticks - n1)], ticks=ticks, site=u, runup=L, launch_speed=float(tr2[n1, 6]),
+                                    way=np.array(way, np.float32),
                                     land_speed=float(tr2[j, 6]), across=float(math.hypot(tr2[j, 0] - tr2[n1, 0], tr2[j, 2] - tr2[n1, 2])),
                                     down=float(tr2[n1, 1] - tr2[j, 1]), keys_in_air=bool(b))
     g.info["launches"] = best

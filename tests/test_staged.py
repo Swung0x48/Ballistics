@@ -48,16 +48,20 @@ def test_a_gap_is_one_break_and_only_there_is_searched():
     assert rolled > sum(len(sg["trace"]) for sg in res["segments"] if sg["type"] == "cross")          # most of the way is plain rolling
 
 
-def test_a_fall_on_the_plan_is_a_launch_with_its_run_up_not_a_search():
+def test_a_fall_on_the_plan_is_taken_with_the_speed_the_ball_has():
     m, info, g = level([quad(0, 30, 0, 8, 0.0), quad(36, 70, 0, 8, -4.0)], (62.0, -2.0, 4.0))
     res = staged.solve_sector(m, info, g, 1, tries=20_000, log=lambda *a: None)
     assert res["solved"] and res["replays"]
-    kinds = [sg["type"] for sg in res["segments"]]
-    assert kinds.count("launch") == 1 and "cross" not in kinds          # rolled to the run-up start, launched, rolled on
-    L = res["launches"][0]
-    assert L["speed"] > 6.0 and L["across"] > 5.0 and abs(L["speed"] - L["planned_speed"]) < 2.5
-    before = res["segments"][kinds.index("launch") - 1]
-    assert np.hypot(before["end"][1][0], before["end"][1][2]) <= 0.7     # it starts the run-up at rest, as the edge was made
+    assert [sg["type"] for sg in res["segments"]] == ["follow"]          # one stretch: no search, and no stop before the ledge
+    tr = res["segments"][0]["trace"]
+    air = np.flatnonzero(tr[:, 3] == 0)
+    off = int(air[np.flatnonzero(np.diff(air, prepend=-9) > 1)][np.argmax([np.sum(tr[a:a + 20, 3] == 0) for a in air[np.flatnonzero(np.diff(air, prepend=-9) > 1)]])])
+    before = np.hypot(np.diff(tr[off - 66:off, 0]), np.diff(tr[off - 66:off, 2])) * 66.0
+    assert before.min() > 3.0 and before[-1] > 8.0                       # it rolled up to the ledge and off it, never slowing to a halt
+    f = max(res["flights"], key=lambda f: f["down"])
+    assert f["down"] > 3.0 and f["across"] > 5.0 and f["speed"] > 8.0
+    # speed is one unbroken record: no jump of position anywhere along the sector
+    assert np.linalg.norm(np.diff(tr[:, :3], axis=0), axis=1).max() < 0.45
 
 
 def test_a_wall_is_reported_unresolved_and_what_follows_is_conditional():
@@ -92,4 +96,7 @@ def test_a_loose_ball_across_the_road_stays_a_break_even_though_taking_it_out_wo
     b = [b for b in res["breaks"] if b["status"] == "unresolved"]
     assert not res["solved"] and len(b) == 1 and "P_Ball_Paper" in b[0]["between"]
     assert b[0]["would_pass"]["mode"] == "free"                   # said as a diagnosis...
-    assert not any(sg["type"] == "cross" for sg in res["segments"])    # ...but no trajectory goes through the ball
+    for sg in res["segments"]:                                    # ...but no trajectory goes through the ball
+        if sg["type"] != "assumed" and len(sg["trace"]):
+            t = sg["trace"]
+            assert not ((t[:, 0] > 22.5) & (t[:, 0] < 29.5) & (t[:, 1] < 5.5)).any()
