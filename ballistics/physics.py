@@ -11,7 +11,8 @@ Per tick, in the order the game's own state shows:
 3. Where it touches something (exact geometry, at the new position), contact impulses act at the touching points:
    along the normal so that it does not go into the surface (with the pair's restitution when it arrives fast),
    and across it by friction, up to the pair's friction times the normal impulse. A surface that is near but not
-   yet touched only limits how fast the ball may approach it: it may close the remaining gap within the tick.
+   yet touched does nothing: the move of a later tick stops at it (below), and the bounce then acts on the full
+   approach speed.
 
 Hitting something inside a tick, as measured on the engine's landings (65 of them in one level 1 run): the ball's
 move stops where its gap to the surface is 0.010, the tick's velocity update is applied first, and the ball leaves
@@ -97,7 +98,6 @@ class Params:
     """What the rules leave open. Each value says where it comes from: MEASURED on engine data (level 1, one wood
     ball run unless said otherwise), READ from the game, or ASSUMED (not checked; nothing called a proof may rest
     on an assumed value alone)."""
-    reach: float = 0.35            # ASSUMED: how far ahead surfaces are looked at in a tick; only has to exceed one tick's travel (about 0.3 at speed 20)
     touch: float = 0.02            # MEASURED: a rolling ball's gap to its surface is 0.010 to 0.020 (57.8% of 20,483 frames), median 0.0141
     floor: float = 0.0099          # MEASURED: the smallest gap in 20,483 frames, and the gap at which every one of 65 landings was left
     friction_scale: float = 1.0    # READ: contact friction = ball friction x surface friction (the engine's own contact record: 0.8 x 0.7 = 0.56)
@@ -171,7 +171,7 @@ def step_reference(mesh: Mesh, ball: Ball, s: State, push, params: Params | None
         hit = True
     vel = s.vel * (1.0 - ball.lin_damp * DT) + ball.push * np.asarray(push, float) + np.array([0.0, -GRAVITY * DT, 0.0])
     omega = s.omega * (1.0 - ball.rot_damp * DT)
-    contacts = merge_contacts(mesh.contacts(pos, r, P.reach))
+    contacts = [c for c in merge_contacts(mesh.contacts(pos, r, P.touch)) if c.gap <= P.touch]
     n_imp = np.zeros(len(contacts))
     if contacts:
         inv_m, inv_i = 1.0 / ball.mass, 1.0 / ball.inertia
@@ -182,10 +182,7 @@ def step_reference(mesh: Mesh, ball: Ball, s: State, push, params: Params | None
             fr.append(ball.friction * float(e.get("friction", 0.7)) * P.friction_scale)
             el.append(math.sqrt(ball.elasticity * float(e.get("elasticity", 0.3))) * P.restitution_scale)
             vn = float(vel @ c.normal)
-            if c.gap <= P.touch:
-                target.append(-el[-1] * vn if vn < -P.bounce_speed else 0.0)
-            else:
-                target.append(-(c.gap - P.floor) * PSI_HZ)     # approach speed that just closes the gap this tick
+            target.append(-el[-1] * vn if vn < -P.bounce_speed else 0.0)
         t_imp = np.zeros((len(contacts), 3))
         for _ in range(P.iterations if len(contacts) > 1 else 1):
             for i, c in enumerate(contacts):

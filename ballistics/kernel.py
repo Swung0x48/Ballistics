@@ -103,7 +103,7 @@ def _step(pos, vel, omega, push, ball, par, ox, oz, cell, nx, nz, start, items, 
     vz = vel[2] * k_lin + pushacc * push[2]
     k_rot = 1.0 - rot_damp * dt
     wx, wy, wz = omega[0] * k_rot, omega[1] * k_rot, omega[2] * k_rot
-    m = _contacts(qx, qy, qz, r, reach, ox, oz, cell, nx, nz, start, items, A, B, C, lo_y, hi_y, N, stamp, tickbox,
+    m = _contacts(qx, qy, qz, r, touch, ox, oz, cell, nx, nz, start, items, A, B, C, lo_y, hi_y, N, stamp, tickbox,
                   ci, cd, cq, cf, cn, cg, order)
     if m > 0:
         inv_m, inv_i = 1.0 / mass, 1.0 / inertia
@@ -114,10 +114,7 @@ def _step(pos, vel, omega, push, ball, par, ox, oz, cell, nx, nz, start, items, 
             fr[i] = b_fr * tri_fr[t] * f_scale
             el[i] = math.sqrt(b_el * tri_el[t]) * r_scale
             vn = vx * cn[k, 0] + vy * cn[k, 1] + vz * cn[k, 2]
-            if cg[k] <= touch:
-                target[i] = -el[i] * vn if vn < -bounce else 0.0
-            else:
-                target[i] = -(cg[k] - floor) / dt
+            target[i] = -el[i] * vn if vn < -bounce else 0.0
             n_imp[i] = 0.0
             t_imp[i, 0] = t_imp[i, 1] = t_imp[i, 2] = 0.0
         for _ in range(iters if m > 1 else 1):
@@ -254,7 +251,7 @@ def ball_array(ball) -> np.ndarray:
 
 def params_array(P) -> np.ndarray:
     from .physics import DT, GRAVITY
-    return np.array([P.reach, P.touch, P.floor, P.friction_scale, P.restitution_scale, P.bounce_speed, 1.0 if P.sweep else 0.0,
+    return np.array([P.touch, P.touch, P.floor, P.friction_scale, P.restitution_scale, P.bounce_speed, 1.0 if P.sweep else 0.0,
                      float(P.iterations), DT, GRAVITY])
 
 

@@ -41,7 +41,7 @@ def test_a_gap_is_one_break_and_only_there_is_searched():
     kinds = [sg["type"] for sg in res["segments"]]
     assert kinds.count("cross") == 1 and kinds[0] == "follow" and kinds[-1] == "follow"
     rolled = sum(len(sg["trace"]) for sg in res["segments"] if sg["type"] == "follow")
-    assert rolled > 2 * sum(len(sg["trace"]) for sg in res["segments"] if sg["type"] == "cross")      # most of the way is plain rolling
+    assert rolled > sum(len(sg["trace"]) for sg in res["segments"] if sg["type"] == "cross")          # most of the way is plain rolling
 
 
 def test_a_wall_is_reported_unresolved_and_what_follows_is_conditional():

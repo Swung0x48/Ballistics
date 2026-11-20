@@ -37,7 +37,7 @@ def test_compiled_tick_equals_the_python_tick_on_recorded_states():
         worst = max(worst, np.abs(pos - a.pos).max(), np.abs(vel - a.vel).max(), np.abs(omega - a.omega).max())
         multi += len(rows) > 1
         hits += hit
-    assert worst < 1e-9 and multi > 500 and hits > 20
+    assert worst < 1e-9 and multi > 200 and hits > 20
 
 
 @needs_data

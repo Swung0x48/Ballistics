@@ -115,3 +115,21 @@ def test_a_landing_stops_at_the_surface_and_keeps_a_quarter_of_the_approach_spee
     rolling, _ = ph.step(m, ph.WOOD, ph.State(s.pos.copy(), v, ph.rolling_spin(v * [1, 0, 1], (0, 1, 0))), np.zeros(3))
     dead, _ = ph.step(m, ph.WOOD, ph.State(s.pos.copy(), v), np.zeros(3))
     assert rolling.vel[0] == pytest.approx(10.0 * (1.0 - 0.9 / 66.0), abs=0.05) and dead.vel[0] < rolling.vel[0] - 1.0
+
+
+def test_a_free_running_drop_bounces_with_the_measured_restitution_whatever_the_phase():
+    # the engine: 0.245 of the approach speed on 65 landings. Running on its own ticks the kernel must give the same
+    # for every height, i.e. wherever the last tick before the impact leaves the ball
+    from ballistics.kernel import World
+    w = World.of(plane(size=200.0))
+    P = ph.Params()
+    want = math.sqrt(ph.WOOD.elasticity * 0.3)
+    for h in (6.0, 6.05, 6.1, 6.15, 6.2, 8.07, 10.11):
+        pos, vel, omega = np.array([0.0, 2.0 + h, 0.0]), np.zeros(3), np.zeros(3)
+        before = 0.0
+        for _ in range(400):
+            _s, _d, pos, vel, omega, _st, _ = w.rollout(ph.WOOD, P, pos, vel, omega, np.zeros((1, 3)), [1])
+            if vel[1] > before + 0.5:
+                break
+            before = vel[1]
+        assert before < -10.0 and vel[1] / -before == pytest.approx(want, abs=0.01)
