@@ -10,8 +10,9 @@
    rolled (so a run-up from far back is available), towards any place nearer the goal than the far side of the
    break. It tries the strictest mode first and says which mode it needed.
 
-A break that is not crossed within the stated number of tries is reported as unresolved; the ball is then put at
-rest on its far side to list what comes after, and everything after it is conditional.
+A break counts as crossed only in strict mode. One that is not crossed within the stated number of tries stays a
+break: the laxer modes are then run only as a diagnosis of what stands in the way, the ball is put at rest on the
+far side to list what comes after, and nothing after it counts as reached.
 Everything found is a trajectory of the hand-written kernel: a candidate until the engine has run it.
 """
 from __future__ import annotations
@@ -284,26 +285,38 @@ def solve_sector(mesh, info, g, sector: int, tries: int = 300_000, seed: int = 0
         pools = [("this stretch", thin(usable, 80))]
         if older:
             pools.append(("the whole sector so far", thin(older, 120) + thin(usable, 80)))
+        def attempt(mode, where, cand):
+            s = fine.Search(worlds[mode], targets, seed=seed, places=g.pos, togo=togo)
+            ids = {}
+            for si, h in cand:
+                idx = s.add_start(ph.State(h[2], h[3], h[4]), hanging=h[5])
+                if idx >= 0:
+                    ids[idx] = (si, h)
+            if not ids:
+                return None
+            c = s.run(max_expansions=tries, max_seconds=1e9)
+            b["attempts"].append(dict(mode=mode, where=where, tries=c.expansions, seconds=c.seconds, found=c.found))
+            log("   %s at %s (%s): %s from %s, %s after %d tries, %.0f s" % (b["no"], np.round(b["near"], 1), b["why"], mode, where,
+                                                                           "crossed" if c.found else "not crossed", c.expansions, c.seconds))
+            return (mode, s, c, ids[c.root]) if c.found else None
+
+        # A break counts as crossed only in strict mode
         found = None
-        for mode in ORDER:
-            for where, cand in pools:
-                s = fine.Search(worlds[mode], targets, seed=seed, places=g.pos, togo=togo)
-                ids = {}
-                for si, h in cand:
-                    idx = s.add_start(ph.State(h[2], h[3], h[4]), hanging=h[5])
-                    if idx >= 0:
-                        ids[idx] = (si, h)
-                if not ids:
-                    continue
-                c = s.run(max_expansions=tries, max_seconds=1e9)
-                b["attempts"].append(dict(mode=mode, where=where, tries=c.expansions, seconds=c.seconds, found=c.found))
-                log("   %s at %s (%s): %s from %s, %s after %d tries, %.0f s" % (b["no"], np.round(b["near"], 1), b["why"], mode, where,
-                                                                               "crossed" if c.found else "not crossed", c.expansions, c.seconds))
-                if c.found:
-                    found = (mode, s, c, ids[c.root])
-                    break
+        for where, cand in pools:
+            found = attempt("strict", where, cand)
             if found:
                 break
+        if not found:
+            # It stays a break. The laxer modes are run only to say what stands in the way: their trajectories are
+            # not used, and nothing after this break counts as reached
+            b["would_pass"] = None
+            for mode in ORDER[1:]:
+                got = attempt(mode, pools[0][0], pools[0][1])
+                if got:
+                    _m, _s, c, _seed = got
+                    b["would_pass"] = dict(mode=mode, tries=c.expansions, hang_ticks=int(((c.trace[:, 3] > 0) & (c.trace[:, 7] == 0)).sum()),
+                                           through=[ty for ty, q in loose if np.linalg.norm(c.trace[:, :3] - q, axis=1).min() < 2.0 * BALL_R])
+                    break
         if found:
             mode, s, c, (si, h) = found
             for sg in segs[si + 1:]:                              # crossings made on a way that is now given up
@@ -373,7 +386,7 @@ def summary(res, log=print):
     """The break list of a solved sector, in words."""
     n_rolled = sum(b["status"] == "rolled" for b in res["breaks"])
     log("sector %d: %s; %.1f game s of trajectory; %d breaks in all, %d of them rolled across by the plain follower; replay %s"
-        % (res["sector"], "reaches the goal" + ("" if res["solved"] else " only if the unresolved breaks are granted") if res["reached"] else "does NOT reach the goal",
+        % (res["sector"], "reaches the goal" if res["solved"] else "does NOT get through: %s left as break%s" % (", ".join(res["unresolved"]) or "the way", "s" if len(res["unresolved"]) > 1 else ""),
            res["ticks"] / 132, len(res["breaks"]), n_rolled, "agrees" if res["replays"] else "DISAGREES"))
     hang = sum(int(((sg["trace"][:, 3] > 0) & (sg["trace"][:, 7] == 0)).sum()) for sg in res["segments"] if sg["type"] == "follow")
     log("   the follower's stretches: %.1f game s, %d ticks of them touching only an edge" % (sum(len(sg["trace"]) for sg in res["segments"] if sg["type"] == "follow") / 132, hang))
@@ -395,4 +408,10 @@ def summary(res, log=print):
             log("      crossed in %s mode, %.1f game s, leaving %.0f back; %s; hanging %d ticks%s; %d of %d nudged runs still arrive"
                 % (b["mode"], b["ticks"] / 132, b["back"], fl, b["hang_ticks"], "; through " + ", ".join(b["through"]) if b["through"] else "", b["arrives"], b["trials"]))
         else:
-            log("      UNRESOLVED: " + "; ".join("%s from %s, %d tries" % (a["mode"], a["where"], a["tries"]) for a in b["attempts"]))
+            log("      LEFT AS A BREAK: not crossed in strict mode (" + "; ".join("from %s, %d tries" % (a["where"], a["tries"]) for a in b["attempts"] if a["mode"] == "strict") + ")")
+            w = b.get("would_pass")
+            if w:
+                log("      diagnosis only: it would pass in %s mode (%d tries)%s%s" % (w["mode"], w["tries"], ", touching only an edge for %d ticks" % w["hang_ticks"] if w["hang_ticks"] > 10 else "",
+                                                                                 ", through " + ", ".join(w["through"]) if w["through"] else ""))
+            else:
+                log("      diagnosis: not crossed in the laxer modes either (" + "; ".join("%s %d tries" % (a["mode"], a["tries"]) for a in b["attempts"] if a["mode"] != "strict") + ")")

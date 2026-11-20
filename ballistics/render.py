@@ -87,7 +87,7 @@ def draw_staged(mesh: Mesh, res: dict, path, title: str | None = None, width: in
     pts += [np.array([b["near"], b["far"]]) for b in res["breaks"]] + [np.array([res["start"], res["goal"]])]
     A = np.concatenate(pts)
     box = (A[:, 0].min() - 8, A[:, 0].max() + 8, A[:, 2].min() - 8, A[:, 2].max() + 8)
-    state = "到达目标" if res["solved"] else ("到达目标（前提是未解的断点能过）" if res["reached"] else "没有到达目标")
+    state = "到达目标" if res["solved"] else "不通，留有断点 " + "、".join(res["unresolved"])
     v = TopView(mesh, box=box, width=width, title=title or "第 %d 小节：先粗后细（%s，轨迹 %.1f 游戏秒）" % (res["sector"], state, res["ticks"] / 132), margin=2.0)
     v.legend([(GROUND, "跟随器沿粗层通路滚（细线）"), (RAILC, "在钢轨上"), (CROSS, "细搜出来的过断点段（粗线）"), (FLY, "腾空"), (WARN, "只碰着棱")])
     for sg in res["segments"]:
@@ -106,9 +106,11 @@ def draw_staged(mesh: Mesh, res: dict, path, title: str | None = None, width: in
             i = j + 1
     for b in res["breaks"]:
         if b["status"] == "crossed":
-            v.dot(b["near"], "%s %s" % (b["no"], {"strict": "严格", "solid": "允许挂棱", "nohang": "去掉道具球", "free": "宽松"}[b["mode"]]), CROSS if b["mode"] == "strict" else PLACED, 8, 22)
+            v.dot(b["near"], "%s 已过" % b["no"], CROSS, 8, 22)
         elif b["status"] == "unresolved":
-            v.dot(b["near"], "%s 未过" % b["no"], WARN, 10, 24)
+            w = b.get("would_pass")
+            why = "" if not w else "（%s才能过）" % {"solid": "挂着侧棱", "nohang": "去掉道具球", "free": "去掉道具球并挂棱"}[w["mode"]]
+            v.dot(b["near"], "断点 %s 未过%s" % (b["no"], why), WARN, 10, 24)
             v.dot(b["far"], "", WARN, 6)
         elif b["status"] == "rolled":
             v.dot(b["near"], "", (120, 130, 140), 4)
