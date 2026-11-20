@@ -83,6 +83,40 @@ def _progress(tr, P, way, lo: int, hi: int):
     return best, int(k[int(np.argmax(reach >= best - 1e-9))])
 
 
+def choose_push(world, pos, vel, omega, P, way, best: int) -> int:
+    """The follower's decision for one state: which of the nine pushes to hold next. From that state the kernel runs
+    each push LOOK_TICKS ahead (and, if none gets on, each push for SWITCH_TICKS followed by each other push); the
+    answer is the first push of the plan that gets furthest along the way P soonest without ending the ball. A plan
+    still in the air at its end is run on without keys to see whether the ball comes down.
+    way: way-length at each place of P; best: index of the furthest place reached so far."""
+    par = ph.Params()
+    n = len(P)
+    zero = np.zeros((1, 3))
+    lo, hi = max(best - 2, 0), min(best + 30, n - 1)
+
+    def fate(a_tape):
+        pushes = np.array([fine.PUSHES[a] for a, _ in a_tape])
+        st, done, p2, v2, o2, s2, tr = world.rollout(ph.WOOD, par, pos, vel, omega, pushes, [m for _, m in a_tape], trace=True)
+        alive = st == OK
+        if alive and s2[8] == 0:
+            st3, d3, p3, v3, o3, s3, tr3 = world.rollout(ph.WOOD, par, p2, v2, o2, zero, [160], trace=True)
+            down = np.flatnonzero(tr3[:, 7] > 0)
+            alive = bool(len(down)) and (st3 == OK or int(down[0]) < d3 - 1)
+            if alive:
+                tr = np.concatenate([tr, tr3[:int(down[0]) + 1]])
+        reach, at = _progress(tr, P, way, lo, hi)
+        return (reach - 0.02 * at) - (0.0 if alive else 1000.0), reach
+
+    plans = [[(a, LOOK_TICKS)] for a in range(len(fine.PUSHES))]
+    scored = [(fate(t), t) for t in plans]
+    top = max(scored, key=lambda x: x[0][0])
+    if top[0][0] < -500.0 or top[0][1] <= way[best] + 1.0:               # held keys end the ball or get nowhere: try a change of key
+        plans = [[(a, SWITCH_TICKS), (b, LOOK_TICKS - SWITCH_TICKS)] for a in range(len(fine.PUSHES)) for b in range(len(fine.PUSHES)) if a != b]
+        scored += [(fate(t), t) for t in plans]
+        top = max(scored, key=lambda x: x[0][0])
+    return top[1][0][0]
+
+
 def follow(world, strict_world, start, P, max_ticks: int = 60000) -> dict:
     """Roll along the plan places P from the state `start` = (pos, vel, omega) by looking ahead: every STEP_TICKS
     ticks, from the state the ball is in (its speed included), the kernel runs a set of key plans LOOK_TICKS ahead
@@ -99,24 +133,6 @@ def follow(world, strict_world, start, P, max_ticks: int = 60000) -> dict:
     since = ticks = 0
     tape, traces, history = [], [], []
     carried = True
-    zero = np.zeros((1, 3))
-
-    def fate(a_tape):
-        """Run a key plan from the current state; (score, trace). A plan that ends the ball scores far below any
-        that does not; one still in the air at the end is run on without keys to see whether it comes down."""
-        pushes = np.array([fine.PUSHES[a] for a, _ in a_tape])
-        st, done, p2, v2, o2, s2, tr = world.rollout(ph.WOOD, par, pos, vel, omega, pushes, [m for _, m in a_tape], trace=True)
-        alive = st == OK
-        if alive and s2[8] == 0:
-            st3, d3, p3, v3, o3, s3, tr3 = world.rollout(ph.WOOD, par, p2, v2, o2, zero, [160], trace=True)
-            down = np.flatnonzero(tr3[:, 7] > 0)
-            alive = bool(len(down)) and (st3 == OK or int(down[0]) < d3 - 1)
-            if alive:
-                tr = np.concatenate([tr, tr3[:int(down[0]) + 1]])
-        lo, hi = max(best - 2, 0), min(best + 30, n - 1)
-        reach, at = _progress(tr, P, way, lo, hi)
-        return (reach - 0.02 * at) - (0.0 if alive else 1000.0), reach
-
     while ticks < max_ticks:
         lo, hi = max(best - 2, 0), min(best + 30, n - 1)
         d = np.sqrt(((P[lo:hi + 1] - pos) ** 2).sum(1))
@@ -126,14 +142,7 @@ def follow(world, strict_world, start, P, max_ticks: int = 60000) -> dict:
         if best >= n - 2 and carried and float(np.linalg.norm(P[n - 1] - pos)) <= 2.0:
             return dict(status="goal", index=n - 1, tape=tape, trace=_stack(traces), history=history, end=(pos, vel, omega))
         history.append((ticks, best, pos.copy(), vel.copy(), omega.copy()))
-        plans = [[(a, LOOK_TICKS)] for a in range(len(fine.PUSHES))]
-        scored = [(fate(t), t) for t in plans]
-        top = max(scored, key=lambda x: x[0][0])
-        if top[0][0] < -500.0 or top[0][1] <= way[best] + 1.0:           # held keys end the ball or get nowhere: try a change of key
-            plans = [[(a, SWITCH_TICKS), (b, LOOK_TICKS - SWITCH_TICKS)] for a in range(len(fine.PUSHES)) for b in range(len(fine.PUSHES)) if a != b]
-            scored += [(fate(t), t) for t in plans]
-            top = max(scored, key=lambda x: x[0][0])
-        a = top[1][0][0]
+        a = choose_push(world, pos, vel, omega, P, way, best)
         status, done, pos, vel, omega, st, tr = world.rollout(ph.WOOD, par, pos, vel, omega, fine.PUSHES[a:a + 1], [STEP_TICKS], trace=True)
         if status != OK:
             return dict(status="fail", reason=STATUS.get(status, "stopped"), index=best, tape=tape, trace=_stack(traces), history=history, end=None)
