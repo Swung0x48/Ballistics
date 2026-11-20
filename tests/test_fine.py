@@ -4,7 +4,7 @@ import numpy as np
 from ballistics import fine
 from ballistics import physics as ph
 from ballistics.geometry import Mesh
-from ballistics.kernel import HANG, OK, World
+from ballistics.kernel import OK, World
 
 
 def quad(x0, x1, z0, z1, y):
@@ -53,15 +53,3 @@ def test_a_wall_is_not_crossed_and_that_is_reported_as_not_found():
     s.add_start(fine.rest_state(w, 4.0, 4.0, 5.0))
     c = s.run(max_expansions=4_000, max_seconds=60)
     assert not c.found and c.best_distance > 5.0 and c.expansions == 4_000
-
-
-def test_hanging_on_an_edge_can_be_ruled_out():
-    # a ball pressed against the border of a floor from beyond it, touching the border edge only: with the key held
-    # the kernel lets it hang there; in a world with a hang limit the rollout ends
-    parts = [quad(0, 20, 0, 8, 0.0)]
-    pos = [10.0, 1.62, 9.2]                          # centre 1.2 beyond the border z = 8 and 1.62 above the floor
-    push = np.array([[0.0, 0.0, -1.0]])
-    a = world(parts).rollout(ph.WOOD, ph.Params(), pos, np.zeros(3), np.zeros(3), push, [60], trace=True)
-    b = world(parts, hang_limit=10).rollout(ph.WOOD, ph.Params(), pos, np.zeros(3), np.zeros(3), push, [60])
-    assert a[0] == OK and int(((a[6][:, 3] > 0) & (a[6][:, 7] == 0)).sum()) > 40
-    assert b[0] == HANG and b[1] == 11

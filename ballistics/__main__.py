@@ -23,7 +23,7 @@ def main(argv=None):
     v.add_argument("--map", type=Path, required=True, help="<name>-map.json")
     v.add_argument("--sector", default="all", help="sector number, or all")
     v.add_argument("--tries", type=int, default=300_000, help="how many times the fine search may try a key hold at one break in one mode")
-    v.add_argument("--whole", choices=("strict", "solid", "nohang", "free"), help="instead: one search over the whole sector in this mode (the first version)")
+    v.add_argument("--whole", choices=("strict", "free"), help="instead: one search over the whole sector in this mode (the first version)")
     v.add_argument("--seconds", type=float, default=600.0, help="with --whole: time limit per sector")
     v.add_argument("--out", type=Path, default=Path("data"), help="folder for the results and the coarse graph")
     v.add_argument("--png", type=Path, help="folder for a top view of each sector")

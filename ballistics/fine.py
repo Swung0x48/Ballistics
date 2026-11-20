@@ -6,8 +6,8 @@ is rolling on a target place, and returns the keys and the trajectory.
 
 What a result is worth: it is a trajectory of the hand-written kernel, not of the game. The kernel's measured
 error grows with time and at impacts (README, calibration tables), and a search finds whatever the kernel allows,
-its weak spots included. So every crossing comes with what it leans on (impacts, edge contacts, several contacts at
-once, flight) and how often it survives small changes of the start and of the key timing. It stays a *candidate*
+its weak spots included. So every crossing comes with what it leans on (impacts, several contacts at once, flight)
+and how often it survives small changes of the start and of the key timing. It stays a *candidate*
 until the engine has run it. "Not found" means not found within the stated budget, never "impossible".
 
 The search keeps one state per cell of (position, heading, speed, on the ground or not) and grows from them:
@@ -52,7 +52,7 @@ class Crossing:
     stats: dict = field(default_factory=dict)
     nearest: np.ndarray | None = None             # the kept state nearest the target when nothing was found
     root: int = -1                                # which start it left from (the index `Search.add_start` returned)
-    end_state: tuple | None = None                # (pos, vel, omega, hanging) at the end
+    end_state: tuple | None = None                # (pos, vel, omega) at the end
 
     def keys(self) -> str:
         return " ".join("%s×%d" % (PUSH_NAMES[a], n) for a, n in self.tape)
@@ -92,7 +92,7 @@ class Search:
         self.rng = np.random.default_rng(seed)
         # every state ever kept (never changed afterwards: later states hang on them by `parent`)
         self.pos, self.vel, self.omega = [], [], []
-        self.parent, self.act, self.hold, self.ticks, self.hang = [], [], [], [], []
+        self.parent, self.act, self.hold, self.ticks = [], [], [], []
         # one slot per cell: the quickest state known for it, how near the target it is, how often it was picked
         self.cell: dict = {}
         self.slot, self.h, self.visits, self.ground = [], [], [], []
@@ -142,7 +142,7 @@ class Search:
             return -1
         i = len(self.pos)
         for a, v in ((self.pos, pos.copy()), (self.vel, vel.copy()), (self.omega, omega.copy()), (self.parent, parent), (self.act, act),
-                     (self.hold, hold), (self.ticks, ticks), (self.hang, int(stats[7]))):
+                     (self.hold, hold), (self.ticks, ticks)):
             a.append(v)
         if k is None:
             self.cell[key] = len(self.slot)
@@ -152,11 +152,11 @@ class Search:
             self.slot[k], self.h[k] = i, self.score(pos)
         return i
 
-    def add_start(self, s: ph.State, hanging: int = 0, grounded: bool = True) -> int:
+    def add_start(self, s: ph.State, grounded: bool = True) -> int:
         """A state to grow from. Returns its index (the `root` of a crossing that leaves from it), or -1 if another
         start already holds its cell."""
         st = np.zeros(10)
-        st[5], st[6], st[7], st[8] = float(grounded), 1.0, hanging, float(grounded)
+        st[5], st[6], st[8] = float(grounded), 1.0, float(grounded)
         return self._keep(np.array(s.pos, float), np.array(s.vel, float), np.array(s.omega, float), -1, 0, 0, 0, st)
 
     def _pick(self) -> int:
@@ -181,12 +181,11 @@ class Search:
             self.visits[k] += 1
             i = self.slot[k]
             a = self.act[i] if (self.parent[i] >= 0 and self.rng.random() < 0.4) else int(self.rng.integers(0, len(PUSHES)))
-            pos, vel, omega, parent, ticks, held, hang = self.pos[i], self.vel[i], self.omega[i], i, self.ticks[i], 0, self.hang[i]
+            pos, vel, omega, parent, ticks, held = self.pos[i], self.vel[i], self.omega[i], i, self.ticks[i], 0
             for _ in range(HOLDS[int(self.rng.integers(0, len(HOLDS)))]):
-                status, done, pos, vel, omega, stats, _ = self.w.rollout(self.ball, self.P, pos, vel, omega, PUSHES[a:a + 1], [CHUNK], hanging=hang)
+                status, done, pos, vel, omega, stats, _ = self.w.rollout(self.ball, self.P, pos, vel, omega, PUSHES[a:a + 1], [CHUNK])
                 if status != OK:
                     break
-                hang = int(stats[7])
                 ticks += done
                 held += done
                 j = self._keep(pos, vel, omega, parent, a, held, ticks, stats)
@@ -221,20 +220,20 @@ class Search:
         if self.goal < 0:
             return Crossing(False, self.expansions, seconds, len(self.slot), float(h[best]), nearest=self.pos[self.slot[best]].copy())
         root, tape = self.tape_of(self.goal)
-        out = replay(self.w, self.ball, self.P, ph.State(self.pos[root], self.vel[root], self.omega[root]), tape, hanging=self.hang[root])
+        out = replay(self.w, self.ball, self.P, ph.State(self.pos[root], self.vel[root], self.omega[root]), tape)
         if out["ticks"] != self.ticks[self.goal] or np.abs(out["pos"] - self.pos[self.goal]).max() > 1e-6:
             raise RuntimeError("the key tape does not reproduce the state the search arrived at")
         return Crossing(True, self.expansions, seconds, len(self.slot), self.distance(self.pos[self.goal]), ticks=out["ticks"], tape=tape,
                         trace=out["trace"], start=self.pos[root].copy(), end=out["pos"], stats=out["stats"], root=root,
-                        end_state=(out["pos"], out["vel"], out["omega"], out["hanging"]))
+                        end_state=(out["pos"], out["vel"], out["omega"]))
 
 
-def replay(world: World, ball: ph.Ball, P: ph.Params, start: ph.State, tape, hanging: int = 0) -> dict:
+def replay(world: World, ball: ph.Ball, P: ph.Params, start: ph.State, tape) -> dict:
     """Run a key tape from a state: the trajectory and what it met."""
     pushes = np.array([PUSHES[a] for a, _ in tape]).reshape(-1, 3)
     holds = [n for _, n in tape]
-    status, done, pos, vel, omega, st, trace = world.rollout(ball, P, start.pos, start.vel, start.omega, pushes, holds, trace=True, hanging=hanging)
-    return dict(status=status, ticks=done, pos=pos, vel=vel, omega=omega, trace=trace, hanging=int(st[7]),
+    status, done, pos, vel, omega, st, trace = world.rollout(ball, P, start.pos, start.vel, start.omega, pushes, holds, trace=True)
+    return dict(status=status, ticks=done, pos=pos, vel=vel, omega=omega, trace=trace,
                 stats=dict(impact_ticks=int(st[0]), edge_ticks=int(st[1]), multi_contact_ticks=int(st[2]), air_ticks=int(st[3]),
                            top_speed=float(st[4]), touching_at_end=bool(st[5] > 0)))
 

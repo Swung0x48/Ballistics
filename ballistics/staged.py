@@ -10,9 +10,10 @@
    rolled (so a run-up from far back is available), towards any place nearer the goal than the far side of the
    break. It tries the strictest mode first and says which mode it needed.
 
-A break counts as crossed only in strict mode. One that is not crossed within the stated number of tries stays a
-break: the laxer modes are then run only as a diagnosis of what stands in the way, the ball is put at rest on the
-far side to list what comes after, and nothing after it counts as reached.
+A break counts as crossed only without touching anything placed. One that is not crossed within the stated number
+of tries stays a break: the search is then run once more with the loose balls taken out, only as a diagnosis of
+whether they are what stands in the way; the ball is put at rest on the far side to list what comes after, and
+nothing after it counts as reached.
 Everything found is a trajectory of the hand-written kernel: a candidate until the engine has run it.
 """
 from __future__ import annotations
@@ -25,17 +26,17 @@ import numpy as np
 from . import coarse, fine
 from . import physics as ph
 from .geometry import BALL_R
-from .kernel import DEAD, HANG, OK, PLACED, TRIGGER
+from .kernel import DEAD, OK, PLACED, TRIGGER
 from .solve import world_for
 
 BREAK_KINDS = ("gap", "bridge", "step", "flight")
 ROLLS = ("roll", "rail", "rail end", "drop")
-ORDER = ("strict", "solid", "nohang", "free")
+ORDER = ("strict", "free")
 FOLLOW_SPEED = 9.0        # a working value for the follower, well under the wood ball's plateau of 15.9
 LOOK = 3                  # the follower aims this many plan places ahead
 CHUNK = 4
-BASE = "solid"            # the follower's world: nothing placed may be touched. Tipping over a ledge is touching an edge only for a while, so the hang limit is for the searches, not for the follower
-STATUS = {DEAD: "fell out", TRIGGER: "entered a transformer's range", PLACED: "touched something placed", HANG: "hung on an edge"}
+BASE = "strict"           # the follower's world, and the only one whose crossings count: nothing placed may be touched
+STATUS = {DEAD: "fell out", TRIGGER: "entered a transformer's range", PLACED: "touched something placed"}
 
 
 def nearest_node(g, togo, pos, reach: float = 3.0) -> int:
@@ -64,10 +65,10 @@ def describe_break(g, mesh, u: int, v: int, kind: str) -> dict:
 
 
 def follow(world, strict_world, start, P, max_ticks: int = 60000) -> dict:
-    """Roll along the plan places P from the state `start` = (pos, vel, omega, hanging): aim a few places ahead at a
+    """Roll along the plan places P from the state `start` = (pos, vel, omega): aim a few places ahead at a
     modest speed. Returns status 'goal', 'fail' (with the reason and the last plan place reached) or 'clear' (only
     when `world` is not the strict one: the ball is clear of everything placed again)."""
-    pos, vel, omega, hang = np.array(start[0], float), np.array(start[1], float), np.array(start[2], float), int(start[3])
+    pos, vel, omega = np.array(start[0], float), np.array(start[1], float), np.array(start[2], float)
     n = len(P)
     i = best = 0
     since = off = ticks = 0
@@ -80,8 +81,8 @@ def follow(world, strict_world, start, P, max_ticks: int = 60000) -> dict:
         if i > best and carried and float(d.min()) <= 2.5:        # a place counts as reached when the ball is rolling at it
             best, since = i, 0
         if best >= n - 2 and carried and float(np.linalg.norm(P[n - 1] - pos)) <= 2.0:
-            return dict(status="goal", index=n - 1, tape=tape, trace=_stack(traces), history=history, end=(pos, vel, omega, hang))
-        history.append((ticks, best, pos.copy(), vel.copy(), omega.copy(), hang))
+            return dict(status="goal", index=n - 1, tape=tape, trace=_stack(traces), history=history, end=(pos, vel, omega))
+        history.append((ticks, best, pos.copy(), vel.copy(), omega.copy()))
         aim = P[min(i + LOOK, n - 1)]
         dx, dz = aim[0] - pos[0], aim[2] - pos[2]
         far = math.hypot(dx, dz)
@@ -92,10 +93,10 @@ def follow(world, strict_world, start, P, max_ticks: int = 60000) -> dict:
         px = (1.0 if ax > 0 else -1.0) if size >= 0.8 and abs(ax) >= 0.4 * size else 0.0
         pz = (1.0 if az > 0 else -1.0) if size >= 0.8 and abs(az) >= 0.4 * size else 0.0
         a = int(np.flatnonzero((fine.PUSHES[:, 0] == px) & (fine.PUSHES[:, 2] == pz))[0])
-        status, done, pos, vel, omega, st, tr = world.rollout(ph.WOOD, ph.Params(), pos, vel, omega, fine.PUSHES[a:a + 1], [CHUNK], trace=True, hanging=hang)
+        status, done, pos, vel, omega, st, tr = world.rollout(ph.WOOD, ph.Params(), pos, vel, omega, fine.PUSHES[a:a + 1], [CHUNK], trace=True)
         if status != OK:
             return dict(status="fail", reason=STATUS.get(status, "stopped"), index=best, tape=tape, trace=_stack(traces), history=history, end=None)
-        hang, carried = int(st[7]), bool(st[8] > 0)
+        carried = bool(st[8] > 0)
         ticks += done
         since += done
         tape.append((a, done))
@@ -106,7 +107,7 @@ def follow(world, strict_world, start, P, max_ticks: int = 60000) -> dict:
         if since > 396:
             return dict(status="fail", reason="got no further", index=best, tape=tape, trace=_stack(traces), history=history, end=None)
         if world.mesh is not strict_world.mesh and strict_world.mesh.distance(pos, BALL_R + 1.0)[0] - BALL_R > 0.1:
-            return dict(status="clear", index=best, tape=tape, trace=_stack(traces), history=history, end=(pos, vel, omega, hang))
+            return dict(status="clear", index=best, tape=tape, trace=_stack(traces), history=history, end=(pos, vel, omega))
     return dict(status="fail", reason="ran out of time", index=best, tape=tape, trace=_stack(traces), history=history, end=None)
 
 
@@ -140,16 +141,15 @@ def _robust(world, search, seed, tape, trials: int = 20, rng_seed: int = 1) -> i
     for _ in range(trials):
         pos = seed[0] + rng.normal(0, 0.03, 3) * np.array([1, 0, 1])
         vel = seed[1] + rng.normal(0, 0.3, 3)
-        omega, hang, good = seed[2], seed[3], True
+        omega, good = seed[2], True
         st = np.zeros(10)
         for a, n in tape:
-            status, _d, pos, vel, omega, st, _ = world.rollout(ph.WOOD, P, pos, vel, omega, fine.PUSHES[a:a + 1], [max(1, n + int(rng.integers(-2, 3)))], hanging=hang)
+            status, _d, pos, vel, omega, st, _ = world.rollout(ph.WOOD, P, pos, vel, omega, fine.PUSHES[a:a + 1], [max(1, n + int(rng.integers(-2, 3)))])
             if status != OK:
                 good = False
                 break
-            hang = int(st[7])
         if good and not search.arrived(pos, vel, st):
-            status, _d, pos, vel, omega, st, _ = world.rollout(ph.WOOD, P, pos, vel, omega, np.zeros((1, 3)), [33], hanging=hang)
+            status, _d, pos, vel, omega, st, _ = world.rollout(ph.WOOD, P, pos, vel, omega, np.zeros((1, 3)), [33])
             good = status == OK and st[8] > 0 and search.distance(pos) <= search.reach + 2.0
         ok += bool(good)
     return ok
@@ -167,7 +167,7 @@ def solve_sector(mesh, info, g, sector: int, tries: int = 300_000, seed: int = 0
     togo = rel.togo(goal)
     reset = info["reset_points"][sector - 1]
     s0 = fine.rest_state(strict, reset[0], reset[2], reset[1] + 0.5)
-    state = (s0.pos, s0.vel, s0.omega, 0)
+    state = (s0.pos, s0.vel, s0.omega)
     loose = [(p["type"], np.array(p["position"], float)) for p in info["placements"] if p["type"].startswith(coarse.LOOSE)]
     coarse_back = [[] for _ in range(len(g.pos))]
     for u in range(len(g.pos)):
@@ -266,7 +266,7 @@ def solve_sector(mesh, info, g, sector: int, tries: int = 300_000, seed: int = 0
             state = segs[-1]["end"] if segs[-1]["end"] is not None else state
             if segs[-1]["end"] is None:                           # the stretch failed: go back to the last state it was fine in
                 h = r["history"][-1] if len(r["history"]) < 20 else r["history"][-17]
-                segs[-1]["tape"], segs[-1]["trace"], segs[-1]["end"] = segs[-1]["tape"][:h[0] // CHUNK], segs[-1]["trace"][:h[0]], (h[2], h[3], h[4], h[5])
+                segs[-1]["tape"], segs[-1]["trace"], segs[-1]["end"] = segs[-1]["tape"][:h[0] // CHUNK], segs[-1]["trace"][:h[0]], (h[2], h[3], h[4])
                 state = segs[-1]["end"]
             nodes, kinds = replan(state[0])
             continue
@@ -289,7 +289,7 @@ def solve_sector(mesh, info, g, sector: int, tries: int = 300_000, seed: int = 0
             s = fine.Search(worlds[mode], targets, seed=seed, places=g.pos, togo=togo)
             ids = {}
             for si, h in cand:
-                idx = s.add_start(ph.State(h[2], h[3], h[4]), hanging=h[5])
+                idx = s.add_start(ph.State(h[2], h[3], h[4]))
                 if idx >= 0:
                     ids[idx] = (si, h)
             if not ids:
@@ -307,14 +307,14 @@ def solve_sector(mesh, info, g, sector: int, tries: int = 300_000, seed: int = 0
             if found:
                 break
         if not found:
-            # It stays a break. The laxer modes are run only to say what stands in the way: their trajectories are
-            # not used, and nothing after this break counts as reached
+            # It stays a break. One more run with the loose balls taken out only says whether they are what stands
+            # in the way: its trajectory is not used, and nothing after this break counts as reached
             b["would_pass"] = None
             for mode in ORDER[1:]:
                 got = attempt(mode, pools[0][0], pools[0][1])
                 if got:
                     _m, _s, c, _seed = got
-                    b["would_pass"] = dict(mode=mode, tries=c.expansions, hang_ticks=int(((c.trace[:, 3] > 0) & (c.trace[:, 7] == 0)).sum()),
+                    b["would_pass"] = dict(mode=mode, tries=c.expansions,
                                            through=[ty for ty, q in loose if np.linalg.norm(c.trace[:, :3] - q, axis=1).min() < 2.0 * BALL_R])
                     break
         if found:
@@ -329,15 +329,15 @@ def solve_sector(mesh, info, g, sector: int, tries: int = 300_000, seed: int = 0
             n_ticks = h[0]
             segs[si]["tape"] = segs[si]["tape"][:n_ticks // CHUNK]
             segs[si]["trace"] = segs[si]["trace"][:n_ticks]
-            segs[si]["end"] = (h[2], h[3], h[4], h[5])
-            segs.append(dict(type="cross", mode=mode, no=b["no"], start=(h[2], h[3], h[4], h[5]), tape=c.tape, trace=c.trace, end=c.end_state))
+            segs[si]["end"] = (h[2], h[3], h[4])
+            segs.append(dict(type="cross", mode=mode, no=b["no"], start=(h[2], h[3], h[4]), tape=c.tape, trace=c.trace, end=c.end_state))
             through = [(ty, q) for ty, q in loose if np.linalg.norm(c.trace[:, :3] - q, axis=1).min() < 2.0 * BALL_R]
             b.update(status="crossed", mode=mode, ticks=c.ticks, back=float(np.linalg.norm(h[2] - b["near"])), flights=_flights(c.trace),
-                     hang_ticks=int(((c.trace[:, 3] > 0) & (c.trace[:, 7] == 0)).sum()), through=[ty for ty, _q in through],
-                     arrives=_robust(worlds[mode], s, (h[2], h[3], h[4], h[5]), c.tape), trials=20, landed=np.array(c.end))
+                     through=[ty for ty, _q in through],
+                     arrives=_robust(worlds[mode], s, (h[2], h[3], h[4]), c.tape), trials=20, landed=np.array(c.end))
             state = c.end_state
             clear = strict.mesh.distance(state[0], BALL_R + 1.0)[0] - BALL_R > 0.1
-            mode_now = BASE if (mode in ("strict", "solid") or clear) else mode
+            mode_now = BASE if (mode == "strict" or clear) else mode
             seeds = []
             nodes, kinds = replan(state[0])
         else:
@@ -345,12 +345,12 @@ def solve_sector(mesh, info, g, sector: int, tries: int = 300_000, seed: int = 0
             last = segs[-1]                                       # keep the stretch up to the last state it was fine in
             if r["history"]:
                 h = r["history"][-1] if len(r["history"]) < 20 else r["history"][-17]
-                last["tape"], last["trace"], last["end"] = last["tape"][:h[0] // CHUNK], last["trace"][:h[0]], (h[2], h[3], h[4], h[5])
+                last["tape"], last["trace"], last["end"] = last["tape"][:h[0] // CHUNK], last["trace"][:h[0]], (h[2], h[3], h[4])
             older = older + seeds
             far = g.pos[nodes[kt]]
             segs.append(dict(type="assumed", no=b["no"], to=far.copy()))
             s1 = fine.rest_state(strict, far[0], far[2], far[1] + 1.0)
-            state, mode_now, seeds = (s1.pos, s1.vel, s1.omega, 0), BASE, []
+            state, mode_now, seeds = (s1.pos, s1.vel, s1.omega), BASE, []
             nodes, kinds = nodes[kt:], kinds[kt:]
     reached = bool(segs and segs[-1]["type"] == "follow" and segs[-1]["end"] is not None and np.linalg.norm(segs[-1]["end"][0] - g.pos[goal]) <= 2.5)
     unresolved = [breaks[k]["no"] for k in order if breaks[k]["status"] == "unresolved"]
@@ -375,7 +375,7 @@ def replays(worlds, res) -> bool:
         if sg["tape"]:
             pushes = np.array([fine.PUSHES[a] for a, _ in sg["tape"]])
             st, done, pos, vel, omega, s, _ = worlds[sg["mode"]].rollout(ph.WOOD, P, sg["start"][0], sg["start"][1], sg["start"][2], pushes,
-                                                                        [n for _, n in sg["tape"]], hanging=sg["start"][3])
+                                                                        [n for _, n in sg["tape"]])
             if st != OK or sg["end"] is None or np.abs(pos - sg["end"][0]).max() > 1e-9:
                 return False
         prev = sg["end"]
@@ -388,8 +388,7 @@ def summary(res, log=print):
     log("sector %d: %s; %.1f game s of trajectory; %d breaks in all, %d of them rolled across by the plain follower; replay %s"
         % (res["sector"], "reaches the goal" if res["solved"] else "does NOT get through: %s left as break%s" % (", ".join(res["unresolved"]) or "the way", "s" if len(res["unresolved"]) > 1 else ""),
            res["ticks"] / 132, len(res["breaks"]), n_rolled, "agrees" if res["replays"] else "DISAGREES"))
-    hang = sum(int(((sg["trace"][:, 3] > 0) & (sg["trace"][:, 7] == 0)).sum()) for sg in res["segments"] if sg["type"] == "follow")
-    log("   the follower's stretches: %.1f game s, %d ticks of them touching only an edge" % (sum(len(sg["trace"]) for sg in res["segments"] if sg["type"] == "follow") / 132, hang))
+    log("   the follower's stretches: %.1f game s" % (sum(len(sg["trace"]) for sg in res["segments"] if sg["type"] == "follow") / 132))
     for b in res["breaks"]:
         if b["status"] in ("rolled", "bypassed", "pending", "abandoned"):
             log("   %s %s at %s: gap %.1f, rise %+.1f%s -> %s" % (b["no"], b["kind"], np.round(b["near"], 1), b["gap"], b["rise"],
@@ -405,13 +404,12 @@ def summary(res, log=print):
         log(head)
         if b["status"] == "crossed":
             fl = "; ".join("flight %.1f across, %.1f down, take-off %.1f" % (f["across"], f["down"], f["speed"]) for f in b["flights"]) or "no flight"
-            log("      crossed in %s mode, %.1f game s, leaving %.0f back; %s; hanging %d ticks%s; %d of %d nudged runs still arrive"
-                % (b["mode"], b["ticks"] / 132, b["back"], fl, b["hang_ticks"], "; through " + ", ".join(b["through"]) if b["through"] else "", b["arrives"], b["trials"]))
+            log("      crossed, %.1f game s, leaving %.0f back; %s; %d of %d nudged runs still arrive"
+                % (b["ticks"] / 132, b["back"], fl, b["arrives"], b["trials"]))
         else:
             log("      LEFT AS A BREAK: not crossed in strict mode (" + "; ".join("from %s, %d tries" % (a["where"], a["tries"]) for a in b["attempts"] if a["mode"] == "strict") + ")")
             w = b.get("would_pass")
             if w:
-                log("      diagnosis only: it would pass in %s mode (%d tries)%s%s" % (w["mode"], w["tries"], ", touching only an edge for %d ticks" % w["hang_ticks"] if w["hang_ticks"] > 10 else "",
-                                                                                 ", through " + ", ".join(w["through"]) if w["through"] else ""))
+                log("      diagnosis only: with the loose balls taken out it passes (%d tries)%s" % (w["tries"], ", through " + ", ".join(w["through"]) if w["through"] else ""))
             else:
-                log("      diagnosis: not crossed in the laxer modes either (" + "; ".join("%s %d tries" % (a["mode"], a["tries"]) for a in b["attempts"] if a["mode"] != "strict") + ")")
+                log("      diagnosis: not crossed with the loose balls taken out either (" + "; ".join("%d tries" % a["tries"] for a in b["attempts"] if a["mode"] != "strict") + ")")

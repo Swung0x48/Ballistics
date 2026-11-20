@@ -52,7 +52,7 @@ def test_a_wall_is_reported_unresolved_and_what_follows_is_conditional():
     assert not res["solved"] and res["unresolved"] and res["reached"]
     assert any(sg["type"] == "assumed" for sg in res["segments"])
     b = [b for b in res["breaks"] if b["status"] == "unresolved"][0]
-    assert b["rise"] > 8.0 and [a["mode"] for a in b["attempts"]] == ["strict", "solid", "nohang", "free"] and b["would_pass"] is None
+    assert b["rise"] > 8.0 and [a["mode"] for a in b["attempts"]] == ["strict", "free"] and b["would_pass"] is None
 
 
 def test_a_loose_ball_across_the_road_stays_a_break_even_though_taking_it_out_would_pass():
@@ -75,5 +75,5 @@ def test_a_loose_ball_across_the_road_stays_a_break_even_though_taking_it_out_wo
     res = staged.solve_sector(m, info, g, 1, tries=4_000, log=lambda *a: None)
     b = [b for b in res["breaks"] if b["status"] == "unresolved"]
     assert not res["solved"] and len(b) == 1 and "P_Ball_Paper" in b[0]["between"]
-    assert b[0]["would_pass"]["mode"] == "nohang"                 # said as a diagnosis...
+    assert b[0]["would_pass"]["mode"] == "free"                   # said as a diagnosis...
     assert not any(sg["type"] == "cross" for sg in res["segments"])    # ...but no trajectory goes through the ball

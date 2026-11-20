@@ -18,7 +18,7 @@ from numba import njit
 from .geometry import FACE, Mesh, _distance, _near
 
 CAP = 64                # contacts looked at in one tick
-OK, DEAD, TRIGGER, PLACED, HANG = 0, 1, 2, 3, 4
+OK, DEAD, TRIGGER, PLACED = 0, 1, 2, 3
 LOW_CELL, LOW_SPAN = 8.0, 4     # a search bound, not physics: a ball lower than every surface within 32 to 40 units around is given up
 
 
@@ -179,22 +179,19 @@ def _settle(pos, r, margin, reach, ox, oz, cell, nx, nz, start, items, A, B, C, 
 
 @njit(cache=True)
 def _rollout(pos, vel, omega, pushes, holds, ball, par, margin, ox, oz, cell, nx, nz, start, items, A, B, C, lo_y, hi_y,
-             N, tri_fr, tri_el, tri_placed, tri_rail, hang_limit, boxes, spheres, y_min, low, low_ox, low_oz, low_cell, stamp, tickbox, ci, cd, cq, cf, cn, cg, order,
+             N, tri_fr, tri_el, tri_placed, tri_rail, boxes, spheres, y_min, low, low_ox, low_oz, low_cell, stamp, tickbox, ci, cd, cq, cf, cn, cg, order,
              n_imp, t_imp, fr, el, target, trace, stats):
     """Hold pushes[k] for holds[k] ticks each, in place. Stops early when the ball's centre enters a death box or
-    falls below everything near it (DEAD), hangs on edges for more than hang_limit ticks between two moments of
-    being carried (HANG; 0 = allowed), enters a trigger sphere (TRIGGER) or touches a placed object (PLACED).
+    falls below everything near it (DEAD), enters a trigger sphere (TRIGGER) or touches a placed object (PLACED).
     Returns (status, ticks done). trace (T, 9), if not empty, gets after every tick: position, how many points
     it touches, whether one is an edge or corner, whether the tick began with a hit, speed, whether something
     carries it (a rail, or a face under it), whether it touches a rail.
-    stats[7] on entry: how many ticks the ball has been hanging already; on return: the same, updated.
     stats: [0] ticks that began with a hit, [1] ticks touching an edge or corner, [2] ticks touching two or more
     points, [3] ticks touching nothing, [4] top speed, [5] touching at the end (1/0), [6] the last touching
     contact's normal y (or -1), [8] carried at the end (on a rail, or a face under it)."""
     done = 0
     touch = par[1]
     r = ball[6]
-    hanging = int(stats[7])
     for k in range(len(holds)):
         for _ in range(holds[k]):
             hit, m = _step(pos, vel, omega, pushes[k], ball, par, ox, oz, cell, nx, nz, start, items, A, B, C, lo_y, hi_y,
@@ -217,13 +214,6 @@ def _rollout(pos, vel, omega, pushes, holds, ball, par, margin, ox, oz, cell, nx
             _settle(pos, r, margin, 0.2, ox, oz, cell, nx, nz, start, items, A, B, C, lo_y, hi_y, N, stamp, tickbox,
                     ci, cd, cq, cf, cn, cg, order)
             done += 1
-            if carried:
-                hanging = 0
-            elif touching > 0:
-                hanging += 1                      # ticks in the air neither count nor clear it
-            stats[7] = hanging
-            if hang_limit > 0 and hanging > hang_limit:
-                return HANG, done
             if hit:
                 stats[0] += 1
             if edge:
@@ -276,7 +266,6 @@ class World:
     spheres: np.ndarray      # (S, 4) trigger spheres the ball must stay out of: x y z, distance
     y_min: float
     stop_on_placed: bool = True
-    hang_limit: int = 0      # a rollout ends when, since a rail or a face under it last carried the ball, it has touched only other things (edges, walls) for more ticks than this (0: allowed)
 
     def __post_init__(self):
         m = self.mesh
@@ -307,11 +296,11 @@ class World:
         self.solve = (np.empty(CAP), np.empty((CAP, 3)), np.empty(CAP), np.empty(CAP), np.empty(CAP))
 
     @classmethod
-    def of(cls, mesh: Mesh, death_boxes=(), keep_out=(), stop_on_placed: bool = True, hang_limit: int = 0) -> "World":
+    def of(cls, mesh: Mesh, death_boxes=(), keep_out=(), stop_on_placed: bool = True) -> "World":
         boxes = np.array([[*b["lo"], *b["hi"]] for b in death_boxes], np.float64).reshape(-1, 6)
         spheres = np.array([list(s) for s in keep_out], np.float64).reshape(-1, 4)
         y_min = float(mesh._lo_y.min()) - 30.0 if len(mesh.A) else -1e9
-        return cls(mesh, boxes, spheres, y_min, stop_on_placed, hang_limit)
+        return cls(mesh, boxes, spheres, y_min, stop_on_placed)
 
     def _geo(self):
         m = self.mesh
@@ -327,18 +316,16 @@ class World:
         rows = [(int(ci[k]), cq[k].copy(), int(cf[k]), cn[k].copy(), float(cg[k])) for k in order[:m]]
         return pos, vel, omega, bool(hit), rows, self.solve[0][:m].copy()
 
-    def rollout(self, ball, P, pos, vel, omega, pushes, holds, trace: bool = False, margin: float | None = None, hanging: int = 0):
-        """Hold each push for its number of ticks. Returns (status, ticks, pos, vel, omega, stats, trace or None).
-        hanging: how many ticks the ball has been hanging on an edge already (stats[7] of the rollout before)."""
+    def rollout(self, ball, P, pos, vel, omega, pushes, holds, trace: bool = False, margin: float | None = None):
+        """Hold each push for its number of ticks. Returns (status, ticks, pos, vel, omega, stats, trace or None)."""
         from .geometry import CONTACT_MARGIN
         pos, vel, omega = np.array(pos, np.float64), np.array(vel, np.float64), np.array(omega, np.float64)
         pushes = np.ascontiguousarray(pushes, np.float64).reshape(-1, 3)
         holds = np.ascontiguousarray(holds, np.int64)
         tr = np.empty((int(holds.sum()) if trace else 0, 9))
         stats = np.zeros(10)
-        stats[7] = hanging
         status, done = _rollout(pos, vel, omega, pushes, holds, ball_array(ball), params_array(P),
                                 CONTACT_MARGIN if margin is None else margin, *self._geo(), self.tri_fr, self.tri_el,
-                                self.tri_placed, self.tri_rail, self.hang_limit, self.boxes, self.spheres, self.y_min, self.low, self.low_ox, self.low_oz, LOW_CELL, self.stamp, self.tickbox, *self.work,
+                                self.tri_placed, self.tri_rail, self.boxes, self.spheres, self.y_min, self.low, self.low_ox, self.low_oz, LOW_CELL, self.stamp, self.tickbox, *self.work,
                                 *self.solve, tr, stats)
         return int(status), int(done), pos, vel, omega, stats, (tr[:done] if trace else None)

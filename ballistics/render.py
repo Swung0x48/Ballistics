@@ -89,7 +89,7 @@ def draw_staged(mesh: Mesh, res: dict, path, title: str | None = None, width: in
     box = (A[:, 0].min() - 8, A[:, 0].max() + 8, A[:, 2].min() - 8, A[:, 2].max() + 8)
     state = "到达目标" if res["solved"] else "不通，留有断点 " + "、".join(res["unresolved"])
     v = TopView(mesh, box=box, width=width, title=title or "第 %d 小节：先粗后细（%s，轨迹 %.1f 游戏秒）" % (res["sector"], state, res["ticks"] / 132), margin=2.0)
-    v.legend([(GROUND, "跟随器沿粗层通路滚（细线）"), (RAILC, "在钢轨上"), (CROSS, "细搜出来的过断点段（粗线）"), (FLY, "腾空"), (WARN, "只碰着棱"), ((170, 175, 185), "断点之后（淡色，不算到达）")])
+    v.legend([(GROUND, "跟随器沿粗层通路滚（细线）"), (RAILC, "在钢轨上"), (CROSS, "细搜出来的过断点段（粗线）"), (FLY, "腾空"), ((170, 175, 185), "断点之后（淡色，不算到达）")])
     after = False                                          # past a break that was left: drawn faint, it does not count as reached
     for sg in res["segments"]:
         if sg["type"] == "assumed":
@@ -99,8 +99,8 @@ def draw_staged(mesh: Mesh, res: dict, path, title: str | None = None, width: in
             continue
         tr = sg["trace"]
         cross = sg["type"] == "cross"
-        kind = np.where(tr[:, 3] == 0, 0, np.where(tr[:, 7] == 0, 2, np.where(tr[:, 8] > 0, 1, 4)))
-        colour = {0: FLY, 1: RAILC, 2: WARN, 4: CROSS if cross else GROUND}
+        kind = np.where(tr[:, 3] == 0, 0, np.where(tr[:, 8] > 0, 1, 4))
+        colour = {0: FLY, 1: RAILC, 4: CROSS if cross else GROUND}
         i = 0
         while i < len(tr) - 1:
             j = i
@@ -113,7 +113,7 @@ def draw_staged(mesh: Mesh, res: dict, path, title: str | None = None, width: in
             v.dot(b["near"], "%s 已过" % b["no"], CROSS, 8, 22)
         elif b["status"] == "unresolved":
             w = b.get("would_pass")
-            why = "" if not w else "（%s才能过）" % {"solid": "挂着侧棱", "nohang": "去掉道具球", "free": "去掉道具球并挂棱"}[w["mode"]]
+            why = "" if not w else "（去掉道具球才能过）"
             v.dot(b["near"], "断点 %s 未过%s" % (b["no"], why), WARN, 10, 24)
             v.dot(b["far"], "", WARN, 6)
         elif b["status"] == "rolled":
