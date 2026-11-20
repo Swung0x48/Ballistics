@@ -27,7 +27,32 @@ def main(argv=None):
     v.add_argument("--seconds", type=float, default=600.0, help="with --whole: time limit per sector")
     v.add_argument("--out", type=Path, default=Path("data"), help="folder for the results and the coarse graph")
     v.add_argument("--png", type=Path, help="folder for a top view of each sector")
+    r = sub.add_parser("route", help="write the solved level out as a reference line file (L<nn>.npz) for other tools to read")
+    r.add_argument("--map", type=Path, required=True, help="<name>-map.json")
+    r.add_argument("--results", type=Path, default=Path("data"), help="folder with the solver's results (<name>-staged-s<N>.pkl)")
+    r.add_argument("--level", type=int, required=True, help="the level number the file is named after")
+    r.add_argument("--out", type=Path, required=True, help="folder to write L<nn>.npz into")
     a = ap.parse_args(argv)
+    if a.command == "route":
+        import json
+        import pickle
+
+        from . import route
+
+        info = json.load(open(a.map, encoding="utf8"))
+        name = a.map.name.replace("-map.json", "")
+        results = []
+        for sec in range(1, len(info["reset_points"]) + 1):
+            f = a.results / ("%s-staged-s%d.pkl" % (name, sec))
+            if not f.exists():
+                break
+            results.append(pickle.load(open(f, "rb")))
+        P, sector, t_ms, meta = route.reference_line(results, info, a.level)
+        path = route.write_line(a.out, a.level, P, sector, t_ms, meta)
+        print("%s: %d points, %.0f long, %.1f game s, sectors %s on the line; %s" % (
+            path, len(P), meta["length"], meta["game_ms"] / 1000, meta["sectors_on_line"],
+            "complete" if meta["complete"] else "ends at the first break that was left: " + ", ".join("sector %d %s" % (b["sector"], b["no"]) for b in meta["left_breaks"])))
+        return
     if a.command == "solve":
         import json
         import pickle
