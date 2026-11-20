@@ -52,6 +52,12 @@ def main(argv=None):
             if a.png:
                 from .render import draw_staged
                 draw_staged(mesh, res, a.png / ("%s-staged-s%d.png" % (name, sec)))
+        done = [a.out / ("%s-staged-s%d.pkl" % (name, k)) for k in range(1, len(info["reset_points"]) + 1)]
+        if a.png and not a.whole and all(p.exists() for p in done):       # every sector has a result: the whole level on one view
+            from .render import draw_level
+            n = len(info["checkpoints"])
+            draw_level(mesh, [pickle.load(open(p, "rb")) for p in done], a.png / ("%s-staged-level.png" % name),
+                       ["出生点"] + ["盘点 %d" % (k + 1) for k in range(n)] + ["飞船"], [info["start"]] + info["checkpoints"] + [info["airship"]])
         return
     if a.command == "calibrate":
         from .calibrate import report
