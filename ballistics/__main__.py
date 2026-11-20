@@ -40,13 +40,18 @@ def main(argv=None):
         name = a.mesh.name.replace("-mesh.npz", "")
         g = solve.graph_for(mesh, info, a.out / (name + "-coarse-solid.pkl"))
         sectors = range(1, len(info["reset_points"]) + 1) if a.sector == "all" else [int(a.sector)]
+        carry = None                                          # the state the ball reached the last checkpoint in
         for sec in sectors:
             if a.whole:
                 world, c = solve.whole_sector(mesh, info, g, sec, a.whole, 6_000_000, a.seconds)
                 res = dict(sector=sec, mode=a.whole, crossing=c, analysis=solve.analyse(world, info, c) if c.found else None)
                 pickle.dump(res, open(a.out / ("%s-%s-s%d.pkl" % (name, a.whole, sec)), "wb"))
                 continue
-            res = staged.solve_sector(mesh, info, g, sec, a.tries)
+            before = a.out / ("%s-staged-s%d.pkl" % (name, sec - 1))
+            if carry is None and sec > 1 and before.exists():     # one sector asked for: go on from the result of the one before
+                carry = pickle.load(open(before, "rb")).get("end_state")
+            res = staged.solve_sector(mesh, info, g, sec, a.tries, start=carry)
+            carry = res["end_state"]                              # None when the sector was not got through: the next one starts at rest
             staged.summary(res)
             pickle.dump(res, open(a.out / ("%s-staged-s%d.pkl" % (name, sec)), "wb"))
             if a.png:

@@ -202,8 +202,11 @@ def _robust(world, search, seed, tape, trials: int = 20, rng_seed: int = 1) -> i
     return ok
 
 
-def solve_sector(mesh, info, g, sector: int, tries: int = 300_000, seed: int = 0, log=print) -> dict:
-    """sector: 1-based. g: the coarse graph of `mesh` with the loose balls in it (solid)."""
+def solve_sector(mesh, info, g, sector: int, tries: int = 300_000, seed: int = 0, log=print, start=None) -> dict:
+    """sector: 1-based. g: the coarse graph of `mesh` with the loose balls in it (solid).
+    start: the state (pos, vel, omega) the ball enters the sector with, as in a normal game: the state it reached
+    the sector's first checkpoint in. Without it the ball starts at rest under the sector's reset point, which is
+    how the level begins and how a ball comes back after it was lost."""
     worlds = {m: world_for(mesh, info, m) for m in ORDER}
     strict = worlds["strict"]
     rel = getattr(g, "_relaxed", None)
@@ -214,7 +217,7 @@ def solve_sector(mesh, info, g, sector: int, tries: int = 300_000, seed: int = 0
     togo = rel.togo(goal)
     reset = info["reset_points"][sector - 1]
     s0 = fine.rest_state(strict, reset[0], reset[2], reset[1] + 0.5)
-    state = (s0.pos, s0.vel, s0.omega)
+    state = (s0.pos, s0.vel, s0.omega) if start is None else tuple(np.array(x, float) for x in start)
     loose = [(p["type"], np.array(p["position"], float)) for p in info["placements"] if p["type"].startswith(coarse.LOOSE)]
     coarse_back = [[] for _ in range(len(g.pos))]
     for u in range(len(g.pos)):
@@ -414,7 +417,8 @@ def solve_sector(mesh, info, g, sector: int, tries: int = 300_000, seed: int = 0
     unresolved = [breaks[k]["no"] for k in order if breaks[k]["status"] == "unresolved"]
     res = dict(sector=sector, tries=tries, segments=segs, breaks=[breaks[k] for k in order], first=first, reached=reached, unresolved=unresolved,
                solved=reached and not unresolved, ticks=int(sum(len(sg["trace"]) for sg in segs if sg["type"] != "assumed")),
-               goal=g.pos[goal].copy(), start=np.array(s0.pos))
+               goal=g.pos[goal].copy(), start=np.array(state[0]), rolling_start=start is not None,
+               end_state=segs[-1]["end"] if reached and not unresolved else None)
     res["flights"] = [f for sg in segs if sg["type"] == "follow" for f in _flights(sg["trace"], 20)]
     res["replays"] = replays(worlds, res)
     return res
@@ -444,8 +448,9 @@ def replays(worlds, res) -> bool:
 def summary(res, log=print):
     """The break list of a solved sector, in words."""
     n_rolled = sum(b["status"] == "rolled" for b in res["breaks"])
-    log("sector %d: %s; %.1f game s of trajectory; %d breaks in all, %d of them rolled across by the plain follower; replay %s"
-        % (res["sector"], "reaches the goal" if res["solved"] else "does NOT get through: %s left as break%s" % (", ".join(res["unresolved"]) or "the way", "s" if len(res["unresolved"]) > 1 else ""),
+    log("sector %d (%s): %s; %.1f game s of trajectory; %d breaks in all, %d of them rolled across by the plain follower; replay %s"
+        % (res["sector"], "entered rolling at %.1f" % float(np.hypot(res["segments"][0]["start"][1][0], res["segments"][0]["start"][1][2])) if res.get("rolling_start") else "from rest",
+           "reaches the goal" if res["solved"] else "does NOT get through: %s left as break%s" % (", ".join(res["unresolved"]) or "the way", "s" if len(res["unresolved"]) > 1 else ""),
            res["ticks"] / 132, len(res["breaks"]), n_rolled, "agrees" if res["replays"] else "DISAGREES"))
     log("   the follower's stretches: %.1f game s" % (sum(len(sg["trace"]) for sg in res["segments"] if sg["type"] == "follow") / 132))
     for f in res.get("flights", ()):
