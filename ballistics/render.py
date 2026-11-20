@@ -134,6 +134,36 @@ class TopView:
         for r in runs:
             self.pen.line([tuple(v) for v in r], fill=colour + (alpha,), width=width, joint="curve")
 
+    def speed_labels(self, segments, every: float = 70.0, size: int = 20):
+        """The ball's horizontal speed written along a route, every `every` pixels of the way, where a label does not
+        land on one already there. segments: traces in order (rows of position ...), None where the route breaks off.
+        The speed is the distance covered over the last 8 ticks, so one tick's stop at a landing does not show."""
+        f = _font(size)
+        placed = []
+        run = every * 0.5
+        for tr in segments:
+            if tr is None or len(tr) < 10:
+                run = every * 0.5
+                continue
+            q = np.array([self.P(p[0], p[2]) for p in tr[:, :3]])
+            step = np.r_[0.0, np.hypot(*(q[1:] - q[:-1]).T)]
+            for k in range(8, len(tr)):
+                run += step[k]
+                if run < every:
+                    continue
+                run = 0.0
+                speed = float(np.hypot(tr[k, 0] - tr[k - 8, 0], tr[k, 2] - tr[k - 8, 2])) * 66.0 / 8.0
+                text = "%.0f" % speed
+                w = int(self.pen.textlength(text, font=f))
+                x, y = int(q[k, 0]) + 8, int(q[k, 1]) - size - 6
+                box = (x - 3, y - 1, x + w + 3, y + size + 5)
+                if any(not (box[2] < o[0] or box[0] > o[2] or box[3] < o[1] or box[1] > o[3]) for o in placed):
+                    continue
+                placed.append(box)
+                self.pen.ellipse((q[k, 0] - 4, q[k, 1] - 4, q[k, 0] + 4, q[k, 1] + 4), fill=SURFACE, outline=INK, width=2)
+                self.pen.rectangle(box, fill=SURFACE + (225,))
+                self.pen.text((x, y), text, fill=INK, font=f)
+
     def save(self, path):
         self.img.save(path)
 
@@ -148,7 +178,7 @@ def draw_staged(mesh: Mesh, res: dict, path, title: str | None = None, width: in
     A = np.concatenate(pts)
     box = (A[:, 0].min() - 8, A[:, 0].max() + 8, A[:, 2].min() - 8, A[:, 2].max() + 8)
     state = "到达目标" if res["solved"] else "不通，留有断点 " + "、".join(res["unresolved"])
-    v = TopView(mesh, box=box, width=width, title=title or "第 %d 小节：先粗后细（%s，轨迹 %.1f 游戏秒）" % (res["sector"], state, res["ticks"] / 132), margin=2.0)
+    v = TopView(mesh, box=box, width=width, title=title or "第 %d 小节：先粗后细（%s，轨迹 %.1f 游戏秒）；线上的数字是水平速度" % (res["sector"], state, res["ticks"] / 132), margin=2.0)
     v.legend([(GROUND, "跟随器沿粗层通路滚（细线）"), (RAILC, "在钢轨上"), (CROSS, "细搜出来的过断点段（粗线）"), (FLY, "腾空"), ((170, 175, 185), "断点之后（淡色，不算到达）")])
     after = False                                          # past a break that was left: drawn faint, it does not count as reached
     for sg in res["segments"]:
@@ -171,6 +201,7 @@ def draw_staged(mesh: Mesh, res: dict, path, title: str | None = None, width: in
                 c = tuple(int(0.3 * a + 0.7 * b) for a, b in zip(c, BG))
             v.line(tr[i:j + 2, :3], c, 7 if cross else 3)
             i = j + 1
+    v.speed_labels([None if sg["type"] == "assumed" else sg["trace"] for sg in res["segments"]], every=90.0)
     for b in res["breaks"]:
         if b["status"] == "crossed":
             v.dot(b["near"], "%s 已过" % b["no"], CROSS, 8, 22)
@@ -190,7 +221,7 @@ def draw_level(mesh: Mesh, results: list, path, names=None, anchors=None, title:
     """The whole level from above, coloured by height, with the route of every sector on it: thin where the plain
     follower rolled, thick where the fine level searched a crossing, dashed in the air, faint past a break that was
     left (that part does not count as reached). Breaks that were left are marked and named."""
-    v = TopView(mesh, width=width, title=title or "整关俯视图（按路面高度上色）和现在的线路", margin=12.0, height=True)
+    v = TopView(mesh, width=width, title=title or "整关俯视图（按路面高度上色）和现在的线路；线上的数字是水平速度", margin=12.0, height=True)
     f = _font(20)
     x = 16
     for kind, text in (("thin", "跟随器沿粗层通路滚"), ("thick", "细搜出来的过断点段"), ("dash", "腾空"), ("faint", "留下的断点之后（不算到达）")):
@@ -226,6 +257,8 @@ def draw_level(mesh: Mesh, results: list, path, names=None, anchors=None, title:
                 flying = bool(air[i]) and j - i >= 10
                 v.halo_line(tr[i:j + 2, :3], FAINT if after else INK, wide, dash=10.0 if flying else 0.0)
                 i = j + 1
+    for res in results:
+        v.speed_labels([None if sg["type"] == "assumed" else sg["trace"] for sg in res["segments"]], every=110.0, size=18)
     for res in results:
         for b in res["breaks"]:
             if b["status"] == "unresolved":
