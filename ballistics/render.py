@@ -303,7 +303,7 @@ def _routes(v: "TopView", results, label_every: float, label_size: int, numbers:
                 why = "（去掉道具球才能过）" if b.get("would_pass") else ""
                 text, ft = "第 %d 小节 断点 %s 未过%s" % (res["sector"], b["no"], why), _font(24)
                 tw = int(v.pen.textlength(text, font=ft))
-                tx, ty = px - tw - 30, py - 62                    # up and to the left, on a plate, clear of the route
+                tx, ty = max(px - tw - 30, 16), py - 62           # up and to the left, on a plate, clear of the route, inside the picture
                 v.pen.rectangle((tx - 8, ty - 4, tx + tw + 8, ty + 34), fill=SURFACE + (235,), outline=CRITICAL)
                 v.pen.text((tx, ty), text, fill=INK, font=ft)
                 v.pen.line([(tx + tw + 8, ty + 34), (px - 12, py - 12)], fill=CRITICAL, width=2)
