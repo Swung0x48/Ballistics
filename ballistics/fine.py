@@ -51,55 +51,19 @@ class Crossing:
     end: np.ndarray | None = None
     stats: dict = field(default_factory=dict)
     nearest: np.ndarray | None = None             # the kept state nearest the target when nothing was found
+    root: int = -1                                # which start it left from (the index `Search.add_start` returned)
+    end_state: tuple | None = None                # (pos, vel, omega, hanging) at the end
 
     def keys(self) -> str:
         return " ".join("%s×%d" % (PUSH_NAMES[a], n) for a, n in self.tape)
 
 
-def guide(graph, goal: int, near: float = 4.0, far: float = 25.0) -> np.ndarray:
-    """How far each coarse place is from the goal place, counted generously: along the coarse level's own edges,
-    and also straight across to any place within `near`, and from ledges and lane points to others within `far`
-    (dearer). It only steers the search, so being generous costs time, never correctness: wherever the coarse level
-    fails to connect, the search is still drawn across and the kernel decides."""
-    import heapq
-    P = graph.pos
-    n = len(P)
-    back = [[] for _ in range(n)]
-    for u in range(n):
-        for e in graph.adj[u]:
-            back[e[0]].append((u, e[1]))
-    grid: dict = {}
-    for i, p in enumerate(P):
-        grid.setdefault((int(p[0] // near), int(p[1] // near), int(p[2] // near)), []).append(i)
-    for (a, b, c), ids in grid.items():
-        other = [k for da in (-1, 0, 1) for db in (-1, 0, 1) for dc in (-1, 0, 1) for k in grid.get((a + da, b + db, c + dc), ())]
-        Q = P[other]
-        for i in ids:
-            d = np.sqrt(((Q - P[i]) ** 2).sum(1))
-            for k in np.flatnonzero((d <= near) & (d > 0)):
-                back[i].append((other[k], 2.0 * float(d[k]) + 2.0))
-    edge = np.zeros(n, bool)
-    edge[:graph.info["rest_places"]] = graph.info["edge_node"][:graph.info["rest_places"]]
-    edge[graph.info["rest_places"]:] = True
-    E = np.flatnonzero(edge)
-    for lo in range(0, len(E), 512):
-        chunk = E[lo:lo + 512]
-        D = np.sqrt(((P[chunk][:, None, :] - P[E][None, :, :]) ** 2).sum(2))
-        for r, i in enumerate(chunk):
-            for k in np.flatnonzero((D[r] <= far) & (D[r] > near)):
-                back[i].append((int(E[k]), 3.0 * float(D[r, k]) + 15.0))
-    togo = np.full(n, np.inf)
-    togo[goal] = 0.0
-    heap = [(0.0, goal)]
-    while heap:
-        d, u = heapq.heappop(heap)
-        if d > togo[u]:
-            continue
-        for v, c in back[u]:
-            if d + c < togo[v]:
-                togo[v] = d + c
-                heapq.heappush(heap, (d + c, v))
-    return togo
+def guide(graph, goal: int) -> np.ndarray:
+    """How far each coarse place is from the goal place, counted generously (`coarse.Relaxed`). It only steers the
+    search, so being generous costs time, never correctness: wherever the coarse level fails to connect, the search
+    is still drawn across and the kernel decides."""
+    from .coarse import Relaxed
+    return Relaxed(graph).togo(goal)
 
 
 def rest_state(world: World, x: float, z: float, from_y: float) -> ph.State:
@@ -160,8 +124,8 @@ class Search:
         return float((3.0 * np.sqrt(((self.G[near] - p) ** 2).sum(1)) + self.togo[near]).min())
 
     def arrived(self, pos, vel, stats) -> bool:
-        """Rolling on a target place: touching something that carries the ball, at a target place's height and spot."""
-        return bool(stats[5] > 0 and stats[6] >= WALK_NY and self.distance(pos) <= self.reach)
+        """Rolling on a target place: carried (by a rail, or by a face under it) at a target place's height and spot."""
+        return bool(stats[8] > 0 and self.distance(pos) <= self.reach)
 
     # ---- the kept states
     def _key(self, pos, vel, stats):
@@ -188,10 +152,12 @@ class Search:
             self.slot[k], self.h[k] = i, self.score(pos)
         return i
 
-    def add_start(self, s: ph.State):
-        st = np.zeros(8)
-        st[5], st[6] = 1.0, 1.0
-        self._keep(np.array(s.pos, float), np.array(s.vel, float), np.array(s.omega, float), -1, 0, 0, 0, st)
+    def add_start(self, s: ph.State, hanging: int = 0, grounded: bool = True) -> int:
+        """A state to grow from. Returns its index (the `root` of a crossing that leaves from it), or -1 if another
+        start already holds its cell."""
+        st = np.zeros(10)
+        st[5], st[6], st[7], st[8] = float(grounded), 1.0, hanging, float(grounded)
+        return self._keep(np.array(s.pos, float), np.array(s.vel, float), np.array(s.omega, float), -1, 0, 0, 0, st)
 
     def _pick(self) -> int:
         n = len(self.slot)
@@ -255,19 +221,20 @@ class Search:
         if self.goal < 0:
             return Crossing(False, self.expansions, seconds, len(self.slot), float(h[best]), nearest=self.pos[self.slot[best]].copy())
         root, tape = self.tape_of(self.goal)
-        out = replay(self.w, self.ball, self.P, ph.State(self.pos[root], self.vel[root], self.omega[root]), tape)
+        out = replay(self.w, self.ball, self.P, ph.State(self.pos[root], self.vel[root], self.omega[root]), tape, hanging=self.hang[root])
         if out["ticks"] != self.ticks[self.goal] or np.abs(out["pos"] - self.pos[self.goal]).max() > 1e-6:
             raise RuntimeError("the key tape does not reproduce the state the search arrived at")
         return Crossing(True, self.expansions, seconds, len(self.slot), self.distance(self.pos[self.goal]), ticks=out["ticks"], tape=tape,
-                        trace=out["trace"], start=self.pos[root].copy(), end=out["pos"], stats=out["stats"])
+                        trace=out["trace"], start=self.pos[root].copy(), end=out["pos"], stats=out["stats"], root=root,
+                        end_state=(out["pos"], out["vel"], out["omega"], out["hanging"]))
 
 
-def replay(world: World, ball: ph.Ball, P: ph.Params, start: ph.State, tape) -> dict:
+def replay(world: World, ball: ph.Ball, P: ph.Params, start: ph.State, tape, hanging: int = 0) -> dict:
     """Run a key tape from a state: the trajectory and what it met."""
     pushes = np.array([PUSHES[a] for a, _ in tape]).reshape(-1, 3)
     holds = [n for _, n in tape]
-    status, done, pos, vel, omega, st, trace = world.rollout(ball, P, start.pos, start.vel, start.omega, pushes, holds, trace=True)
-    return dict(status=status, ticks=done, pos=pos, vel=vel, omega=omega, trace=trace,
+    status, done, pos, vel, omega, st, trace = world.rollout(ball, P, start.pos, start.vel, start.omega, pushes, holds, trace=True, hanging=hanging)
+    return dict(status=status, ticks=done, pos=pos, vel=vel, omega=omega, trace=trace, hanging=int(st[7]),
                 stats=dict(impact_ticks=int(st[0]), edge_ticks=int(st[1]), multi_contact_ticks=int(st[2]), air_ticks=int(st[3]),
                            top_speed=float(st[4]), touching_at_end=bool(st[5] > 0)))
 

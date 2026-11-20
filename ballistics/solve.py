@@ -1,6 +1,7 @@
-"""Solve a level sector by sector at the fine level, and say what each trajectory leans on.
+"""Worlds and modes for the fine level, and the whole-sector search (the first version: one search from a
+checkpoint to the next, kept for comparison; `staged.py` is the coarse-first flow).
 
-    python -m ballistics solve --mesh data/Level_01-mesh.npz --map data/Level_01-map.json --sector 2 --mode strict
+    python -m ballistics solve --mesh data/Level_01-mesh.npz --map data/Level_01-map.json --sector 2 --whole strict
 
 Modes (what a rollout may not do):
   strict   touch anything placed on the map (mechanisms, boxes, loose balls), or hang on edges
@@ -33,12 +34,13 @@ def world_for(mesh: Mesh, info: dict, mode: str) -> World:
     # above the transformer's origin (the distance is READ, the centre's height is not)
     keep = [(x, y + 2.0, z, d) for x, y, z, d in coarse.keep_out(info["placements"])]
     if not solid_balls:
-        loose = np.array([bool(e.get("placed")) and str(e.get("type", "")).startswith(coarse.LOOSE) for e in mesh.entities], bool)
-        mesh = mesh.subset(~loose[mesh.owner])
+        mesh = coarse.without_loose(mesh)
     return World.of(mesh, info["death_boxes"], keep, hang_limit=hang)
 
 
 def graph_for(mesh: Mesh, info: dict, cache: Path | None = None, log=print):
+    """The coarse graph of the mesh as given: pass the full mesh to have the loose balls in it as obstacles, or
+    `coarse.without_loose(mesh)` to have them out."""
     if cache is not None and cache.exists():
         return pickle.load(open(cache, "rb"))
     g = coarse.build(mesh, avoid=coarse.keep_out(info["placements"]), log=log)
@@ -49,7 +51,7 @@ def graph_for(mesh: Mesh, info: dict, cache: Path | None = None, log=print):
     return g
 
 
-def solve_sector(mesh: Mesh, info: dict, g, sector: int, mode: str = "strict", expansions: int = 3_000_000, seconds: float = 600.0,
+def whole_sector(mesh: Mesh, info: dict, g, sector: int, mode: str = "strict", expansions: int = 3_000_000, seconds: float = 600.0,
                  seed: int = 0, log=print):
     """sector: 1-based. From rest under the sector's reset point to the places around the next checkpoint (for the
     last sector: around the last coarse place before the airship, whose own shape is not in the mesh)."""

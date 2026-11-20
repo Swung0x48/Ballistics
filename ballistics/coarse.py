@@ -102,7 +102,13 @@ class Graph:
 # Loose balls (P_Ball_*) are not kept out of: a rolling ball knocks them aside. That is ASSUMED too, and a way that
 # passes one is reported as passing it.
 KEEP_OUT = {"P_Trafo_Stone": TRIGGER_R + 0.3, "P_Trafo_Paper": TRIGGER_R + 0.3}
-LOOSE = ("P_Ball_",)       # placed objects a rolling ball knocks aside (ASSUMED): not treated as obstacles, only reported
+LOOSE = ("P_Ball_",)       # loose balls: obstacles like everything placed, unless the caller takes them out with `without_loose`
+
+
+def without_loose(mesh: Mesh) -> Mesh:
+    """The mesh with the loose balls taken out: what the level is if a rolling ball knocks them aside (ASSUMED)."""
+    loose = np.array([bool(e.get("placed")) and str(e.get("type", "")).startswith(LOOSE) for e in mesh.entities], bool)
+    return mesh.subset(~loose[mesh.owner]) if loose.any() else mesh
 
 
 def keep_out(placements) -> list:
@@ -156,9 +162,6 @@ def _held(mesh: Mesh, contacts) -> bool:
 
 def build(mesh: Mesh, avoid=(), radius: float = BALL_R, log=lambda *a: None) -> Graph:
     """avoid: [(x, y, z, distance)] places the ball must stay out of (see `keep_out`)."""
-    loose = np.array([bool(e.get("placed")) and str(e.get("type", "")).startswith(LOOSE) for e in mesh.entities], bool)
-    if loose.any():
-        mesh = mesh.subset(~loose[mesh.owner])           # loose balls are not obstacles here
     floor = ~mesh.rail
     lo = np.minimum(np.minimum(mesh.A, mesh.B), mesh.C)[floor]
     hi = np.maximum(np.maximum(mesh.A, mesh.B), mesh.C)[floor]
@@ -287,8 +290,7 @@ def add_steps(g: Graph, mesh: Mesh, radius: float = BALL_R, log=lambda *a: None)
     grid: dict = {}
     for k in range(n):
         grid.setdefault((int(round(F[k, 0] / STEP)), int(round(F[k, 2] / STEP))), []).append(k)
-    loose = np.array([bool(e.get("placed")) and str(e.get("type", "")).startswith(LOOSE) for e in mesh.entities], bool)
-    solid = mesh.subset(~loose[mesh.owner]) if loose.any() else mesh
+    solid = mesh
     added = 0
     for (i, j), ids in grid.items():
         for di in range(-4, 5):
@@ -392,3 +394,73 @@ def _lane_chains(g: Graph) -> list:
     for li in range(len(g.lanes)):
         out.append(np.flatnonzero(g.lane == li))
     return [c for c in out if len(c)]
+
+
+GAP_COST, BRIDGE_COST = 300.0, 1000.0      # a link is taken only where the coarse level's own edges do not get there (or only by a detour longer than this)
+
+
+class Relaxed:
+    """The coarse graph plus generous links where it does not connect: 'gap' between any two places within `near`
+    that have no edge, and 'bridge' between ledges and lane points within `far` (dearer, more so upwards). A plan
+    over it is the coarse level's ways joined by the links it would need: each link on a plan is a break."""
+
+    def __init__(self, g: Graph, near: float = 4.0, far: float = 25.0):
+        P = g.pos
+        n = len(P)
+        self.g = g
+        fwd = [list(a) for a in g.adj]
+        have = [set(e[0] for e in a) for a in g.adj]
+        grid: dict = {}
+        for i, p in enumerate(P):
+            grid.setdefault((int(p[0] // near), int(p[1] // near), int(p[2] // near)), []).append(i)
+        for (a, b, c), ids in grid.items():
+            other = [k for da in (-1, 0, 1) for db in (-1, 0, 1) for dc in (-1, 0, 1) for k in grid.get((a + da, b + db, c + dc), ())]
+            Q = P[other]
+            for i in ids:
+                d = np.sqrt(((Q - P[i]) ** 2).sum(1))
+                for k in np.flatnonzero((d <= near) & (d > 0)):
+                    v = other[k]
+                    if v not in have[i]:
+                        fwd[i].append((v, GAP_COST + 2.0 * float(d[k]) + 6.0 * max(0.0, float(P[v, 1] - P[i, 1])), "gap"))
+        edge = np.zeros(n, bool)
+        nf = g.info["rest_places"]
+        edge[:nf] = g.info["edge_node"][:nf]
+        edge[nf:] = True
+        E = np.flatnonzero(edge)
+        for lo in range(0, len(E), 512):
+            chunk = E[lo:lo + 512]
+            D = np.sqrt(((P[chunk][:, None, :] - P[E][None, :, :]) ** 2).sum(2))
+            for r, i in enumerate(chunk):
+                for k in np.flatnonzero((D[r] <= far) & (D[r] > near)):
+                    v = int(E[k])
+                    if v not in have[i]:
+                        fwd[i].append((v, BRIDGE_COST + 3.0 * float(D[r, k]) + 6.0 * max(0.0, float(P[v, 1] - P[i, 1])), "bridge"))
+        self.fwd = fwd
+        self.back = [[] for _ in range(n)]
+        for u in range(n):
+            for v, c, _k in fwd[u]:
+                self.back[v].append((u, c))
+
+    def togo(self, goal: int) -> np.ndarray:
+        """How far each place is from the goal over this graph."""
+        togo = np.full(len(self.fwd), np.inf)
+        togo[goal] = 0.0
+        heap = [(0.0, goal)]
+        while heap:
+            d, u = heapq.heappop(heap)
+            if d > togo[u]:
+                continue
+            for v, c in self.back[u]:
+                if d + c < togo[v]:
+                    togo[v] = d + c
+                    heapq.heappush(heap, (d + c, v))
+        return togo
+
+    def plan(self, u: int, togo: np.ndarray):
+        """The way from place u to the goal: (places, kind of the edge leaving each but the last)."""
+        nodes, kinds = [int(u)], []
+        while togo[nodes[-1]] > 0 and np.isfinite(togo[nodes[-1]]):
+            v, c, k = min(self.fwd[nodes[-1]], key=lambda e: e[1] + togo[e[0]])
+            nodes.append(int(v))
+            kinds.append(k)
+        return nodes, kinds

@@ -190,7 +190,7 @@ def _rollout(pos, vel, omega, pushes, holds, ball, par, margin, ox, oz, cell, nx
     stats[7] on entry: how many ticks the ball has been hanging already; on return: the same, updated.
     stats: [0] ticks that began with a hit, [1] ticks touching an edge or corner, [2] ticks touching two or more
     points, [3] ticks touching nothing, [4] top speed, [5] touching at the end (1/0), [6] the last touching
-    contact's normal y (or -1)."""
+    contact's normal y (or -1), [8] carried at the end (on a rail, or a face under it)."""
     done = 0
     touch = par[1]
     r = ball[6]
@@ -237,6 +237,7 @@ def _rollout(pos, vel, omega, pushes, holds, ball, par, margin, ox, oz, cell, nx
                 stats[4] = speed
             stats[5] = 1.0 if touching > 0 else 0.0
             stats[6] = best_ny
+            stats[8] = 1.0 if carried else 0.0
             if len(trace) > 0 and done <= len(trace):
                 trace[done - 1, 0], trace[done - 1, 1], trace[done - 1, 2] = pos[0], pos[1], pos[2]
                 trace[done - 1, 3], trace[done - 1, 4], trace[done - 1, 5] = touching, 1.0 if edge else 0.0, 1.0 if hit else 0.0
@@ -334,7 +335,7 @@ class World:
         pushes = np.ascontiguousarray(pushes, np.float64).reshape(-1, 3)
         holds = np.ascontiguousarray(holds, np.int64)
         tr = np.empty((int(holds.sum()) if trace else 0, 9))
-        stats = np.zeros(8)
+        stats = np.zeros(10)
         stats[7] = hanging
         status, done = _rollout(pos, vel, omega, pushes, holds, ball_array(ball), params_array(P),
                                 CONTACT_MARGIN if margin is None else margin, *self._geo(), self.tri_fr, self.tri_el,
