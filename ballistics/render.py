@@ -89,9 +89,13 @@ def draw_staged(mesh: Mesh, res: dict, path, title: str | None = None, width: in
     box = (A[:, 0].min() - 8, A[:, 0].max() + 8, A[:, 2].min() - 8, A[:, 2].max() + 8)
     state = "到达目标" if res["solved"] else "不通，留有断点 " + "、".join(res["unresolved"])
     v = TopView(mesh, box=box, width=width, title=title or "第 %d 小节：先粗后细（%s，轨迹 %.1f 游戏秒）" % (res["sector"], state, res["ticks"] / 132), margin=2.0)
-    v.legend([(GROUND, "跟随器沿粗层通路滚（细线）"), (RAILC, "在钢轨上"), (CROSS, "细搜出来的过断点段（粗线）"), (FLY, "腾空"), (WARN, "只碰着棱")])
+    v.legend([(GROUND, "跟随器沿粗层通路滚（细线）"), (RAILC, "在钢轨上"), (CROSS, "细搜出来的过断点段（粗线）"), (FLY, "腾空"), (WARN, "只碰着棱"), ((170, 175, 185), "断点之后（淡色，不算到达）")])
+    after = False                                          # past a break that was left: drawn faint, it does not count as reached
     for sg in res["segments"]:
-        if sg["type"] == "assumed" or not len(sg["trace"]):
+        if sg["type"] == "assumed":
+            after = True
+            continue
+        if not len(sg["trace"]):
             continue
         tr = sg["trace"]
         cross = sg["type"] == "cross"
@@ -102,7 +106,7 @@ def draw_staged(mesh: Mesh, res: dict, path, title: str | None = None, width: in
             j = i
             while j + 1 < len(tr) - 1 and kind[j + 1] == kind[i]:
                 j += 1
-            v.line(tr[i:j + 2, :3], colour[int(kind[i])], 7 if cross else 3)
+            v.line(tr[i:j + 2, :3], colour[int(kind[i])] + ((90,) if after else ()), 7 if cross else 3)
             i = j + 1
     for b in res["breaks"]:
         if b["status"] == "crossed":
