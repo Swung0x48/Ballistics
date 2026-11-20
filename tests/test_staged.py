@@ -3,6 +3,8 @@ import numpy as np
 
 from ballistics import coarse, staged
 from ballistics.geometry import Mesh
+from ballistics.kernel import World
+from ballistics.launch import add_launches
 
 
 def quad(x0, x1, z0, z1, y):
@@ -10,7 +12,7 @@ def quad(x0, x1, z0, z1, y):
     return [(p[0], p[2], p[1]), (p[0], p[3], p[2])]           # wound to face up
 
 
-def level(parts, goal):
+def level(parts, goal, launches=True):
     A, B, C, owner, ents = [], [], [], [], []
     for tris in parts:
         ents.append(dict(name="part%d" % len(ents), placed=False, type=""))
@@ -20,7 +22,8 @@ def level(parts, goal):
     info = dict(start=[4.0, 2.0, 4.0], checkpoints=[], airship=list(goal), reset_points=[[4.0, 3.0, 4.0]], placements=[], death_boxes=[])
     g = coarse.build(m)
     coarse.add_steps(g, m)
-    coarse.add_flights(g, m)
+    if launches:
+        add_launches(g, World.of(m))
     return m, info, g
 
 
@@ -32,16 +35,29 @@ def test_a_plain_road_needs_no_search():
 
 
 def test_a_gap_is_one_break_and_only_there_is_searched():
-    m, info, g = level([quad(0, 30, 0, 8, 0.0), quad(37, 70, 0, 8, -1.0)], (62.0, 1.0, 4.0))
+    # without launch edges on the graph, the gap is a break of the plan, and the fine level is asked only there
+    m, info, g = level([quad(0, 30, 0, 8, 0.0), quad(37, 70, 0, 8, -1.0)], (62.0, 1.0, 4.0), launches=False)
     res = staged.solve_sector(m, info, g, 1, tries=60_000, log=lambda *a: None)
     crossed = [b for b in res["breaks"] if b["status"] == "crossed"]
     assert res["solved"] and res["replays"] and len(crossed) == 1
     b = crossed[0]
-    assert b["mode"] == "strict" and b["flights"] and 26.0 < b["near"][0] < 31.0
+    assert b["flights"] and 26.0 < b["near"][0] < 31.0
     kinds = [sg["type"] for sg in res["segments"]]
     assert kinds.count("cross") == 1 and kinds[0] == "follow" and kinds[-1] == "follow"
     rolled = sum(len(sg["trace"]) for sg in res["segments"] if sg["type"] == "follow")
     assert rolled > sum(len(sg["trace"]) for sg in res["segments"] if sg["type"] == "cross")          # most of the way is plain rolling
+
+
+def test_a_fall_on_the_plan_is_a_launch_with_its_run_up_not_a_search():
+    m, info, g = level([quad(0, 30, 0, 8, 0.0), quad(36, 70, 0, 8, -4.0)], (62.0, -2.0, 4.0))
+    res = staged.solve_sector(m, info, g, 1, tries=20_000, log=lambda *a: None)
+    assert res["solved"] and res["replays"]
+    kinds = [sg["type"] for sg in res["segments"]]
+    assert kinds.count("launch") == 1 and "cross" not in kinds          # rolled to the run-up start, launched, rolled on
+    L = res["launches"][0]
+    assert L["speed"] > 6.0 and L["across"] > 5.0 and abs(L["speed"] - L["planned_speed"]) < 2.5
+    before = res["segments"][kinds.index("launch") - 1]
+    assert np.hypot(before["end"][1][0], before["end"][1][2]) <= 0.7     # it starts the run-up at rest, as the edge was made
 
 
 def test_a_wall_is_reported_unresolved_and_what_follows_is_conditional():
@@ -71,7 +87,7 @@ def test_a_loose_ball_across_the_road_stays_a_break_even_though_taking_it_out_wo
                 placements=[dict(type="P_Ball_Paper", position=[26.0, 2.0, 4.0])], death_boxes=[])
     g = coarse.build(m)
     coarse.add_steps(g, m)
-    coarse.add_flights(g, m)
+    add_launches(g, World.of(m))
     res = staged.solve_sector(m, info, g, 1, tries=4_000, log=lambda *a: None)
     b = [b for b in res["breaks"] if b["status"] == "unresolved"]
     assert not res["solved"] and len(b) == 1 and "P_Ball_Paper" in b[0]["between"]

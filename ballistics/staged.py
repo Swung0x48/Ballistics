@@ -3,7 +3,8 @@
 1. The coarse level plans the way through a sector: its own edges, joined by the links it would need where it
    does not connect. Each such link is a *break* (so are the steps and flights it only proposes), listed with what
    is known about it from the map alone: the gap, the rise, what is placed in between.
-2. A plain follower rolls the ball along the plan in the physics kernel. Where it gets across a listed break by
+2. A plain follower rolls the ball along the plan in the physics kernel. Falls and flights on the plan are launch
+   edges (launch.py): the follower comes to rest where the run-up starts and holds the keys the edge was made with. Where it gets across a listed break by
    itself, the break was the coarse level's own shortcoming. Where it cannot go on (a listed break or not), that
    is a break for step 3.
 3. Only there, the fine level searches key tapes, starting from the states the ball had on the stretch it has just
@@ -29,7 +30,7 @@ from .geometry import BALL_R
 from .kernel import DEAD, OK, PLACED, TRIGGER
 from .solve import world_for
 
-BREAK_KINDS = ("gap", "bridge", "step", "flight")
+BREAK_KINDS = ("gap", "bridge", "step")
 ROLLS = ("roll", "rail", "rail end", "drop")
 ORDER = ("strict", "free")
 FOLLOW_SPEED = 9.0        # a working value for the follower, well under the wood ball's plateau of 15.9
@@ -64,29 +65,48 @@ def describe_break(g, mesh, u: int, v: int, kind: str) -> dict:
                 rise=float(b[1] - a[1]), between=placed_between(mesh, a, b), status="pending", attempts=[])
 
 
-def follow(world, strict_world, start, P, max_ticks: int = 60000) -> dict:
+def follow(world, strict_world, start, P, max_ticks: int = 60000, stop: bool = False) -> dict:
     """Roll along the plan places P from the state `start` = (pos, vel, omega): aim a few places ahead at a
-    modest speed. Returns status 'goal', 'fail' (with the reason and the last plan place reached) or 'clear' (only
-    when `world` is not the strict one: the ball is clear of everything placed again)."""
+    modest speed. stop: come to rest at the last place (the start of a run-up) instead of rolling through it.
+    Returns status 'goal', 'fail' (with the reason and the last plan place reached) or 'clear' (only when `world`
+    is not the strict one: the ball is clear of everything placed again)."""
     pos, vel, omega = np.array(start[0], float), np.array(start[1], float), np.array(start[2], float)
     n = len(P)
     i = best = 0
     since = off = ticks = 0
     tape, traces, history = [], [], []
     carried = True
+    left = np.r_[np.cumsum(np.linalg.norm(np.diff(P, axis=0), axis=1)[::-1])[::-1], 0.0] if n > 1 else np.zeros(1)     # way left from each place
+    settle = 0
     while ticks < max_ticks:
         lo, hi = max(i - 2, 0), min(i + 12, n - 1)
         d = np.sqrt(((P[lo:hi + 1] - pos) ** 2).sum(1))
         i = lo + int(d.argmin())
         if i > best and carried and float(d.min()) <= 2.5:        # a place counts as reached when the ball is rolling at it
             best, since = i, 0
-        if best >= n - 2 and carried and float(np.linalg.norm(P[n - 1] - pos)) <= 2.0:
+        end_xz = math.hypot(P[n - 1, 0] - pos[0], P[n - 1, 2] - pos[2])
+        if stop:
+            if best >= n - 2 and carried and end_xz <= 0.5 and math.hypot(vel[0], vel[2]) <= 0.7:
+                return dict(status="goal", index=n - 1, tape=tape, trace=_stack(traces), history=history, end=(pos, vel, omega))
+        elif best >= n - 2 and carried and float(np.linalg.norm(P[n - 1] - pos)) <= 2.0:
             return dict(status="goal", index=n - 1, tape=tape, trace=_stack(traces), history=history, end=(pos, vel, omega))
         history.append((ticks, best, pos.copy(), vel.copy(), omega.copy()))
         aim = P[min(i + LOOK, n - 1)]
         dx, dz = aim[0] - pos[0], aim[2] - pos[2]
         far = math.hypot(dx, dz)
         want = FOLLOW_SPEED if n - 1 - i > 6 else 4.0
+        if stop:                                                  # slow down so as to be at rest at the last place
+            rem = float(left[i]) + float(np.linalg.norm(P[i] - pos)) if i < n - 1 else end_xz
+            want = min(FOLLOW_SPEED, math.sqrt(2.0 * 5.0 * max(rem - 0.2, 0.0)))
+            if i >= n - 1 - LOOK:
+                aim = P[n - 1]
+                dx, dz = aim[0] - pos[0], aim[2] - pos[2]
+                far = math.hypot(dx, dz)
+            if best >= n - 2:
+                settle += CHUNK
+                if settle > 600:
+                    return dict(status="fail", reason="could not come to rest at the run-up start", index=best, tape=tape, trace=_stack(traces), history=history, end=None)
+                since = 0
         ax = (want * dx / far if far > 1e-6 else 0.0) - vel[0]
         az = (want * dz / far if far > 1e-6 else 0.0) - vel[2]
         size = math.hypot(ax, az)
@@ -202,15 +222,45 @@ def solve_sector(mesh, info, g, sector: int, tries: int = 300_000, seed: int = 0
     first = [dict(breaks[k]) for k in order]                      # the list from the map alone, before anything is rolled
     log("sector %d: the coarse plan has %d places and %d breaks" % (sector, len(nodes), len(first)))
     segs: list = []
+    launches: list = []
     seeds: list = []                                              # (segment index, history entry) since the last crossing
     older: list = []                                              # the same for the stretches before that
     mode_now = BASE
     for _round in range(80):
         if len(nodes) < 2:
             break
-        r = follow(worlds[mode_now], strict, state, g.pos[nodes])
+        el = next((e for e, k in enumerate(kinds) if k == "launch"), None)      # the next launch on the plan: roll to its start and stop there
+        if el is None:
+            r = follow(worlds[mode_now], strict, state, g.pos[nodes])
+        else:
+            r = follow(worlds[mode_now], strict, state, g.pos[nodes[:el + 1]], stop=True) if el > 0 else \
+                dict(status="goal", index=0, tape=[], trace=np.zeros((0, 9)), history=[(0, 0, state[0].copy(), state[1].copy(), state[2].copy())], end=state)
         segs.append(dict(type="follow", mode=mode_now, start=state, tape=r["tape"], trace=r["trace"], end=r["end"]))
         seeds += [(len(segs) - 1, h) for h in r["history"]]
+        if el is not None and r["status"] == "goal":
+            # at rest at the start of the run-up: hold the launch's keys and see where the ball comes down
+            for e, k in enumerate(kinds[:el]):
+                if k in BREAK_KINDS and breaks[(nodes[e], nodes[e + 1])]["status"] == "pending":
+                    breaks[(nodes[e], nodes[e + 1])]["status"] = "rolled"
+            L = g.info["launches"][(nodes[el], nodes[el + 1])]
+            pushes = np.array([fine.PUSHES[a] for a, _ in L["tape"]])
+            st, done, p2, v2, o2, s2, tr = worlds[BASE].rollout(ph.WOOD, ph.Params(), r["end"][0], r["end"][1], r["end"][2], pushes,
+                                                               [m for _, m in L["tape"]], trace=True)
+            if st == OK and s2[8] > 0 and float(np.linalg.norm(p2 - g.pos[nodes[el + 1]])) <= 2.5:
+                air = tr[:, 3] == 0
+                off = int(np.flatnonzero(air)[0]) if air.any() else 0
+                segs.append(dict(type="launch", mode=BASE, start=r["end"], tape=L["tape"], trace=tr, end=(p2, v2, o2)))
+                launches.append(dict(start=g.pos[nodes[el]].copy(), land=p2.copy(), runup=L["runup"], planned_speed=L["launch_speed"],
+                                     speed=float(tr[off, 6]), land_speed=float(tr[-1, 6]), across=L["across"], down=L["down"], keys_in_air=L["keys_in_air"]))
+                state = (p2, v2, o2)
+                nodes, kinds = replan(state[0])
+                continue
+            r = dict(r, status="fail", reason="the launch did not come down where planned", index=el)
+            key = (nodes[el], nodes[el + 1])
+            if key not in breaks:
+                count["B"] += 1
+                breaks[key] = dict(describe_break(g, mesh, nodes[el], nodes[el + 1], "launch"), no="B%d" % count["B"])
+                order.append(key)
         for e, k in enumerate(kinds):
             if k in BREAK_KINDS and e + 1 <= r["index"] and breaks[(nodes[e], nodes[e + 1])]["status"] == "pending":
                 breaks[(nodes[e], nodes[e + 1])]["status"] = "rolled"
@@ -223,7 +273,7 @@ def solve_sector(mesh, info, g, sector: int, tries: int = 300_000, seed: int = 0
         k = min(r["index"], len(nodes) - 2)
         key, run = None, 0.0
         for e in range(k, len(kinds)):                            # a listed break right ahead is the one it failed at
-            if kinds[e] in BREAK_KINDS:
+            if kinds[e] in BREAK_KINDS or (nodes[e], nodes[e + 1]) in breaks:
                 key, k_break = (nodes[e], nodes[e + 1]), e
                 break
             run += float(np.linalg.norm(g.pos[nodes[e + 1]] - g.pos[nodes[e]]))
@@ -356,7 +406,7 @@ def solve_sector(mesh, info, g, sector: int, tries: int = 300_000, seed: int = 0
     unresolved = [breaks[k]["no"] for k in order if breaks[k]["status"] == "unresolved"]
     res = dict(sector=sector, tries=tries, segments=segs, breaks=[breaks[k] for k in order], first=first, reached=reached, unresolved=unresolved,
                solved=reached and not unresolved, ticks=int(sum(len(sg["trace"]) for sg in segs if sg["type"] != "assumed")),
-               goal=g.pos[goal].copy(), start=np.array(s0.pos))
+               goal=g.pos[goal].copy(), start=np.array(s0.pos), launches=launches)
     res["replays"] = replays(worlds, res)
     return res
 
@@ -389,6 +439,10 @@ def summary(res, log=print):
         % (res["sector"], "reaches the goal" if res["solved"] else "does NOT get through: %s left as break%s" % (", ".join(res["unresolved"]) or "the way", "s" if len(res["unresolved"]) > 1 else ""),
            res["ticks"] / 132, len(res["breaks"]), n_rolled, "agrees" if res["replays"] else "DISAGREES"))
     log("   the follower's stretches: %.1f game s" % (sum(len(sg["trace"]) for sg in res["segments"] if sg["type"] == "follow") / 132))
+    for L in res.get("launches", ()):
+        log("   launch from rest at %s, run-up %.0f: takes off at %.1f (planned %.1f), %.1f across, %.1f down, key %s in the air, lands at %s at %.1f"
+            % (np.round(L["start"], 1), L["runup"], L["speed"], L["planned_speed"], L["across"], L["down"], "held" if L["keys_in_air"] else "released",
+               np.round(L["land"], 1), L["land_speed"]))
     for b in res["breaks"]:
         if b["status"] in ("rolled", "bypassed", "pending", "abandoned"):
             log("   %s %s at %s: gap %.1f, rise %+.1f%s -> %s" % (b["no"], b["kind"], np.round(b["near"], 1), b["gap"], b["rise"],

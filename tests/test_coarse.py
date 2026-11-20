@@ -34,27 +34,33 @@ def test_a_floor_is_one_connected_set_of_rest_places():
     assert np.allclose(g.pos[path][:, 1], 2.0, atol=1e-6)            # ball centres, resting
 
 
-def test_a_ledge_is_a_one_way_drop():
-    g = coarse.build(mesh([(quad(0, 10, 0, 8, 3.0), False), (quad(10, 20, 0, 8, 0.0), False)]))
-    up, down = g.nearest((3, 5, 4)), g.nearest((17, 2, 4))
+def test_a_small_step_down_is_a_one_way_edge_and_a_real_fall_is_not_an_edge_of_positions():
+    g = coarse.build(mesh([(quad(0, 10, 0, 8, 1.0), False), (quad(10, 20, 0, 8, 0.0), False)]))
+    up, down = g.nearest((3, 3, 4)), g.nearest((17, 2, 4))
     path, _ = g.route(up, down)
     assert path is not None and "drop" in [g.edge_kind(u, v) for u, v in zip(path, path[1:])]
     assert g.route(down, up)[0] is None
+    # three units down: where the ball lands depends on how fast it leaves, so positions alone give no edge
+    g = coarse.build(mesh([(quad(0, 10, 0, 8, 3.0), False), (quad(10, 20, 0, 8, 0.0), False)]))
+    assert g.route(g.nearest((3, 5, 4)), g.nearest((17, 2, 4)))[0] is None
 
 
-def test_a_gap_needs_a_flight_and_gets_one():
-    m = mesh([(quad(0, 12, 0, 8, 0.0), False), (quad(18, 30, 0, 8, -1.0), False)])
+def test_a_gap_is_crossed_by_a_launch_made_with_the_kernel():
+    from ballistics.kernel import World
+    from ballistics.launch import add_launches
+    m = mesh([(quad(0, 12, 0, 8, 0.0), False), (quad(18, 30, 0, 8, -4.0), False)])
     g = coarse.build(m)
-    a, b = g.nearest((2, 2, 4)), g.nearest((27, 1, 4))
-    assert g.route(a, b)[0] is None
-    assert coarse.add_flights(g, m) > 0
+    a, b = g.nearest((2, 2, 4)), g.nearest((27, -2, 4))
+    assert g.route(a, b)[0] is None                                  # no edge of positions gets across: a fall is not one
+    assert add_launches(g, World.of(m)) > 0
     path, _ = g.route(a, b)
     kinds = [g.edge_kind(u, v) for u, v in zip(path, path[1:])]
-    assert kinds.count("flight") == 1
-    u, v = next((u, v) for u, v in zip(path, path[1:]) if g.edge_kind(u, v) == "flight")
-    f = g.info["flights"][(u, v)]
-    # rest places reach out over a ledge (a ball can sit on the edge), so the flight is shorter than the gap in the floor
-    assert f["speed"] in coarse.LAUNCH_SPEEDS and 3.0 <= f["distance"] < 12.0 and 0.5 < f["fall"] < 1.5
+    assert kinds.count("launch") == 1
+    u, v = next((u, v) for u, v in zip(path, path[1:]) if g.edge_kind(u, v) == "launch")
+    e = g.info["launches"][(u, v)]
+    # the edge is a run of the kernel from rest: it knows its keys, how fast the ball left and how fast it landed
+    assert e["runup"] > 0 and e["launch_speed"] > 6.0 and e["across"] > 5.0 and 3.0 < e["down"] < 5.0
+    assert sum(n for _, n in e["tape"]) == e["ticks"] and g.pos[v][0] > 18.0
 
 
 def test_a_placed_object_blocks_and_a_trigger_is_kept_out_of():

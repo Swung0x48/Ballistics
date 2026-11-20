@@ -41,9 +41,10 @@ def graph_for(mesh: Mesh, info: dict, cache: Path | None = None, log=print):
     `coarse.without_loose(mesh)` to have them out."""
     if cache is not None and cache.exists():
         return pickle.load(open(cache, "rb"))
+    from .launch import add_launches
     g = coarse.build(mesh, avoid=coarse.keep_out(info["placements"]), log=log)
     coarse.add_steps(g, mesh, log=log)
-    coarse.add_flights(g, mesh, log=log)
+    add_launches(g, world_for(mesh, info, "strict"), log=log)
     if cache is not None:
         pickle.dump(g, open(cache, "wb"))
     return g
