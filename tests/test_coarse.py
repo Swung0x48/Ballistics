@@ -74,6 +74,44 @@ def test_a_placed_object_blocks_and_a_trigger_is_kept_out_of():
     assert kept.route(kept.nearest((2, 2, 2.5)), kept.nearest((28, 2, 2.5)))[0] is None
 
 
+def test_the_coarse_plan_alone_lists_its_links_and_draws_with_its_keys_outside_the_map(tmp_path):
+    from PIL import Image
+
+    from ballistics import solve
+    from ballistics.render import SURFACE, TopView, draw_coarse
+
+    def info(goal):
+        return dict(start=[4.0, 2.0, 4.0], checkpoints=[], airship=list(goal), reset_points=[[4.0, 3.0, 4.0]], placements=[], death_boxes=[])
+
+    m = mesh([(quad(0, 40, 0, 8, 0.0), False)])
+    plans = solve.coarse_plans(m, info((34.0, 2.0, 4.0)), coarse.build(m))
+    assert len(plans) == 1 and plans[0]["ok"] and not plans[0]["links"] and set(plans[0]["kinds"]) == {"roll"} and 28.0 < plans[0]["length"] < 36.0
+    # a gap, and no launch edges on the graph: the plan has to be joined by a link, and says where and how wide
+    m = mesh([(quad(0, 30, 0, 8, 0.0), False), (quad(37, 70, 0, 8, -1.0), False)])
+    g = coarse.build(m)
+    plan = solve.coarse_plans(m, info((62.0, 1.0, 4.0)), g)[0]
+    assert plan["ok"] and len(plan["links"]) == 1 and plan["links"][0]["across"] > 4.0 and plan["links"][0]["rise"] < 0
+    assert 26.0 < plan["links"][0]["near"][0] < 31.0 and plan["links"][0]["placed_near"] == []
+    # a goal nowhere near any floor: no plan, with the reason
+    none = solve.coarse_plans(m, info((500.0, 1.0, 4.0)), g)[0]
+    assert not none["ok"] and "goal" in none["reason"]
+    # a second road 60 away from the first: links do not reach that far, so the plan cannot begin at the reset point
+    far = mesh([(quad(0, 30, 0, 8, 0.0), False), (quad(90, 130, 0, 8, 0.0), False)])
+    cut = solve.coarse_plans(far, info((122.0, 2.0, 4.0)), coarse.build(far))[0]
+    assert cut["ok"] and cut["starts_off"] > 50.0 and not cut["links"]
+    assert "starts_off" not in plan
+    # the picture: header and footer are bands of their own, nothing of the map in them
+    path = tmp_path / "plan.png"
+    draw_coarse(m, g, [plan], path, "plan", width=900)
+    img = Image.open(path)
+    v = TopView(m, width=900, margin=8.0, height=True)
+    assert img.size == v.img.size and v.foot >= 90
+    left = [img.getpixel((4, y)) for y in range(img.size[1] - v.foot, img.size[1])]
+    assert all(c == SURFACE for c in left)                       # the footer's left end is empty; the scale is at its right
+    scale = {img.getpixel((x, v.foot_y() + 8)) for x in range(img.size[0] - 470, img.size[0] - 70)}
+    assert len(scale) > 5 and all(r == gr == b for r, gr, b in scale)          # the height scale: greys
+
+
 def test_a_low_step_is_proposed_upwards_only_and_a_high_one_is_not():
     def stair(h):
         riser = [(np.array((10.0, 0.0, 0.0)), np.array((10.0, h, 0.0)), np.array((10.0, h, 8.0))), (np.array((10.0, 0.0, 0.0)), np.array((10.0, h, 8.0)), np.array((10.0, 0.0, 8.0)))]

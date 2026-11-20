@@ -179,19 +179,22 @@ def _flights(trace, least: int = 20) -> list:
     return out
 
 
-def _robust(world, search, seed, tape, trials: int = 20, rng_seed: int = 1) -> int:
+NUDGES = (1, 3, 10)       # the sizes of nudge a found passage is tried with: 1 is (0.03 in place, 0.3 in speed, 2 ticks in key timing)
+
+
+def _robust(world, search, seed, tape, trials: int = 20, rng_seed: int = 1, scale: int = 1) -> int:
     """Of `trials` runs with the start nudged (0.03 in place, 0.3 in speed) and every key change up to 2 ticks early
-    or late: how many still arrive."""
+    or late: how many still arrive. scale: the nudge is that many times as large."""
     rng = np.random.default_rng(rng_seed)
     P = ph.Params()
     ok = 0
     for _ in range(trials):
-        pos = seed[0] + rng.normal(0, 0.03, 3) * np.array([1, 0, 1])
-        vel = seed[1] + rng.normal(0, 0.3, 3)
+        pos = seed[0] + rng.normal(0, 0.03 * scale, 3) * np.array([1, 0, 1])
+        vel = seed[1] + rng.normal(0, 0.3 * scale, 3)
         omega, good = seed[2], True
         st = np.zeros(10)
         for a, n in tape:
-            status, _d, pos, vel, omega, st, _ = world.rollout(ph.WOOD, P, pos, vel, omega, fine.PUSHES[a:a + 1], [max(1, n + int(rng.integers(-2, 3)))])
+            status, _d, pos, vel, omega, st, _ = world.rollout(ph.WOOD, P, pos, vel, omega, fine.PUSHES[a:a + 1], [max(1, n + int(rng.integers(-2 * scale, 2 * scale + 1)))])
             if status != OK:
                 good = False
                 break
@@ -218,7 +221,8 @@ def solve_sector(mesh, info, g, sector: int, tries: int = 300_000, seed: int = 0
     reset = info["reset_points"][sector - 1]
     s0 = fine.rest_state(strict, reset[0], reset[2], reset[1] + 0.5)
     state = (s0.pos, s0.vel, s0.omega) if start is None else tuple(np.array(x, float) for x in start)
-    loose = [(p["type"], np.array(p["position"], float)) for p in info["placements"] if p["type"].startswith(coarse.LOOSE)]
+    entry = np.array(state[0], float)                             # where the ball enters the sector
+    loose =[(p["type"], np.array(p["position"], float)) for p in info["placements"] if p["type"].startswith(coarse.LOOSE)]
     coarse_back = [[] for _ in range(len(g.pos))]
     for u in range(len(g.pos)):
         for e in g.adj[u]:
@@ -393,9 +397,10 @@ def solve_sector(mesh, info, g, sector: int, tries: int = 300_000, seed: int = 0
             segs[si]["end"] = (h[2], h[3], h[4])
             segs.append(dict(type="cross", mode=mode, no=b["no"], start=(h[2], h[3], h[4]), tape=c.tape, trace=c.trace, end=c.end_state))
             through = [(ty, q) for ty, q in loose if np.linalg.norm(c.trace[:, :3] - q, axis=1).min() < 2.0 * BALL_R]
+            nudged = {k: _robust(worlds[mode], s, (h[2], h[3], h[4]), c.tape, scale=k) for k in NUDGES}
             b.update(status="crossed", mode=mode, ticks=c.ticks, back=float(np.linalg.norm(h[2] - b["near"])), flights=_flights(c.trace),
                      through=[ty for ty, _q in through],
-                     arrives=_robust(worlds[mode], s, (h[2], h[3], h[4]), c.tape), trials=20, landed=np.array(c.end))
+                     arrives=nudged[1], nudged=nudged, trials=20, landed=np.array(c.end))
             state = c.end_state
             clear = strict.mesh.distance(state[0], BALL_R + 1.0)[0] - BALL_R > 0.1
             mode_now = BASE if (mode == "strict" or clear) else mode
@@ -417,7 +422,7 @@ def solve_sector(mesh, info, g, sector: int, tries: int = 300_000, seed: int = 0
     unresolved = [breaks[k]["no"] for k in order if breaks[k]["status"] == "unresolved"]
     res = dict(sector=sector, tries=tries, segments=segs, breaks=[breaks[k] for k in order], first=first, reached=reached, unresolved=unresolved,
                solved=reached and not unresolved, ticks=int(sum(len(sg["trace"]) for sg in segs if sg["type"] != "assumed")),
-               goal=g.pos[goal].copy(), start=np.array(state[0]), rolling_start=start is not None,
+               goal=g.pos[goal].copy(), start=entry, rolling_start=start is not None,
                end_state=segs[-1]["end"] if reached and not unresolved else None)
     res["flights"] = [f for sg in segs if sg["type"] == "follow" for f in _flights(sg["trace"], 20)]
     res["replays"] = replays(worlds, res)

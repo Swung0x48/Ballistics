@@ -24,10 +24,16 @@ Ballance 地图的静态分析器。
 python -m ballistics export <地图.nmo> --out data --templates <游戏的 3D Entities/PH 目录>
 ```
 
-求解，每个小节给出轨迹和留下的断点，`--png` 另外画出俯视图：
+求解，每个小节给出一条标准路线、若干备选路线（各带预计时间和容错率）和留下的断点，写成一份路线清单；`--png` 另外画出俯视图：
 
 ```bash
 python -m ballistics solve --mesh data/Level_01-mesh.npz --map data/Level_01-map.json --sector all --png out
+```
+
+只看粗层的规划线（不推演、不细搜，很快，适合先看一张地图的全貌）：
+
+```bash
+python -m ballistics coarse --mesh data/Level_01-mesh.npz --map data/Level_01-map.json --png out
 ```
 
 把解出的路线写成路线文件（`L01.npz`，一条参考线）：
@@ -52,12 +58,13 @@ python -m ballistics calibrate --mesh data/Level_01-mesh.npz --run data/runs/<�
 - 精确几何（球对三角面的距离和接触）和钢轨提取
 - 球对静态几何的物理核，以及它和一条引擎轨迹对比的误差
 - 求解器：粗层规划通路，沿通路推演，只在过不去的地方细搜
-- 路线文件和俯视图
+- 备选路线：找出粗层没有边通上去的落点（墙顶、护栏），从标准路线上搜过去；每条路线给出预计时间和容错率
+- 路线清单、路线文件和俯视图
 
 没有：
 
 - 会动的东西（推箱子、推道具球、机关）
-- 轨迹的优化（现在的轨迹远慢于高手录像）
+- 轨迹的优化（现在的轨迹远慢于高手录像）；备选路线只有“经过孤岛”一种，收益只算时间
 - 证明格式和独立检查器
 - 石球、纸球；第 1 关以外的关卡
 

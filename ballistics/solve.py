@@ -11,6 +11,7 @@ Everything found is a trajectory of the hand-written kernel: a candidate until t
 """
 from __future__ import annotations
 
+import math
 import pickle
 from pathlib import Path
 
@@ -48,6 +49,80 @@ def graph_for(mesh: Mesh, info: dict, cache: Path | None = None, log=print):
     if cache is not None:
         pickle.dump(g, open(cache, "wb"))
     return g
+
+
+def coarse_plans(mesh: Mesh, info: dict, g) -> list:
+    """The coarse level's plan alone, per sector: the cheapest way from the sector's reset point to its goal over
+    the coarse graph plus the links it needs, before anything is rolled or searched. Every sector starts at rest
+    under its reset point. Each: dict(sector, ok, reason (when not ok), nodes, kinds (of the edge leaving each
+    node but the last), length, counts (edges by kind), launches, steps, links); a link is a place the coarse
+    level does not connect, with what is placed within 9 of it. `starts_off` (with `reset`): the plan does not
+    begin at the reset point but that far from it, because nothing nearer reaches the goal even with links.
+    `short_of_goal`: the plan ends that far from the goal's marker.
+    This is only what the coarse level proposes: positions, no speeds, and no statement that a ball can drive it."""
+    from collections import Counter
+
+    from .staged import nearest_node
+
+    rel = coarse.Relaxed(g)
+    strict = world_for(mesh, info, "strict")
+    P = g.pos
+    anchors = [info["start"]] + list(info["checkpoints"]) + [info.get("airship")]
+    out = []
+    for sector in range(1, len(info["reset_points"]) + 1):
+        plan = dict(sector=sector, ok=False, nodes=[], kinds=[], length=0.0, counts={}, launches=[], steps=[], links=[])
+        out.append(plan)
+        if sector >= len(anchors) or anchors[sector] is None:
+            plan["reason"] = "the map gives no goal for this sector"
+            continue
+        goal = g.nearest(anchors[sector], 25.0)
+        if goal < 0:
+            # the road ends further from the goal's marker than the solver accepts (the airship's own shape is not in
+            # the mesh): plan to the nearest place of any kind, a rail included, and say how far short of the marker it is
+            goal = g.nearest(anchors[sector], 80.0, floor_only=False)
+            if goal < 0:
+                plan["reason"] = "no place a ball can be on within 80 of the sector's goal"
+                continue
+            plan["short_of_goal"] = float(np.linalg.norm(P[goal] - np.asarray(anchors[sector], float)))
+        reset = info["reset_points"][sector - 1]
+        try:
+            s0 = fine.rest_state(strict, reset[0], reset[2], reset[1] + 0.5)
+        except ValueError:
+            plan["reason"] = "nothing under the sector's reset point"
+            continue
+        togo = rel.togo(goal)
+        if not np.isfinite(togo).any():
+            plan["reason"] = "the goal is not reached from anywhere"
+            continue
+        nodes, kinds = rel.plan(nearest_node(g, togo, s0.pos), togo)
+        if not np.isfinite(togo[nodes[0]]) or nodes[-1] != goal:
+            plan["reason"] = "no way from the reset point to the goal, not even with links"
+            continue
+        plan.update(ok=True, nodes=nodes, kinds=kinds, counts=dict(Counter(kinds)),
+                    length=float(sum(np.linalg.norm(P[b] - P[a]) for a, b in zip(nodes, nodes[1:]))))
+        off = float(np.linalg.norm(P[nodes[0]] - s0.pos))
+        if off > 3.0:
+            # nothing near the reset point reaches the goal, not even with links: the plan begins at the nearest place
+            # that does, and the stretch from the reset point to there has no plan at all
+            plan.update(starts_off=off, reset=np.array(s0.pos))
+        for e, k in enumerate(kinds):
+            a, b = P[nodes[e]], P[nodes[e + 1]]
+            edge = dict(edge=e, kind=k, near=a.copy(), far=b.copy(), across=float(math.hypot(b[0] - a[0], b[2] - a[2])), rise=float(b[1] - a[1]))
+            if k == "launch":
+                L = g.info["launches"][(nodes[e], nodes[e + 1])]
+                plan["launches"].append(dict(edge, runup=float(L["runup"]), speed=float(L["launch_speed"]), across=float(L["across"]), down=float(L["down"])))
+            elif k == "step":
+                plan["steps"].append(edge)
+            elif k in ("gap", "bridge"):
+                ab = b - a
+                around = set()
+                for q in info["placements"]:
+                    c = np.array(q["position"], float)
+                    f = float(np.clip(((c - a) @ ab) / max(float(ab @ ab), 1e-9), 0.0, 1.0))
+                    if np.linalg.norm(c - (a + f * ab)) <= 9.0:
+                        around.add(q["type"])
+                plan["links"].append(dict(edge, placed_near=sorted(around)))
+    return out
 
 
 def whole_sector(mesh: Mesh, info: dict, g, sector: int, mode: str = "strict", expansions: int = 3_000_000, seconds: float = 600.0,
