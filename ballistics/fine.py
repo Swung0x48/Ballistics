@@ -5,7 +5,7 @@ rest on a place the coarse level reaches), it searches over which arrow keys to 
 is rolling on a target place, and returns the keys and the trajectory.
 
 What a result is worth: it is a trajectory of the hand-written kernel, not of the game. The kernel's measured
-error grows with time and at impacts (README, calibration tables), and a search finds whatever the kernel allows,
+error grows with time and at impacts (docs/physics.md, calibration tables), and a search finds whatever the kernel allows,
 its weak spots included. So every crossing comes with what it leans on (impacts, several contacts at once, flight)
 and how often it survives small changes of the start and of the key timing. It stays a *candidate*
 until the engine has run it. "Not found" means not found within the stated budget, never "impossible".
