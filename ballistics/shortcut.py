@@ -44,6 +44,7 @@ def route_states(worlds, res) -> list:
     Each: dict(seg, n (ticks into the segment), t (ticks from the sector's start), pos, vel, omega, carried,
     reached (False after a break that was left: the solver only put the ball there), rem (ticks left to the end
     of the route; LEFT_BREAK more for every break left ahead, and if the route does not reach the goal))."""
+    from . import staged
     P = ph.Params()
     out, t, reached = [], 0, True
     for si, sg in enumerate(res["segments"]):
@@ -55,7 +56,7 @@ def route_states(worlds, res) -> list:
         n = 0
         for a, hold in sg["tape"]:
             for _ in range(hold // CHUNK):
-                _st, done, pos, vel, omega, stats, _ = worlds[sg["mode"]].rollout(ph.WOOD, P, pos, vel, omega, fine.PUSHES[a:a + 1], [CHUNK])
+                _st, done, pos, vel, omega, stats, _ = worlds[sg["mode"]].rollout(staged.BALLS[sg.get("ball", "wood")], P, pos, vel, omega, fine.PUSHES[a:a + 1], [CHUNK])
                 n += done
                 t += done
                 out.append(dict(seg=si, n=n, t=t, pos=pos.copy(), vel=vel.copy(), omega=omega.copy(), carried=bool(stats[8] > 0), reached=reached,
@@ -331,6 +332,9 @@ def alternatives(mesh, info, g, sector: int, res: dict, tries: int = 300_000, mo
     from . import staged
     from .solve import world_for
 
+    if res.get("transforms") or res.get("ball", "wood") != "wood":
+        log("sector %d: the route changes its ball or is not a wood ball's: other routes are not searched" % sector)
+        return []
     worlds = {m: world_for(mesh, info, m, sector) for m in staged.ORDER}
     states = route_states(worlds, res)
     isl = islands(g, states)
@@ -454,7 +458,11 @@ def listing(name: str, results: list) -> dict:
             if sg["type"] == "assumed":
                 out.append(dict(type="left break", no=sg["no"], ball_put_at=sg["to"]))
             else:
-                out.append(dict(type="follower" if sg["type"] == "follow" else "searched passage", no=sg.get("no"), ticks=len(sg["trace"]),
+                if sg["type"] == "transform":
+                    out.append(dict(type="transformation", at=sg["at"], was=sg["was"], ball=sg["ball"], ticks=len(sg["trace"]),
+                                    new_ball=dict(pos=sg["end"][0], vel=sg["end"][1], omega=sg["end"][2])))
+                    continue
+                out.append(dict(type="follower" if sg["type"] == "follow" else "searched passage", no=sg.get("no"), ticks=len(sg["trace"]), ball=sg.get("ball", "wood"),
                                 start=dict(pos=sg["start"][0], vel=sg["start"][1], omega=sg["start"][2]), keys=keys(sg["tape"])))
         return out
 
@@ -477,7 +485,8 @@ def listing(name: str, results: list) -> dict:
             rows.append(row)
         other = [dict(island=dict(no=a["no"], centre=a["centre"], lo=a["lo"], hi=a["hi"], places=a["size"]), could_save_game_seconds=a["could_save"] / 132,
                       tried=a["tried"], tries=a.get("tries"), nearest_distance=a.get("best_distance")) for a in res.get("alternatives", ()) if not a["found"]]
-        sectors.append(dict(sector=int(res["sector"]), entered="rolling" if res.get("rolling_start") else "at rest", routes=rows, islands_without_a_route=other))
+        sectors.append(dict(sector=int(res["sector"]), entered="rolling" if res.get("rolling_start") else "at rest", ball=res.get("ball", "wood"),
+                            end_ball=res.get("end_ball", "wood"), routes=rows, islands_without_a_route=other))
     return _plain(dict(
         map=name, generator="ballistics",
         what="route hypotheses: trajectories of a hand-written physics kernel, not run in the game. Times are the kernel's. "

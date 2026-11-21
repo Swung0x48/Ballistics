@@ -30,14 +30,12 @@ KIND_NAMES = {AIR: "air", RAIL: "on a rail", FLOOR: "on the floor"}
 def world_for(mesh: Mesh, info: dict, mode: str, sector: int | None = None) -> World:
     """sector: the sector the ball is solved in. Its fans push (`ballistics.fans`); without it no fan does, which is
     how the coarse level's launch edges are made (they are proposals)."""
-    from . import fans
+    from . import fans, trafo
     solid_balls = MODES[mode]
-    # ASSUMED: a transformer acts when the ball's centre is within its trigger distance of a point one ball radius
-    # above the transformer's origin (the distance is READ, the centre's height is not)
-    keep = [(x, y + 2.0, z, d) for x, y, z, d in coarse.keep_out(info["placements"])]
     if not solid_balls:
         mesh = coarse.without_loose(mesh)
-    return World.of(mesh, info["death_boxes"], keep, fans=fans.of(info, sector))
+    # the transformers in place: the sector's own (`ballistics.trafo`); without a sector, every one of the map
+    return World.of(mesh, info["death_boxes"], fans=fans.of(info, sector), trafos=trafo.of(info, sector))
 
 
 def graph_for(mesh: Mesh, info: dict, cache: Path | None = None, log=print):

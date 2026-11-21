@@ -170,6 +170,7 @@ def main(argv=None):
         g = solve.graph_for(mesh, info, a.out / (name + "-coarse-solid.pkl"))
         sectors = range(1, len(info["reset_points"]) + 1) if a.sector == "all" else [int(a.sector)]
         carry = None                                          # the state the ball reached the last checkpoint in
+        ball = "wood"                                         # ASSUMED: a level begins with the wood ball (the map file does not say)
         results = {}
         for sec in sectors:
             if a.whole:
@@ -180,8 +181,10 @@ def main(argv=None):
             before = a.out / ("%s-staged-s%d.pkl" % (name, sec - 1))
             if carry is None and sec > 1 and before.exists():     # one sector asked for: go on from the result of the one before
                 carry = pickle.load(open(before, "rb")).get("end_state")
-            res = staged.solve_sector(mesh, info, g, sec, a.tries, start=carry)
+                ball = pickle.load(open(before, "rb")).get("end_ball", "wood")
+            res = staged.solve_sector(mesh, info, g, sec, a.tries, start=carry, ball=ball)
             carry = res["end_state"]                              # None when the sector was not got through: the next one starts at rest
+            ball = res["end_ball"]                                # a ball that is lost comes back as the kind it was
             results[sec] = res
             extras.annotate([results[k] for k in sorted(results)], info)     # what the routes collect on the way: changes nothing about them
             staged.summary(res)

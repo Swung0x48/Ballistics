@@ -43,7 +43,8 @@ python -m ballistics export <地图.nmo> --out data
 | `routes[].reaches_goal`、`left_breaks`、`game_seconds` | 走没走通、留下的断点、预计时间（没走通时为空） |
 | `routes[].tolerance` | 这条路线上细搜出来的走法有几处，以及每档扰动下最弱的一处 20 次里还能过几次 |
 | `routes[].searched_passages` | 每一处细搜出来的走法各自的数 |
-| `routes[].segments[]` | 重跑这条路线需要的东西：每一段的起始状态（位置、速度、自转）和按键（按键编号、步数）；留下的断点单独成一项 |
+| `sectors[].ball`、`end_ball` | 球进入和离开这个小节时的球种（标准路线的） |
+| `routes[].segments[]` | 重跑这条路线需要的东西：每一段的起始状态（位置、速度、自转）和按键（按键编号、步数）；留下的断点单独成一项；每一段带球种（`ball`），变球单独成一项（`type: transformation`：哪个变球器、从哪种变成哪种、占多少步、新球出现后的状态） |
 | `routes[].extras` | 这条路线顺路吃到的分数球和生命球（规则和依据见 [mechanisms.md](mechanisms.md)）。`extras[]` 每个道具一行：名字、种类、所在小节、吃没吃到（`collected`）、在这个小节的第几步和第几游戏秒、吃到时和最近时的球距、是否贴边（`marginal`）、分数球的分（`points`，220：分数小球按过盘点前按 Esc 收齐算）；总的 `points` 是这条路线从分数球得的分，`lives` 是生命球的个数；`checkpoints` 是按规则判定过盘点的那一步；`basis` 是各个数在目录里标的依据。断点之后吃到的标 `after_left_break`，不计入 `points` 和 `lives` |
 | `routes[].shortcut` | 备选路线才有：经过的孤岛、从标准路线的哪个状态离开、落在哪、上孤岛用了多久和试了多少次、这一段自己的容错率、在哪里回到标准路线以及那时领先多少、总共省多少 |
 | `sectors[].islands_without_a_route` | 没给出路线的孤岛：没试的，和试了多少次没搜到的 |

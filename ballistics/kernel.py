@@ -195,10 +195,12 @@ def _settle(pos, r, margin, reach, ox, oz, cell, nx, nz, start, items, A, B, C, 
 
 @njit(cache=True)
 def _rollout(pos, vel, omega, pushes, holds, ball, par, fans, fanpar, margin, ox, oz, cell, nx, nz, start, items, A, B, C, lo_y, hi_y,
-             N, tri_fr, tri_el, tri_placed, tri_rail, boxes, spheres, y_min, low, low_ox, low_oz, low_cell, stamp, tickbox, ci, cd, cq, cf, cn, cg, order,
+             N, tri_fr, tri_el, tri_placed, tri_rail, boxes, spheres, sph_on, y_min, low, low_ox, low_oz, low_cell, stamp, tickbox, ci, cd, cq, cf, cn, cg, order,
              n_imp, t_imp, fr, el, target, trace, stats):
     """Hold pushes[k] for holds[k] ticks each, in place. Stops early when the ball's centre enters a death box or
-    falls below everything near it (DEAD), enters a trigger sphere (TRIGGER) or touches a placed object (PLACED).
+    falls below everything near it (DEAD), is transformed (TRIGGER: the nearest trigger sphere's centre is nearer
+    than its distance and that sphere is on, i.e. a transformer of another kind than the ball; stats[9] is which
+    one) or touches a placed object (PLACED).
     Returns (status, ticks done). trace (T, 9), if not empty, gets after every tick: position, how many points
     it touches, whether one is an edge or corner, whether the tick began with a hit, speed, whether something
     carries it (a rail, or a face under it), whether it touches a rail.
@@ -257,9 +259,15 @@ def _rollout(pos, vel, omega, pushes, holds, ball, par, fans, fanpar, margin, ox
             for b in range(len(boxes)):
                 if boxes[b, 0] <= pos[0] <= boxes[b, 3] and boxes[b, 1] <= pos[1] <= boxes[b, 4] and boxes[b, 2] <= pos[2] <= boxes[b, 5]:
                     return DEAD, done
-            for s in range(len(spheres)):
-                dx, dy, dz = pos[0] - spheres[s, 0], pos[1] - spheres[s, 1], pos[2] - spheres[s, 2]
-                if dx * dx + dy * dy + dz * dz <= spheres[s, 3] * spheres[s, 3]:
+            if len(spheres) > 0:                  # the game looks at the nearest transformer only: one of the ball's own kind shields a farther one
+                near, nd = 0, 1e300
+                for s in range(len(spheres)):
+                    dx, dy, dz = pos[0] - spheres[s, 0], pos[1] - spheres[s, 1], pos[2] - spheres[s, 2]
+                    d2 = dx * dx + dy * dy + dz * dz
+                    if d2 < nd:
+                        near, nd = s, d2
+                if nd < spheres[near, 3] * spheres[near, 3] and sph_on[near]:
+                    stats[9] = near
                     return TRIGGER, done
     return OK, done
 
@@ -284,6 +292,7 @@ class World:
     stop_on_placed: bool = True
     fans: np.ndarray | None = None      # (F, 12) the fans that push (`ballistics.fans.of`): origin, x, y, z axes
     fan_edge: str = "best"              # which distance stands for the box test at a fan's edge (`fans.Rules.params`)
+    trafos: list | None = None          # the transformers the spheres stand for (`ballistics.trafo.of`), in the same order; None: plain keep-out spheres
 
     def __post_init__(self):
         m = self.mesh
@@ -316,11 +325,23 @@ class World:
         self.solve = (np.empty(CAP), np.empty((CAP, 3)), np.empty(CAP), np.empty(CAP), np.empty(CAP))
 
     @classmethod
-    def of(cls, mesh: Mesh, death_boxes=(), keep_out=(), stop_on_placed: bool = True, fans=None, fan_edge: str = "best") -> "World":
+    def of(cls, mesh: Mesh, death_boxes=(), keep_out=(), stop_on_placed: bool = True, fans=None, fan_edge: str = "best", trafos=None) -> "World":
+        """keep_out: [(x, y, z, distance)] spheres that end a rollout whatever the ball. trafos: the transformers in
+        place (`ballistics.trafo.of`), instead of keep_out: they end a rollout by the game's rule, for a ball of
+        another kind only."""
         boxes = np.array([[*b["lo"], *b["hi"]] for b in death_boxes], np.float64).reshape(-1, 6)
+        if trafos is not None:
+            from .trafo import rules as trafo_rules
+            keep_out = [(*t["pos"], trafo_rules().radius) for t in trafos]
         spheres = np.array([list(s) for s in keep_out], np.float64).reshape(-1, 4)
         y_min = float(mesh._lo_y.min()) - 30.0 if len(mesh.A) else -1e9
-        return cls(mesh, boxes, spheres, y_min, stop_on_placed, fans, fan_edge)
+        return cls(mesh, boxes, spheres, y_min, stop_on_placed, fans, fan_edge, list(trafos) if trafos is not None else None)
+
+    def spheres_on(self, ball) -> np.ndarray:
+        """Which spheres end a rollout of this ball: every keep-out sphere; of the transformers, those of another kind."""
+        if self.trafos is None:
+            return np.ones(len(self.spheres), np.bool_)
+        return np.array([t["kind"] != ball.name for t in self.trafos], np.bool_)
 
     def fan_params(self, ball) -> np.ndarray:
         """The fans' numbers for this ball kind (read from the catalogue only when there is a fan)."""
@@ -355,6 +376,6 @@ class World:
         stats = np.zeros(10)
         status, done = _rollout(pos, vel, omega, pushes, holds, ball_array(ball), params_array(P), self.fans, self.fan_params(ball),
                                 CONTACT_MARGIN if margin is None else margin, *self._geo(), self.tri_fr, self.tri_el,
-                                self.tri_placed, self.tri_rail, self.boxes, self.spheres, self.y_min, self.low, self.low_ox, self.low_oz, LOW_CELL, self.stamp, self.tickbox, *self.work,
+                                self.tri_placed, self.tri_rail, self.boxes, self.spheres, self.spheres_on(ball), self.y_min, self.low, self.low_ox, self.low_oz, LOW_CELL, self.stamp, self.tickbox, *self.work,
                                 *self.solve, tr, stats)
         return int(status), int(done), pos, vel, omega, stats, (tr[:done] if trace else None)
