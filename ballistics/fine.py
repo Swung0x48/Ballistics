@@ -110,7 +110,8 @@ class Search:
         # one slot per cell: the quickest state known for it, how near the target it is, how often it was picked
         self.cell: dict = {}
         self.slot, self.h, self.visits, self.ground = [], [], [], []
-        self.goal = -1
+        self.goal = -1                           # the first state that arrived
+        self.goals = []                          # every state that arrived (each in a cell of its own, or sooner than the one before it there)
         self.expansions = 0
         self._tgrid: dict = {}
         for i, p in enumerate(self.T):
@@ -188,11 +189,15 @@ class Search:
             pool = self.rng.integers(0, n, 6)
         return int(min(pool, key=lambda k: self.visits[k]))
 
-    def run(self, max_expansions: int = 200_000, max_seconds: float = 120.0) -> Crossing:
+    def run(self, max_expansions: int = 200_000, max_seconds: float = 120.0, more: float = 0.0, at_least: int = 0, most: int = 1) -> Crossing:
+        """Grow until a state arrives. With `more`, do not stop at the first arrival: go on for `more` times as many
+        tries again as it took (and `at_least`), or until `most` states have arrived; they are all kept
+        (`crossings`), for the caller to choose from. Returns the first arrival's crossing."""
         t0 = time.time()
         self._front = np.zeros(0, np.int64)
         zero = np.zeros((1, 3))
-        while self.expansions < max_expansions and time.time() - t0 < max_seconds and self.goal < 0:
+        stop_at = max_expansions
+        while self.expansions < min(max_expansions, stop_at) and time.time() - t0 < max_seconds and len(self.goals) < most:
             if self.expansions % 256 == 0:           # the front: the cells on the ground nearest the target
                 on = np.flatnonzero(np.array(self.ground))
                 h = np.array(self.h)[on]
@@ -205,15 +210,19 @@ class Search:
             pos, vel, omega, parent, ticks, held = self.pos[i], self.vel[i], self.omega[i], i, self.ticks[i], 0
             kind = self.kind[i]
             ball = self.balls[kind]
-            before = self.scene[i]                 # the loose balls: a copy to roll on, kept only if it changed
-            sc = before.copy()
-            for _ in range(HOLDS[int(self.rng.integers(0, len(HOLDS)))]):
-                status, done, pos, vel, omega, stats, _ = self.w.rollout(ball, self.P, pos, vel, omega, PUSHES[a:a + 1], [CHUNK], scene=sc)
+            before = self.scene[i]                 # the loose balls: kept with a state only where they changed
+            # the whole hold in one call of the kernel, the state after every chunk of it
+            n_run, states, allstats, scenes, statuses = self.w.rollout_chunks(ball, self.P, pos, vel, omega, PUSHES[a], HOLDS[int(self.rng.integers(0, len(HOLDS)))],
+                                                                               CHUNK, scene=before)
+            for c in range(n_run):
+                status, done, stats = int(statuses[c]), int(states[c, 9]), allstats[c]
+                pos, vel, omega, sc = states[c, 0:3], states[c, 3:6], states[c, 6:9], scenes[c]
                 if len(sc) and not np.array_equal(sc, before):
                     before = sc.copy()
                 if status == TRIGGER and self.transforms and self.w.trafos[int(stats[9])]["kind"] in trafo.SOLVED:
                     # transformed: the state kept is the new ball's, one tick after it appeared; this pick ends here
                     which = int(stats[9])
+                    sc = sc.copy()
                     new, tr, end, st1, s1 = trafo.stretch(self.w, self.w.trafos[which], self.P, scene=sc)
                     if s1 == OK:
                         self._keep(end[0], end[1], end[2], parent, a, held + done, ticks + done + len(tr), st1, kind=new.name, jump=which,
@@ -231,9 +240,17 @@ class Search:
                     # it has to stay: let it roll on with no keys for half a physics second
                     s2, _d, p2, _v, _o, st2, _ = self.w.rollout(ball, self.P, pos, vel, omega, zero, [33], scene=sc.copy())
                     if s2 == OK and self.distance(p2) <= self.reach + 2.0:
-                        self.goal = j
+                        self.goals.append(j)
+                        if self.goal < 0:
+                            self.goal = j
+                            stop_at = self.expansions + max(int(more * self.expansions), at_least)
                         break
-        return self._result(time.time() - t0)
+        self._seconds = time.time() - t0
+        return self._result(self._seconds)
+
+    def crossings(self) -> list:
+        """The crossing of every state that arrived, in the order they were found."""
+        return [self._crossing(g, getattr(self, "_seconds", 0.0)) for g in self.goals]
 
     def tape_of(self, i: int):
         """(the start the state i hangs on, its key tapes): one tape per stretch, [(push, ticks)], and for every
@@ -260,7 +277,10 @@ class Search:
         best = int(h.argmin())
         if self.goal < 0:
             return Crossing(False, self.expansions, seconds, len(self.slot), float(h[best]), nearest=self.pos[self.slot[best]].copy())
-        root, tapes = self.tape_of(self.goal)
+        return self._crossing(self.goal, seconds)
+
+    def _crossing(self, goal: int, seconds: float) -> Crossing:
+        root, tapes = self.tape_of(goal)
         state, kind, parts, out = (self.pos[root], self.vel[root], self.omega[root], self.scene[root].copy()), self.kind[root], [], None
         for tape, jump in tapes:
             sc = state[3].copy()
@@ -275,12 +295,33 @@ class Search:
                                   tape=[], trace=tr, end=end))
                 state, kind = end, new.name
         ticks = int(sum(len(p["trace"]) for p in parts))
-        if ticks != self.ticks[self.goal] or np.abs(out["pos"] - self.pos[self.goal]).max() > 1e-6:
+        if ticks != self.ticks[goal] or np.abs(out["pos"] - self.pos[goal]).max() > 1e-6:
             raise RuntimeError("the key tape does not reproduce the state the search arrived at")
-        return Crossing(True, self.expansions, seconds, len(self.slot), self.distance(self.pos[self.goal]), ticks=ticks,
+        return Crossing(True, self.expansions, seconds, len(self.slot), self.distance(self.pos[goal]), ticks=ticks,
                         tape=parts[0]["tape"] if len(parts) == 1 else [], trace=np.vstack([p["trace"] for p in parts]),
                         start=self.pos[root].copy(), end=out["pos"], stats=out["stats"], root=root,
                         end_state=parts[-1]["end"], parts=parts, end_ball=kind)
+
+
+def rebuild(search: Search, state, tape, kind: str):
+    """The crossing a key tape makes from a state (pos, vel, omega, scene), as one stretch of the `kind` of ball: a
+    `Crossing`, or None if the tape does not arrive (it has to end rolling on a target place and stay there with
+    no keys for half a physics second, as in the search)."""
+    w, ball = search.w, search.balls[kind]
+    sc = np.array(state[3], float) if len(state) > 3 and state[3] is not None and len(state[3]) == len(w.props) else w.scene()
+    start_scene = sc.copy()
+    out = replay(w, ball, search.P, ph.State(state[0], state[1], state[2]), tape, scene=sc)
+    st = np.zeros(10)
+    st[8] = 1.0 if (len(out["trace"]) and out["trace"][-1, 7] > 0) else 0.0
+    if out["status"] != OK or out["ticks"] != sum(n for _a, n in tape) or not search.arrived(out["pos"], out["vel"], st):
+        return None
+    s2, _d, p2, _v, _o, _st2, _ = w.rollout(ball, search.P, out["pos"], out["vel"], out["omega"], np.zeros((1, 3)), [33], scene=sc.copy())
+    if s2 != OK or search.distance(p2) > search.reach + 2.0:
+        return None
+    end = (out["pos"], out["vel"], out["omega"], sc)
+    part = dict(type="cross", ball=kind, start=(state[0], state[1], state[2], start_scene), tape=[(int(a), int(n)) for a, n in tape], trace=out["trace"], end=end)
+    return Crossing(True, search.expansions, 0.0, len(search.slot), search.distance(out["pos"]), ticks=out["ticks"], tape=part["tape"], trace=out["trace"],
+                    start=np.array(state[0], float), end=out["pos"], stats=out["stats"], root=-1, end_state=end, parts=[part], end_ball=kind)
 
 
 def replay(world: World, ball: ph.Ball, P: ph.Params, start: ph.State, tape, scene=None) -> dict:

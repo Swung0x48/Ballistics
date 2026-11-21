@@ -252,6 +252,63 @@ def _robust(world, search, seed, tape, trials: int = 20, rng_seed: int = 1, scal
     return ok
 
 
+MORE_TRIES = 1.0          # after the first way across is found, the search goes on for as many tries again (at least MORE_AT_LEAST)
+MORE_AT_LEAST = 6000
+MOST_WAYS = 10            # ... or until it has this many ways
+REFINE_ROUNDS = 160       # changes tried on the way taken
+TICKS_PER_COST = ph.PSI_HZ / 9.0      # the coarse level's costs are way at the follower's pace of 9: this turns what is left into ticks
+
+
+def _worth(world, search, seed, c, ball, before: int):
+    """What a way across is worth: how many of 20 nudged runs still arrive (nudge 1, then 3), then how soon the ball
+    is where the way leads (the ticks before it starts, its own, and the coarse level's estimate of what is left)."""
+    n1 = _robust(world, search, seed, c.tape, scale=1, ball=ball, parts=c.parts)
+    n3 = _robust(world, search, seed, c.tape, scale=3, ball=ball, parts=c.parts)
+    total = before + c.ticks + search.score(c.end) * TICKS_PER_COST
+    return (n1, n3, -total)
+
+
+def _refine(world, search, seed, c, ball, before: int, rounds: int = REFINE_ROUNDS, rng_seed: int = 7):
+    """Adjust a way across that is one stretch: change one key's length by a chunk, change one key, or drop one,
+    and keep the change when the way is worth more (`_worth`). Returns (the way, its worth, how many changes were
+    kept)."""
+    rng = np.random.default_rng(rng_seed)
+    best, worth, kept = c, _worth(world, search, seed, c, ball, before), 0
+    if len(c.parts) != 1:
+        return best, worth, kept
+    for _ in range(rounds):
+        tape = [list(x) for x in best.tape]
+        if not tape:
+            break
+        k = int(rng.integers(0, len(tape)))
+        what = int(rng.integers(0, 4))
+        if what == 0:
+            tape[k][1] += CHUNK
+        elif what == 1:
+            tape[k][1] -= CHUNK
+        elif what == 2:
+            tape[k][0] = int(rng.integers(0, len(fine.PUSHES)))
+        else:
+            tape[k][1] = 0
+        merged = []
+        for a, n in tape:
+            if n <= 0:
+                continue
+            if merged and merged[-1][0] == a:
+                merged[-1][1] += n
+            else:
+                merged.append([a, n])
+        if not merged:
+            continue
+        cand = fine.rebuild(search, seed, [(a, n) for a, n in merged], ball.name)
+        if cand is None:
+            continue
+        w2 = _worth(world, search, seed, cand, ball, before)
+        if w2 > worth:
+            best, worth, kept = cand, w2, kept + 1
+    return best, worth, kept
+
+
 def solve_sector(mesh, info, g, sector: int, tries: int = 300_000, seed: int = 0, log=print, start=None, ball: str = "wood") -> dict:
     """sector: 1-based. g: the coarse graph of `mesh` with the loose balls in it (solid).
     start: the state (pos, vel, omega) the ball enters the sector with, as in a normal game: the state it reached
@@ -424,11 +481,13 @@ def solve_sector(mesh, info, g, sector: int, tries: int = 300_000, seed: int = 0
                     ids[idx] = (si, h)
             if not ids:
                 return None
-            c = s.run(max_expansions=tries, max_seconds=1e9)
-            b["attempts"].append(dict(mode=mode, where=where, tries=c.expansions, seconds=c.seconds, found=c.found))
+            # the first way across is seldom the best: in strict mode the search goes on a while and keeps every way it finds
+            keep = mode == "strict"
+            c = s.run(max_expansions=tries, max_seconds=1e9, more=MORE_TRIES if keep else 0.0, at_least=MORE_AT_LEAST if keep else 0, most=MOST_WAYS if keep else 1)
+            b["attempts"].append(dict(mode=mode, where=where, tries=c.expansions, seconds=c.seconds, found=c.found, ways=len(s.goals)))
             log("   %s at %s (%s): %s from %s, %s after %d tries, %.0f s" % (b["no"], np.round(b["near"], 1), b["why"], mode, where,
-                                                                           "crossed" if c.found else "not crossed", c.expansions, c.seconds))
-            return (mode, s, c, ids[c.root]) if c.found else None
+                                                                           "crossed (%d ways)" % len(s.goals) if c.found else "not crossed", c.expansions, c.seconds))
+            return (mode, s, c, ids) if c.found else None
 
         # A break counts as crossed only in strict mode
         found = None
@@ -443,12 +502,27 @@ def solve_sector(mesh, info, g, sector: int, tries: int = 300_000, seed: int = 0
             for mode in ORDER[1:]:
                 got = attempt(mode, pools[0][0], pools[0][1])
                 if got:
-                    _m, _s, c, _seed = got
+                    _m, _s, c, _ids = got
                     b["would_pass"] = dict(mode=mode, tries=c.expansions,
                                            through=[ty for ty, q in loose if np.linalg.norm(c.trace[:, :3] - q, axis=1).min() < 2.0 * BALL_R])
                     break
         if found:
-            mode, s, c, (si, h) = found
+            mode, s, c, ids = found
+            # of the ways found, the one worth most; then small changes to it, kept when they make it worth more
+            def before(si, h):
+                return int(sum(len(sg["trace"]) for sg in segs[:si] if sg["type"] != "assumed")) + int(h[0])
+            ways = []
+            for cand in s.crossings():
+                si, h = ids[cand.root]
+                ways.append((_worth(worlds[mode], s, (h[2], h[3], h[4], h[5]), cand, ball_now, before(si, h)), len(ways), cand, si, h))
+            first_worth = ways[0][0]
+            worth, _k, c, si, h = max(ways, key=lambda x: (x[0], -x[1]))
+            c, refined, changes = _refine(worlds[mode], s, (h[2], h[3], h[4], h[5]), c, ball_now, before(si, h))
+            b["ways"] = dict(found=len(ways), first=dict(arrives=first_worth[0], arrives3=first_worth[1], ticks=int(ways[0][2].ticks)),
+                             chosen=dict(arrives=worth[0], arrives3=worth[1], ticks=int(max(ways, key=lambda x: (x[0], -x[1]))[2].ticks)),
+                             refined=dict(arrives=refined[0], arrives3=refined[1], ticks=int(c.ticks), changes=changes))
+            log("      %s: %d ways found; the first arrives %d of 20 in %.1f game s, the one chosen %d of 20, after %d changes %d of 20 in %.1f game s" % (
+                b["no"], len(ways), first_worth[0], ways[0][2].ticks / 132, worth[0], changes, refined[0], c.ticks / 132))
             for sg in segs[si + 1:]:                              # crossings made on a way that is now given up
                 if sg["type"] == "cross":
                     for ob in breaks.values():

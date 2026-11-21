@@ -719,6 +719,36 @@ def _rollout(pos, vel, omega, pushes, holds, ball, par, fans, fanpar, props, sce
     return OK, done
 
 
+@njit(cache=True)
+def _rollout_chunks(pos, vel, omega, push, n, chunk, ball, par, fans, fanpar, props, scene, mw, margin, ox, oz, cell, nx, nz, start, items, A, B, C, lo_y, hi_y, N, tri_fr, tri_el, tri_placed, tri_rail, boxes, spheres, sph_on, y_min, low, low_ox, low_oz, low_cell, stamp, tickbox, ci, cd, cq, cf, cn, cg, order, n_imp, t_imp, fr, el, target,
+                    out_state, out_stats, out_scene, out_status):
+    """Hold one push for up to n chunks of `chunk` ticks, in place, keeping the state after every chunk: out_state
+    (pos, vel, omega), out_stats, out_scene, out_status. Stops after the first chunk that does not end OK. Returns
+    how many chunks were run. One call instead of n: a search asks for millions of these."""
+    pushes = np.empty((1, 3))
+    pushes[0, 0], pushes[0, 1], pushes[0, 2] = push[0], push[1], push[2]
+    holds = np.empty(1, np.int64)
+    holds[0] = chunk
+    trace = np.empty((0, 9))
+    k = 0
+    while k < n:
+        stats = out_stats[k]
+        for q in range(len(stats)):
+            stats[q] = 0.0
+        status, done = _rollout(pos, vel, omega, pushes, holds, ball, par, fans, fanpar, props, scene, mw, margin, ox, oz, cell, nx, nz, start, items, A, B, C, lo_y, hi_y, N, tri_fr, tri_el, tri_placed, tri_rail, boxes, spheres, sph_on, y_min, low, low_ox, low_oz, low_cell, stamp, tickbox, ci, cd, cq, cf, cn, cg, order, n_imp, t_imp, fr, el, target, trace, stats)
+        for q in range(3):
+            out_state[k, q], out_state[k, 3 + q], out_state[k, 6 + q] = pos[q], vel[q], omega[q]
+        out_state[k, 9] = done
+        for a in range(len(scene)):
+            for q in range(11):
+                out_scene[k, a, q] = scene[a, q]
+        out_status[k] = status
+        k += 1
+        if status != OK:
+            break
+    return k
+
+
 def ball_array(ball) -> np.ndarray:
     return np.array([ball.mass, ball.push, ball.lin_damp, ball.rot_damp, ball.friction, ball.elasticity, ball.radius, ball.inertia])
 
@@ -746,6 +776,7 @@ class World:
         m = self.mesh
         self.fans = np.zeros((0, 12)) if self.fans is None else np.ascontiguousarray(self.fans, np.float64).reshape(-1, 12)
         self.props = list(self.props or [])
+        self._ballc: dict = {}
         # per loose body: mass, friction, elasticity, damping (linear, angular), inertia, shape (0 sphere, 1 box), the
         # box's half extents and its three axes in world
         self.prop_consts = np.array([[p["mass"], p["friction"], p["elasticity"], p["lin_damp"], p["rot_damp"], p["inertia"],
@@ -844,6 +875,29 @@ class World:
                          CONTACT_MARGIN, self.y_min, *self._geo(), self.tri_fr, self.tri_el, self.tri_placed, self.tri_rail,
                          self.stamp, self.tickbox, *self.work, self.multi))
 
+    def rollout_chunks(self, ball, P, pos, vel, omega, push, n: int, chunk: int, scene=None):
+        """Hold one push for up to n chunks of `chunk` ticks and give the state after every chunk: (chunks run,
+        states (k, 10: pos, vel, omega, ticks done in the chunk), stats (k, 10), scenes (k, K, 11), statuses (k,)).
+        It stops after the first chunk that does not end OK. The same ticks as n calls of `rollout`."""
+        from .geometry import CONTACT_MARGIN
+        pos, vel, omega = np.array(pos, np.float64), np.array(vel, np.float64), np.array(omega, np.float64)
+        scene = self.scene() if scene is None else np.array(scene, np.float64)
+        st, ss, sc, su = np.empty((n, 10)), np.empty((n, 10)), np.empty((n, len(scene), 11)), np.empty(n, np.int64)
+        ba, fp, on = self._of_ball(ball)
+        k = _rollout_chunks(pos, vel, omega, np.asarray(push, np.float64).reshape(3), int(n), int(chunk), ba, params_array(P), self.fans, fp,
+                            self.prop_consts, scene, self.multi, CONTACT_MARGIN, *self._geo(), self.tri_fr, self.tri_el,
+                            self.tri_placed, self.tri_rail, self.boxes, self.spheres, on, self.y_min, self.low, self.low_ox, self.low_oz, LOW_CELL,
+                            self.stamp, self.tickbox, *self.work, *self.solve, st, ss, sc, su)
+        return int(k), st[:k], ss[:k], sc[:k], su[:k]
+
+    def _of_ball(self, ball):
+        """What a rollout needs that depends on the ball's kind alone, made once: its numbers, the fans' numbers
+        for it, which transformers act on it."""
+        got = self._ballc.get(ball.name)
+        if got is None:
+            got = self._ballc[ball.name] = (ball_array(ball), self.fan_params(ball), self.spheres_on(ball))
+        return got
+
     def rollout(self, ball, P, pos, vel, omega, pushes, holds, trace: bool = False, margin: float | None = None, scene=None):
         """Hold each push for its number of ticks. Returns (status, ticks, pos, vel, omega, stats, trace or None).
         scene: the loose balls' state (`World.scene`), changed in place; without it they are at rest where they were
@@ -856,9 +910,10 @@ class World:
         holds = np.ascontiguousarray(holds, np.int64)
         tr = np.empty((int(holds.sum()) if trace else 0, 9))
         stats = np.zeros(10)
-        status, done = _rollout(pos, vel, omega, pushes, holds, ball_array(ball), params_array(P), self.fans, self.fan_params(ball),
+        ba, fp, on = self._of_ball(ball)
+        status, done = _rollout(pos, vel, omega, pushes, holds, ba, params_array(P), self.fans, fp,
                                 self.prop_consts, scene, self.multi,
                                 CONTACT_MARGIN if margin is None else margin, *self._geo(), self.tri_fr, self.tri_el,
-                                self.tri_placed, self.tri_rail, self.boxes, self.spheres, self.spheres_on(ball), self.y_min, self.low, self.low_ox, self.low_oz, LOW_CELL, self.stamp, self.tickbox, *self.work,
+                                self.tri_placed, self.tri_rail, self.boxes, self.spheres, on, self.y_min, self.low, self.low_ox, self.low_oz, LOW_CELL, self.stamp, self.tickbox, *self.work,
                                 *self.solve, tr, stats)
         return int(status), int(done), pos, vel, omega, stats, (tr[:done] if trace else None)
