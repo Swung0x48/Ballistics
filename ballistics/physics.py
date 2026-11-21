@@ -152,9 +152,15 @@ def step(mesh: Mesh, ball: Ball, s: State, push, params: Params | None = None):
     return State(pos, vel, omega), dict(contacts=contacts, normal_impulse=n_imp, hit=hit)
 
 
-def step_reference(mesh: Mesh, ball: Ball, s: State, push, params: Params | None = None):
-    """The tick written out in plain Python: the definition the compiled tick is checked against."""
+def step_reference(mesh: Mesh, ball: Ball, s: State, push, params: Params | None = None, fans=None):
+    """The tick written out in plain Python: the definition the compiled tick is checked against.
+    fans: the fans that push, as `ballistics.fans.of` gives them (none by default)."""
     P = params or Params()
+    lift = 0.0
+    if fans is not None and len(fans):                # decided where the tick begins: the pose the game's script saw
+        from . import fans as _fans
+        par = _fans.rules().params(ball)
+        lift = _fans.pushing(s.pos, fans, par) * float(par[4]) / ball.mass
     r = ball.radius
     move = s.vel * DT
     pos = s.pos + move
@@ -169,7 +175,7 @@ def step_reference(mesh: Mesh, ball: Ball, s: State, push, params: Params | None
                 hi = mid
         pos = s.pos + lo * move
         hit = True
-    vel = s.vel * (1.0 - ball.lin_damp * DT) + ball.push * np.asarray(push, float) + np.array([0.0, -GRAVITY * DT, 0.0])
+    vel = s.vel * (1.0 - ball.lin_damp * DT) + ball.push * np.asarray(push, float) + np.array([0.0, lift, 0.0]) + np.array([0.0, -GRAVITY * DT, 0.0])
     omega = s.omega * (1.0 - ball.rot_damp * DT)
     contacts = [c for c in merge_contacts(mesh.contacts(pos, r, P.touch)) if c.gap <= P.touch]
     n_imp = np.zeros(len(contacts))

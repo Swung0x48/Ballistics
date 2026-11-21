@@ -45,7 +45,11 @@ def _cube(h: float):
     return np.array(A), np.array(B), np.array(C)
 
 
-SKIP_TEMPLATES = ("P_Extra_", "P_Trafo_")   # pickups do not hinder; a transformer matters by its trigger distance (see the map file), not its body
+# Placed types whose parts are not put into the mesh. Pickups do not hinder; a transformer matters by its trigger
+# distance (see the map file), not its body; a fan (P_Modul_18) has no rigid body at all, neither its rotor nor its
+# box (READ in its scripts; in the original engine's records the paper ball flies inside the box for thousands of
+# ticks): it acts by its push (`ballistics.fans`).
+SKIP_TEMPLATES = ("P_Extra_", "P_Trafo_", "P_Modul_18")
 SKIP_PARTS = ("Shadow",)
 
 
@@ -91,6 +95,8 @@ def build_mesh(level: NmoLevel, fixture: bool = True, templates=None, bmap=None)
         for o in level.members(group):
             if o.name in seen or o.vertices is None:
                 continue
+            if any(g.startswith("P_") for g in o.groups):
+                continue          # a placed object's marker: the game puts the template there, the marker's own shape is no body
             seen.add(o.name)
             V, F = o.world_vertices(), o.faces
             idx = len(ents)

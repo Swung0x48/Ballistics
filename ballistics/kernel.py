@@ -70,12 +70,31 @@ def _contacts(px, py, pz, radius, margin, ox, oz, cell, nx, nz, start, items, A,
 
 
 @njit(cache=True)
-def _step(pos, vel, omega, push, ball, par, ox, oz, cell, nx, nz, start, items, A, B, C, lo_y, hi_y, N, tri_fr, tri_el,
+def _fans_pushing(px, py, pz, fans, fanpar):
+    """How many fans push a ball whose centre is at p (`fans.pushing`): its distance to the fan's box, in the fan's
+    own axes, is under the ball kind's distance. fans (F, 12): origin, x, y, z axes; fanpar = (half, bottom, top,
+    reach, impulse)."""
+    half, bottom, top, reach = fanpar[0], fanpar[1], fanpar[2], fanpar[3]
+    n = 0
+    for k in range(len(fans)):
+        dx, dy, dz = px - fans[k, 0], py - fans[k, 1], pz - fans[k, 2]
+        lx = dx * fans[k, 3] + dy * fans[k, 4] + dz * fans[k, 5]
+        ly = dx * fans[k, 6] + dy * fans[k, 7] + dz * fans[k, 8]
+        lz = dx * fans[k, 9] + dy * fans[k, 10] + dz * fans[k, 11]
+        ex, ey, ez = max(abs(lx) - half, 0.0), max(bottom - ly, ly - top, 0.0), max(abs(lz) - half, 0.0)
+        if ex * ex + ey * ey + ez * ez < reach * reach:
+            n += 1
+    return n
+
+
+@njit(cache=True)
+def _step(pos, vel, omega, push, ball, par, fans, fanpar, ox, oz, cell, nx, nz, start, items, A, B, C, lo_y, hi_y, N, tri_fr, tri_el,
           stamp, tickbox, ci, cd, cq, cf, cn, cg, order, n_imp, t_imp, fr, el, target):
     """One tick in place (pos, vel, omega are updated). Returns (hit, number of merged contacts); the contacts are
     left in the work arrays, `order[:m]` indexing them. ball = (mass, push, lin_damp, rot_damp, friction, elasticity,
     radius, inertia); par = (reach, touch, floor, friction_scale, restitution_scale, bounce_speed, sweep,
-    iterations, dt, gravity)."""
+    iterations, dt, gravity); fans, fanpar: the fans that push (`_fans_pushing`), decided where the tick begins."""
+    lift = _fans_pushing(pos[0], pos[1], pos[2], fans, fanpar) * fanpar[4] / ball[0] if len(fans) > 0 else 0.0
     mass, pushacc, lin_damp, rot_damp, b_fr, b_el, r, inertia = ball[0], ball[1], ball[2], ball[3], ball[4], ball[5], ball[6], ball[7]
     reach, touch, floor, f_scale, r_scale, bounce, sweep, iters, dt, grav = par[0], par[1], par[2], par[3], par[4], par[5], par[6], int(par[7]), par[8], par[9]
     mx, my, mz = vel[0] * dt, vel[1] * dt, vel[2] * dt
@@ -99,7 +118,7 @@ def _step(pos, vel, omega, push, ball, par, ox, oz, cell, nx, nz, start, items, 
     pos[0], pos[1], pos[2] = qx, qy, qz
     k_lin = 1.0 - lin_damp * dt
     vx = vel[0] * k_lin + pushacc * push[0]
-    vy = vel[1] * k_lin + pushacc * push[1] - grav * dt
+    vy = vel[1] * k_lin + pushacc * push[1] + lift - grav * dt      # damping, the fans' impulse, gravity: the game's order
     vz = vel[2] * k_lin + pushacc * push[2]
     k_rot = 1.0 - rot_damp * dt
     wx, wy, wz = omega[0] * k_rot, omega[1] * k_rot, omega[2] * k_rot
@@ -175,7 +194,7 @@ def _settle(pos, r, margin, reach, ox, oz, cell, nx, nz, start, items, A, B, C, 
 
 
 @njit(cache=True)
-def _rollout(pos, vel, omega, pushes, holds, ball, par, margin, ox, oz, cell, nx, nz, start, items, A, B, C, lo_y, hi_y,
+def _rollout(pos, vel, omega, pushes, holds, ball, par, fans, fanpar, margin, ox, oz, cell, nx, nz, start, items, A, B, C, lo_y, hi_y,
              N, tri_fr, tri_el, tri_placed, tri_rail, boxes, spheres, y_min, low, low_ox, low_oz, low_cell, stamp, tickbox, ci, cd, cq, cf, cn, cg, order,
              n_imp, t_imp, fr, el, target, trace, stats):
     """Hold pushes[k] for holds[k] ticks each, in place. Stops early when the ball's centre enters a death box or
@@ -191,7 +210,7 @@ def _rollout(pos, vel, omega, pushes, holds, ball, par, margin, ox, oz, cell, nx
     r = ball[6]
     for k in range(len(holds)):
         for _ in range(holds[k]):
-            hit, m = _step(pos, vel, omega, pushes[k], ball, par, ox, oz, cell, nx, nz, start, items, A, B, C, lo_y, hi_y,
+            hit, m = _step(pos, vel, omega, pushes[k], ball, par, fans, fanpar, ox, oz, cell, nx, nz, start, items, A, B, C, lo_y, hi_y,
                            N, tri_fr, tri_el, stamp, tickbox, ci, cd, cq, cf, cn, cg, order, n_imp, t_imp, fr, el, target)
             touching, edge, best_ny, carried, on_rail = 0, False, -1.0, False, False
             for i in range(m):
@@ -263,9 +282,13 @@ class World:
     spheres: np.ndarray      # (S, 4) trigger spheres the ball must stay out of: x y z, distance
     y_min: float
     stop_on_placed: bool = True
+    fans: np.ndarray | None = None      # (F, 12) the fans that push (`ballistics.fans.of`): origin, x, y, z axes
+    fan_edge: str = "best"              # which distance stands for the box test at a fan's edge (`fans.Rules.params`)
 
     def __post_init__(self):
         m = self.mesh
+        self.fans = np.zeros((0, 12)) if self.fans is None else np.ascontiguousarray(self.fans, np.float64).reshape(-1, 12)
+        self._fanpar: dict = {}
         self.tri_fr = np.array([float(m.entities[o].get("friction", 0.7)) if m.entities else 0.7 for o in m.owner])
         self.tri_el = np.array([float(m.entities[o].get("elasticity", 0.3)) if m.entities else 0.3 for o in m.owner])
         self.tri_placed = m.placed.copy() if self.stop_on_placed else np.zeros(len(m.A), np.bool_)
@@ -293,11 +316,20 @@ class World:
         self.solve = (np.empty(CAP), np.empty((CAP, 3)), np.empty(CAP), np.empty(CAP), np.empty(CAP))
 
     @classmethod
-    def of(cls, mesh: Mesh, death_boxes=(), keep_out=(), stop_on_placed: bool = True) -> "World":
+    def of(cls, mesh: Mesh, death_boxes=(), keep_out=(), stop_on_placed: bool = True, fans=None, fan_edge: str = "best") -> "World":
         boxes = np.array([[*b["lo"], *b["hi"]] for b in death_boxes], np.float64).reshape(-1, 6)
         spheres = np.array([list(s) for s in keep_out], np.float64).reshape(-1, 4)
         y_min = float(mesh._lo_y.min()) - 30.0 if len(mesh.A) else -1e9
-        return cls(mesh, boxes, spheres, y_min, stop_on_placed)
+        return cls(mesh, boxes, spheres, y_min, stop_on_placed, fans, fan_edge)
+
+    def fan_params(self, ball) -> np.ndarray:
+        """The fans' numbers for this ball kind (read from the catalogue only when there is a fan)."""
+        if not len(self.fans):
+            return np.zeros(5)
+        if ball.name not in self._fanpar:
+            from .fans import rules
+            self._fanpar[ball.name] = rules().params(ball, self.fan_edge)
+        return self._fanpar[ball.name]
 
     def _geo(self):
         m = self.mesh
@@ -307,7 +339,7 @@ class World:
         """One tick without settling, as `physics.step`: returns (pos, vel, omega, hit, merged contacts as
         (triangle, point, feature, normal, gap) rows, normal impulses)."""
         pos, vel, omega = np.array(pos, np.float64), np.array(vel, np.float64), np.array(omega, np.float64)
-        hit, m = _step(pos, vel, omega, np.asarray(push, np.float64), ball_array(ball), params_array(P), *self._geo(),
+        hit, m = _step(pos, vel, omega, np.asarray(push, np.float64), ball_array(ball), params_array(P), self.fans, self.fan_params(ball), *self._geo(),
                        self.tri_fr, self.tri_el, self.stamp, self.tickbox, *self.work, *self.solve)
         ci, cd, cq, cf, cn, cg, order = self.work
         rows = [(int(ci[k]), cq[k].copy(), int(cf[k]), cn[k].copy(), float(cg[k])) for k in order[:m]]
@@ -321,7 +353,7 @@ class World:
         holds = np.ascontiguousarray(holds, np.int64)
         tr = np.empty((int(holds.sum()) if trace else 0, 9))
         stats = np.zeros(10)
-        status, done = _rollout(pos, vel, omega, pushes, holds, ball_array(ball), params_array(P),
+        status, done = _rollout(pos, vel, omega, pushes, holds, ball_array(ball), params_array(P), self.fans, self.fan_params(ball),
                                 CONTACT_MARGIN if margin is None else margin, *self._geo(), self.tri_fr, self.tri_el,
                                 self.tri_placed, self.tri_rail, self.boxes, self.spheres, self.y_min, self.low, self.low_ox, self.low_oz, LOW_CELL, self.stamp, self.tickbox, *self.work,
                                 *self.solve, tr, stats)

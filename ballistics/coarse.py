@@ -112,6 +112,22 @@ def without_loose(mesh: Mesh) -> Mesh:
     return mesh.subset(~loose[mesh.owner]) if loose.any() else mesh
 
 
+def without_bodiless(mesh: Mesh) -> Mesh:
+    """The mesh without what has no rigid body in the game but was exported as if it had (mesh files made before
+    the export left them out): a fan's rotor and box, and a placed object's marker that the level file also lists
+    as floor (one in the 13 levels: level 3's P_Modul_18_04, MEASURED: the ball goes through it in three of the
+    original engine's records)."""
+    from .export import SKIP_TEMPLATES
+    drop = np.array([(bool(e.get("placed")) and str(e.get("type", "")).startswith(SKIP_TEMPLATES))
+                     or (not e.get("placed") and any(str(g).startswith("P_") for g in e.get("groups", ()))) for e in mesh.entities], bool)
+    keep = ~drop[mesh.owner] if len(drop) else np.ones(len(mesh.A), bool)
+    if keep.all():
+        return mesh
+    out = mesh.subset(keep)
+    out.meta["bodiless_dropped"] = int((~keep).sum())       # a coarse graph cached before this is of another mesh (`solve.graph_for`)
+    return out
+
+
 def keep_out(placements) -> list:
     """[(x, y, z, distance)] for the placed objects a wood ball has to stay clear of."""
     out = []

@@ -84,7 +84,8 @@ def main(argv=None):
         from . import solve
         from .geometry import Mesh
 
-        mesh = Mesh.load(a.mesh)
+        from .coarse import without_bodiless
+        mesh = without_bodiless(Mesh.load(a.mesh))      # mesh files made before the export left fans out
         info = json.load(open(a.map, encoding="utf8"))
         name = a.mesh.name.replace("-mesh.npz", "")
         g = solve.graph_for(mesh, info, a.out / (name + "-coarse-solid.pkl"))
@@ -162,7 +163,8 @@ def main(argv=None):
         from . import extras, solve, staged
         from .geometry import Mesh
 
-        mesh = Mesh.load(a.mesh)
+        from .coarse import without_bodiless
+        mesh = without_bodiless(Mesh.load(a.mesh))      # mesh files made before the export left fans out
         info = json.load(open(a.map, encoding="utf8"))
         name = a.mesh.name.replace("-mesh.npz", "")
         g = solve.graph_for(mesh, info, a.out / (name + "-coarse-solid.pkl"))

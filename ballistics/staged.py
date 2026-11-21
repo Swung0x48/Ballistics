@@ -210,7 +210,7 @@ def solve_sector(mesh, info, g, sector: int, tries: int = 300_000, seed: int = 0
     start: the state (pos, vel, omega) the ball enters the sector with, as in a normal game: the state it reached
     the sector's first checkpoint in. Without it the ball starts at rest under the sector's reset point, which is
     how the level begins and how a ball comes back after it was lost."""
-    worlds = {m: world_for(mesh, info, m) for m in ORDER}
+    worlds = {m: world_for(mesh, info, m, sector) for m in ORDER}
     strict = worlds["strict"]
     rel = getattr(g, "_relaxed", None)
     if rel is None:

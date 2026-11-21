@@ -27,25 +27,33 @@ AIR, RAIL, FLOOR = 0, 1, 4
 KIND_NAMES = {AIR: "air", RAIL: "on a rail", FLOOR: "on the floor"}
 
 
-def world_for(mesh: Mesh, info: dict, mode: str) -> World:
+def world_for(mesh: Mesh, info: dict, mode: str, sector: int | None = None) -> World:
+    """sector: the sector the ball is solved in. Its fans push (`ballistics.fans`); without it no fan does, which is
+    how the coarse level's launch edges are made (they are proposals)."""
+    from . import fans
     solid_balls = MODES[mode]
     # ASSUMED: a transformer acts when the ball's centre is within its trigger distance of a point one ball radius
     # above the transformer's origin (the distance is READ, the centre's height is not)
     keep = [(x, y + 2.0, z, d) for x, y, z, d in coarse.keep_out(info["placements"])]
     if not solid_balls:
         mesh = coarse.without_loose(mesh)
-    return World.of(mesh, info["death_boxes"], keep)
+    return World.of(mesh, info["death_boxes"], keep, fans=fans.of(info, sector))
 
 
 def graph_for(mesh: Mesh, info: dict, cache: Path | None = None, log=print):
     """The coarse graph of the mesh as given: pass the full mesh to have the loose balls in it as obstacles, or
     `coarse.without_loose(mesh)` to have them out."""
     if cache is not None and cache.exists():
-        return pickle.load(open(cache, "rb"))
+        g = pickle.load(open(cache, "rb"))
+        n = g.info.get("mesh_triangles")                  # graphs cached before this was recorded have none
+        if n == len(mesh.A) or (n is None and not mesh.meta.get("bodiless_dropped")):
+            return g
+        log("the cached coarse graph %s was made from another mesh (fans or markers were obstacles in it): building it again" % cache.name)
     from .launch import add_launches
     g = coarse.build(mesh, avoid=coarse.keep_out(info["placements"]), log=log)
     coarse.add_steps(g, mesh, log=log)
     add_launches(g, world_for(mesh, info, "strict"), log=log)
+    g.info["mesh_triangles"] = len(mesh.A)
     if cache is not None:
         pickle.dump(g, open(cache, "wb"))
     return g
@@ -129,7 +137,7 @@ def whole_sector(mesh: Mesh, info: dict, g, sector: int, mode: str = "strict", e
                  seed: int = 0, log=print):
     """sector: 1-based. From rest under the sector's reset point to the places around the next checkpoint (for the
     last sector: around the last coarse place before the airship, whose own shape is not in the mesh)."""
-    world = world_for(mesh, info, mode)
+    world = world_for(mesh, info, mode, sector)
     anchors = [info["start"]] + info["checkpoints"] + [info["airship"]]
     n = g.info["rest_places"]
     goal = g.nearest(anchors[sector], 25.0)

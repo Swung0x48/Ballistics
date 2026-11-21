@@ -331,7 +331,7 @@ def alternatives(mesh, info, g, sector: int, res: dict, tries: int = 300_000, mo
     from . import staged
     from .solve import world_for
 
-    worlds = {m: world_for(mesh, info, m) for m in staged.ORDER}
+    worlds = {m: world_for(mesh, info, m, sector) for m in staged.ORDER}
     states = route_states(worlds, res)
     isl = islands(g, states)
     log("sector %d: %d islands a ball on the route could come down on" % (sector, len(isl)))
