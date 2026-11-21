@@ -46,11 +46,11 @@ def test_only_the_sectors_and_they_settle():
     info = dict(death_boxes=[], placements=[dict(name="a", type="P_Ball_Wood", sector=1, position=[0.0, 3.0, 0.0]),
                                             dict(name="b", type="P_Ball_Stone", sector=2, position=[10.0, 0.5, 0.0]),
                                             dict(name="c", type="P_Box", sector=1, position=[20.0, 0.5, 0.0])])
-    assert props.of(info, None) == [] and [p["name"] for p in props.of(info, 1)] == ["a"]
+    assert props.of(info, None) == [] and [p["name"] for p in props.of(info, 1)] == ["a", "c"]       # the sector's ball and its box
     w = world_for(floor(), info, "strict", 1)
-    assert len(w.props) == 1 and w.props[0]["settled"] and abs(w.props[0]["rest"][1] - 0.011) < 0.02      # it fell 3 and lies on the floor
+    assert len(w.props) == 2 and w.props[0]["settled"] and abs(w.props[0]["rest"][1] - 0.011) < 0.02      # it fell 3 and lies on the floor
     assert len(world_for(floor(), info, "free", 1).props) == 0 and len(world_for(floor(), info, "strict").props) == 0
-    assert w.scene().shape == (1, 11) and w.scene()[0, 9] == 0.0
+    assert w.scene().shape == (2, 11) and w.scene()[0, 9] == 0.0
 
 
 def test_without_a_loose_ball_near_the_tick_is_the_old_one():
@@ -108,3 +108,79 @@ def test_a_row_of_stone_balls_holds_a_wood_ball_up_and_gives_way_to_a_stone_one(
         assert st == OK
         out[ball.name] = pos[0]
     assert out["stone"] > out["wood"] + 5.0                             # in 3 game seconds the stone ball is well through; the wood one shoves slowly
+
+
+def box(x, y=0.56, z=0.0):
+    return dict(props.bodies()["box"], name="box", axes=np.eye(3).tolist(), rest=[x, y, z])
+
+
+def push(ball, boxes, x0, ticks=400):
+    """A ball at rest x0 behind boxes on a floor, the key held towards them: (per box how far it moved, seconds to
+    move the first one a box's length or None, the ball's speed at the end)."""
+    w = World.of(floor(), props=boxes)
+    scene = w.scene()
+    scene[:, 9] = 1.0
+    w.idle(scene, 300)                                                 # they settle onto the floor and each other
+    assert (scene[:, 9] == 0.0).all()
+    start = scene[:, :3].copy()
+    pos, vel, om = np.array([x0, 0.011, 0.0]), np.zeros(3), np.zeros(3)
+    first = five = None
+    for t in range(ticks):
+        st, _d, pos, vel, om, _s, _t = w.rollout(ball, ph.Params(), pos, vel, om, np.array([[1.0, 0.0, 0.0]]), [1], scene=scene)
+        assert st == OK
+        moved = scene[0, 0] - start[0, 0]
+        if first is None and moved > 0.01:
+            first = t
+        if five is None and moved >= 5.0:
+            five = (t - first) / 132.0
+    return scene[:, 0] - start[:, 0], five, float(np.linalg.norm(vel)), scene[:, 1] - start[:, 1]
+
+
+def test_the_box_is_the_catalogues():
+    b = props.bodies()["box"]
+    cat = things.load()["P_Box"]
+    assert (b["mass"], b["friction"], b["elasticity"]) == (1.0, 0.7, 0.3) == tuple(cat.bodies[0][k]["v"] for k in ("mass", "friction", "elasticity"))
+    assert b["half"] == (2.5, 2.5, 2.5) and b["shape"] == "box" and b["inertia"] == props.LOCKED
+    info = dict(death_boxes=[], placements=[dict(name="b", type="P_Box", sector=1, position=[0.0, 1.0, 0.0], x_axis=[0.0, 0.0, 1.0], y_axis=[0.0, 1.0, 0.0], z_axis=[-1.0, 0.0, 0.0])])
+    w = world_for(floor(), info, "strict", 1)
+    assert len(w.props) == 1 and w.props[0]["settled"] and abs(w.props[0]["rest"][1] - 0.56) < 0.05      # it stands on the floor
+    assert w.props[0]["axes"][0] == [0.0, 0.0, 1.0] and w.prop_consts.shape == (1, 19) and w.prop_consts[0, 6] == 1.0
+
+
+def test_who_can_push_what():
+    # MEASURED on the rebuilt engine (the catalogue's P_Box): a wood ball pushes one box (a box's length in 1.0 game s from
+    # touching, 0.29-0.50 with a run-up), not two in a row nor a pile of three; a stone ball pushes all of these (one box:
+    # 0.76-0.77 from touching); a paper ball moves a box 0.48 at most
+    moved, five, _v, _dy = push(ph.WOOD, [box(4.6)], 0.0)
+    assert moved[0] > 5.0 and 0.9 < five < 1.5                          # here 1.33: slower than measured
+    moved, five, _v, _dy = push(ph.WOOD, [box(4.6)], -12.0)
+    assert 0.25 < five < 0.55
+    moved, five, _v, _dy = push(ph.STONE, [box(4.6)], 0.0)
+    assert 0.7 < five < 1.0
+    moved, five, _v, _dy = push(ph.PAPER, [box(4.6)], -12.0)
+    assert five is None and moved[0] < 0.5
+    moved, five, speed, _dy = push(ph.WOOD, [box(4.6), box(9.7)], 0.0, ticks=600)
+    assert moved.max() < 1.0 and speed < 0.5                            # two in a row: it comes to a stop
+    moved, five, speed, dy = push(ph.WOOD, [box(4.6), box(4.6, y=5.6), box(4.6, y=10.7)], 0.0, ticks=600)
+    assert moved.max() < 1.0 and np.abs(dy).max() < 0.1                 # a pile of three: it does not move
+    moved, five, speed, _dy = push(ph.STONE, [box(4.6), box(9.7)], 0.0, ticks=600)
+    assert moved.min() > 20.0
+    moved, five, speed, dy = push(ph.STONE, [box(4.6), box(4.6, y=5.6), box(4.6, y=10.7)], 0.0, ticks=600)
+    assert moved.min() > 10.0 and np.abs(dy).max() < 0.1                # the whole pile slides
+
+
+def test_a_ball_can_stand_on_a_box_and_a_box_goes_over_an_edge():
+    w = World.of(floor(), props=[box(0.0)])
+    scene = w.scene()
+    st, _d, pos, vel, _o, _s, _t = w.rollout(ph.WOOD, ph.Params(), [0.0, 9.0, 0.0], [0, 0, 0], [0, 0, 0], np.zeros((1, 3)), [300], scene=scene)
+    assert st == OK and abs(pos[1] - (0.56 + 2.5 + 2.0)) < 0.1          # at rest on its top
+    A = np.array([[-40.0, -2.0, -40.0], [12.0, -2.0, 40.0]]); B = np.array([[12.0, -2.0, -40.0], [-40.0, -2.0, 40.0]]); C = np.array([[-40.0, -2.0, 40.0], [12.0, -2.0, -40.0]])
+    ledge = Mesh(A, B, C, np.zeros(2, np.int64), np.zeros(2, bool), np.zeros((0, 7)), [dict(name="ledge", groups=[], friction=0.7, elasticity=0.3)], {})
+    w = World.of(ledge, props=[box(4.6)])
+    scene = w.scene()
+    pos, vel, om = np.array([0.0, 0.011, 0.0]), np.zeros(3), np.zeros(3)
+    for _ in range(900):
+        st, _d, pos, vel, om, _s, _t = w.rollout(ph.STONE, ph.Params(), pos, vel, om, np.array([[1.0, 0.0, 0.0]]), [1], scene=scene)
+        if st != OK or scene[0, 9] == 2.0:
+            break
+    assert scene[0, 9] == 2.0 or scene[0, 1] < -10.0                    # pushed over the edge at x = 12: it is gone, or falling

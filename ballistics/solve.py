@@ -34,8 +34,10 @@ def world_for(mesh: Mesh, info: dict, mode: str, sector: int | None = None) -> W
     solid_balls = MODES[mode]
     mesh = coarse.in_sector(mesh, sector)             # the sector's domes are fixed geometry; other sectors' are not there
     mesh = coarse.without_loose(mesh)                 # the loose balls are bodies (strict) or not there (free): never fixed shapes
-    key = (id(info), sector)
-    if solid_balls and key not in _PROPS:             # letting them settle takes a moment: once per map and sector
+    # letting them settle takes a moment: kept per sector, by what the loose bodies are and what they stand on
+    key = (sector, len(mesh.A), float(mesh.A.sum()) if len(mesh.A) else 0.0,
+           tuple((q.get("name"), q["type"], tuple(q["position"])) for q in info.get("placements", ()) if q["type"] in props.KINDS and q.get("sector") == sector))
+    if solid_balls and key not in _PROPS:
         _PROPS[key] = props.of(info, sector, mesh.subset(~mesh.placed) if mesh.placed.any() else mesh)
     # the transformers in place: the sector's own (`ballistics.trafo`); without a sector, every one of the map
     return World.of(mesh, info["death_boxes"], fans=fans.of(info, sector), trafos=trafo.of(info, sector),
@@ -81,7 +83,7 @@ def graph_for(mesh: Mesh, info: dict, cache: Path | None = None, log=print):
         kind = props.KINDS.get(p["type"])
         if kind is None:
             continue
-        inside = np.linalg.norm(g.pos - np.array(p["position"], float), axis=1) < 2.0 * props.RADIUS
+        inside = np.linalg.norm(g.pos - np.array(p["position"], float), axis=1) < (4.5 if kind == "box" else 2.0 * props.RADIUS)
         for u in np.flatnonzero(~inside):
             g.adj[u] = [(v, c + props.COARSE_COST[kind] if inside[v] else c, k) for v, c, k in g.adj[u]]
     g.info["mesh_triangles"] = len(mesh.A)

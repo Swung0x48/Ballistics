@@ -103,7 +103,7 @@ class Graph:
 # Loose balls (P_Ball_*) are not kept out of: a rolling ball knocks them aside. That is ASSUMED too, and a way that
 # passes one is reported as passing it.
 KEEP_OUT = {"P_Trafo_Paper": TRIGGER_R + 0.3}      # the paper ball is not solved: a route does not go into a paper transformer
-LOOSE = ("P_Ball_",)       # loose balls: obstacles like everything placed, unless the caller takes them out with `without_loose`
+LOOSE = ("P_Ball_", "P_Box")       # loose balls and boxes: rigid bodies of their own (`ballistics.props`), not fixed shapes
 
 
 def without_loose(mesh: Mesh) -> Mesh:

@@ -193,9 +193,44 @@ def _settle(pos, r, margin, reach, ox, oz, cell, nx, nz, start, items, A, B, C, 
             break
 
 
-MCAP = 512              # contacts of all the bodies together in one tick
-STILL_TICKS = 20        # a loose ball that has not moved for this many ticks is frozen (0.3 physics s: the game's short test)
+MCAP = 1024             # contacts of all the bodies together in one tick
+STILL_TICKS = 20        # a loose body that has not moved for this many ticks is frozen (0.3 physics s: the game's short test)
 STILL_SPEED = 0.05
+CORNER = 0.05           # a box touches by its corners: each is a little sphere of this radius
+
+
+@njit(cache=True)
+def _box_point(px, py, pz, c, h, rad):
+    """A little sphere of radius rad at p against the box c (bc row: centre in c[21:24], half extents c[9:12], its
+    axes in world in c[12:21]): (gap, normal x, y, z), the normal pointing from the box to p."""
+    dx, dy, dz = px - c[21], py - c[22], pz - c[23]
+    l0 = dx * c[12] + dy * c[13] + dz * c[14]
+    l1 = dx * c[15] + dy * c[16] + dz * c[17]
+    l2 = dx * c[18] + dy * c[19] + dz * c[20]
+    q0, q1, q2 = min(max(l0, -h[0]), h[0]), min(max(l1, -h[1]), h[1]), min(max(l2, -h[2]), h[2])
+    e0, e1, e2 = l0 - q0, l1 - q1, l2 - q2
+    d = math.sqrt(e0 * e0 + e1 * e1 + e2 * e2)
+    if d > 1e-12:
+        n0, n1, n2, gap = e0 / d, e1 / d, e2 / d, d - rad
+    else:                                                # inside: out through the nearest face
+        m0, m1, m2 = h[0] - abs(l0), h[1] - abs(l1), h[2] - abs(l2)
+        n0 = n1 = n2 = 0.0
+        if m0 <= m1 and m0 <= m2:
+            n0, gap = (1.0 if l0 >= 0 else -1.0), -m0 - rad
+        elif m1 <= m2:
+            n1, gap = (1.0 if l1 >= 0 else -1.0), -m1 - rad
+        else:
+            n2, gap = (1.0 if l2 >= 0 else -1.0), -m2 - rad
+    return (gap, n0 * c[12] + n1 * c[15] + n2 * c[18], n0 * c[13] + n1 * c[16] + n2 * c[19], n0 * c[14] + n1 * c[17] + n2 * c[20])
+
+
+@njit(cache=True)
+def _corner(c, k):
+    """The k-th corner (0..7) of the box c (a bc row), in world."""
+    s0 = c[9] if k & 1 else -c[9]
+    s1 = c[10] if k & 2 else -c[10]
+    s2 = c[11] if k & 4 else -c[11]
+    return (c[21] + s0 * c[12] + s1 * c[15] + s2 * c[18], c[22] + s0 * c[13] + s1 * c[16] + s2 * c[19], c[23] + s0 * c[14] + s1 * c[17] + s2 * c[20])
 
 
 @njit(cache=True)
@@ -203,40 +238,45 @@ def _multi_tick(pos, vel, omega, push, ball, par, fans, fanpar, props, scene, ma
                 ox, oz, cell, nx, nz, start, items, A, B, C, lo_y, hi_y, N, tri_fr, tri_el, tri_placed, tri_rail,
                 stamp, tickbox, ci, cd, cq, cf, cn, cg, order,
                 bp, bv, bw, bc, m_a, m_b, m_n, m_fr, m_target, m_nimp, m_timp, out):
-    """One tick of the player ball together with the loose balls (the tick of `_step`, for several spheres at once).
-    Every body moves with the velocity it has and has its velocity updated as in `_step`; then all contacts, ball
-    on mesh and ball on ball, are solved together, one after another, a few times over: a ball struck by a rolling
+    """One tick of the player ball together with the loose bodies (the tick of `_step`, for several bodies at once).
+    Every body moves with the velocity it has and has its velocity updated as in `_step`; then all contacts, body
+    on mesh and body on body, are solved together, one after another, a few times over: a ball struck by a rolling
     ball is pressed onto the floor by the friction between the two, and the floor then drags on it.
-    props (K, 6): mass, friction, elasticity, linear damping, angular damping, inertia. scene (K, 11), in place:
-    position, velocity, angular velocity, flag (0 frozen, 1 awake, 2 gone), ticks it has been still.
+    A loose body is a sphere, or a box that slides and does not turn (it touches by its eight corners).
+    props (K, 19): mass, friction, elasticity, linear damping, angular damping, inertia, shape (0 sphere, 1 box),
+    half extents, the box's three axes in world. scene (K, 11), in place: position, velocity, angular velocity,
+    flag (0 frozen, 1 awake, 2 gone), ticks it has been still.
     out: [0] the player's tick began with a hit, [1] how many points the player touches, [2] one is an edge or
     corner, [3] the best normal y of its mesh contacts, [4] carried, [5] on a rail, [6] it touches a placed object."""
     r = ball[6]
     reach, touch, floor, f_scale, r_scale, bounce, sweep, iters, dt, grav = par[0], par[1], par[2], par[3], par[4], par[5], par[6], int(par[7]), par[8], par[9]
     K = len(props)
     nb = 1
-    # ---- the bodies: 0 the player, then every loose ball that is still there
+    # ---- the bodies: 0 the player, then every loose body that is still there
     bp[0, 0], bp[0, 1], bp[0, 2] = pos[0], pos[1], pos[2]
     bv[0, 0], bv[0, 1], bv[0, 2] = vel[0], vel[1], vel[2]
     bw[0, 0], bw[0, 1], bw[0, 2] = omega[0], omega[1], omega[2]
-    bc[0, 0], bc[0, 1], bc[0, 2], bc[0, 3], bc[0, 4], bc[0, 5], bc[0, 6], bc[0, 7] = ball[0], ball[4], ball[5], ball[2], ball[3], ball[7], -1.0, 1.0
+    bc[0, 0], bc[0, 1], bc[0, 2], bc[0, 3], bc[0, 4], bc[0, 5], bc[0, 6], bc[0, 7], bc[0, 8] = ball[0], ball[4], ball[5], ball[2], ball[3], ball[7], -1.0, 1.0, 0.0
     for k in range(K):
         if scene[k, 9] == 2.0:
             continue
         for q in range(3):
             bp[nb, q], bv[nb, q], bw[nb, q] = scene[k, q], scene[k, 3 + q], scene[k, 6 + q]
-        bc[nb, 0], bc[nb, 1], bc[nb, 2], bc[nb, 3], bc[nb, 4], bc[nb, 5] = props[k, 0], props[k, 1], props[k, 2], props[k, 3], props[k, 4], props[k, 5]
-        bc[nb, 6], bc[nb, 7] = float(k), scene[k, 9]                    # which loose ball; awake (1) or frozen (0)
+        for q in range(6):
+            bc[nb, q] = props[k, q]
+        bc[nb, 6], bc[nb, 7] = float(k), scene[k, 9]                    # which loose body; awake (1) or frozen (0)
+        for q in range(13):
+            bc[nb, 8 + q] = props[k, 6 + q]                             # shape, half extents, axes
         nb += 1
     lift = _fans_pushing(pos[0], pos[1], pos[2], fans, fanpar) * fanpar[4] / ball[0] if len(fans) > 0 else 0.0
     out[0] = 0.0
-    # ---- move, then the velocity update (a frozen ball does neither: nothing acts on it until it is struck)
+    # ---- move, then the velocity update (a frozen body does neither: nothing acts on it until it is struck)
     for b in range(nb):
         if bc[b, 7] == 0.0:
             continue
         mx, my, mz = bv[b, 0] * dt, bv[b, 1] * dt, bv[b, 2] * dt
         qx, qy, qz = bp[b, 0] + mx, bp[b, 1] + my, bp[b, 2] + mz
-        if sweep != 0.0:
+        if sweep != 0.0 and bc[b, 8] == 0.0:
             d1, _t = _distance(qx, qy, qz, r + 1.0, ox, oz, cell, nx, nz, start, items, A, B, C, lo_y, hi_y)
             if d1 - r < floor:
                 d0, _t = _distance(bp[b, 0], bp[b, 1], bp[b, 2], r + 1.0, ox, oz, cell, nx, nz, start, items, A, B, C, lo_y, hi_y)
@@ -262,64 +302,122 @@ def _multi_tick(pos, vel, omega, push, ball, par, fans, fanpar, props, scene, ma
         else:
             bv[b, 0], bv[b, 1], bv[b, 2] = bv[b, 0] * k_lin, bv[b, 1] * k_lin - grav * dt, bv[b, 2] * k_lin
         bw[b, 0], bw[b, 1], bw[b, 2] = bw[b, 0] * k_rot, bw[b, 1] * k_rot, bw[b, 2] * k_rot
-    # ---- the contacts: each body on the mesh, then each pair of balls
+    for b in range(nb):
+        bc[b, 21], bc[b, 22], bc[b, 23] = bp[b, 0], bp[b, 1], bp[b, 2]   # where each is, for the box tests
+    # ---- the contacts: each body on the mesh, then each pair of bodies
     nc = 0
     touching, edge, best_ny, carried, on_rail, placed = 0, False, -1.0, False, False, False
     for b in range(nb):
-        m = _contacts(bp[b, 0], bp[b, 1], bp[b, 2], r, touch, ox, oz, cell, nx, nz, start, items, A, B, C, lo_y, hi_y, N, stamp, tickbox,
-                      ci, cd, cq, cf, cn, cg, order)
-        for i in range(m):
-            k = order[i]
-            t = ci[k]
-            if b == 0 and cg[k] <= touch:
-                touching += 1
-                if cf[k] != FACE:
-                    edge = True
-                if tri_rail[t]:
-                    on_rail = True
-                if tri_rail[t] or (cf[k] == FACE and cn[k, 1] >= 0.6):
-                    carried = True
-                if cn[k, 1] > best_ny:
-                    best_ny = cn[k, 1]
-                if tri_placed[t]:
-                    placed = True
-            if nc >= len(m_a):
-                break
-            m_a[nc], m_b[nc] = b, -1
-            m_n[nc, 0], m_n[nc, 1], m_n[nc, 2] = cn[k, 0], cn[k, 1], cn[k, 2]
-            m_fr[nc] = bc[b, 1] * tri_fr[t] * f_scale
-            vn = bv[b, 0] * cn[k, 0] + bv[b, 1] * cn[k, 1] + bv[b, 2] * cn[k, 2]
-            m_target[nc] = -math.sqrt(bc[b, 2] * tri_el[t]) * r_scale * vn if vn < -bounce else 0.0
-            nc += 1
+        if bc[b, 8] == 0.0:
+            m = _contacts(bp[b, 0], bp[b, 1], bp[b, 2], r, touch, ox, oz, cell, nx, nz, start, items, A, B, C, lo_y, hi_y, N, stamp, tickbox,
+                          ci, cd, cq, cf, cn, cg, order)
+            for i in range(m):
+                k = order[i]
+                t = ci[k]
+                if b == 0 and cg[k] <= touch:
+                    touching += 1
+                    if cf[k] != FACE:
+                        edge = True
+                    if tri_rail[t]:
+                        on_rail = True
+                    if tri_rail[t] or (cf[k] == FACE and cn[k, 1] >= 0.6):
+                        carried = True
+                    if cn[k, 1] > best_ny:
+                        best_ny = cn[k, 1]
+                    if tri_placed[t]:
+                        placed = True
+                if nc >= len(m_a):
+                    break
+                m_a[nc], m_b[nc] = b, -1
+                m_n[nc, 0], m_n[nc, 1], m_n[nc, 2] = cn[k, 0], cn[k, 1], cn[k, 2]
+                m_fr[nc] = bc[b, 1] * tri_fr[t] * f_scale
+                vn = bv[b, 0] * cn[k, 0] + bv[b, 1] * cn[k, 1] + bv[b, 2] * cn[k, 2]
+                m_target[nc] = -math.sqrt(bc[b, 2] * tri_el[t]) * r_scale * vn if vn < -bounce else 0.0
+                nc += 1
+        else:
+            # a box stands on what is under its corners, as long as there is something under its middle (once its
+            # middle is over an edge it goes down: it does not turn here, so it cannot tip over the edge)
+            under, _t = _distance(bp[b, 0] - bc[b, 10] * bc[b, 15], bp[b, 1] - bc[b, 10] * bc[b, 16], bp[b, 2] - bc[b, 10] * bc[b, 17], 1.5,
+                                  ox, oz, cell, nx, nz, start, items, A, B, C, lo_y, hi_y)
+            for kc in range(8):
+                qx, qy, qz = _corner(bc[b], kc)
+                m = _contacts(qx, qy, qz, CORNER, touch, ox, oz, cell, nx, nz, start, items, A, B, C, lo_y, hi_y, N, stamp, tickbox,
+                              ci, cd, cq, cf, cn, cg, order)
+                for i in range(m):
+                    k = order[i]
+                    t = ci[k]
+                    if cn[k, 1] > 0.5 and under > 0.6:
+                        continue
+                    if nc >= len(m_a):
+                        break
+                    m_a[nc], m_b[nc] = b, -1
+                    m_n[nc, 0], m_n[nc, 1], m_n[nc, 2] = cn[k, 0], cn[k, 1], cn[k, 2]
+                    m_fr[nc] = bc[b, 1] * tri_fr[t] * f_scale
+                    vn = bv[b, 0] * cn[k, 0] + bv[b, 1] * cn[k, 1] + bv[b, 2] * cn[k, 2]
+                    m_target[nc] = -math.sqrt(bc[b, 2] * tri_el[t]) * r_scale * vn if vn < -bounce else 0.0
+                    nc += 1
     first_pair = nc
     for a in range(nb):
         for b in range(a + 1, nb):
-            dx, dy, dz = bp[a, 0] - bp[b, 0], bp[a, 1] - bp[b, 1], bp[a, 2] - bp[b, 2]
-            d = math.sqrt(dx * dx + dy * dy + dz * dz)
-            if d - 2.0 * r > touch or d < 1e-9 or nc >= len(m_a):
-                continue
             if bc[a, 7] == 0.0 and bc[b, 7] == 0.0:
-                continue                                  # two frozen balls resting against each other
-            m_a[nc], m_b[nc] = a, b
-            m_n[nc, 0], m_n[nc, 1], m_n[nc, 2] = dx / d, dy / d, dz / d
-            m_fr[nc] = bc[a, 1] * bc[b, 1] * f_scale
-            vn = (bv[a, 0] - bv[b, 0]) * dx / d + (bv[a, 1] - bv[b, 1]) * dy / d + (bv[a, 2] - bv[b, 2]) * dz / d
-            m_target[nc] = -math.sqrt(bc[a, 2] * bc[b, 2]) * r_scale * vn if vn < -bounce else 0.0     # two moving bodies: no lower bound
-            if a == 0:
-                touching += 1
-            nc += 1
+                continue                                  # two frozen bodies resting against each other
+            sa, sb = bc[a, 8], bc[b, 8]
+            if sa == 0.0 and sb == 0.0:                   # ball on ball
+                dx, dy, dz = bp[a, 0] - bp[b, 0], bp[a, 1] - bp[b, 1], bp[a, 2] - bp[b, 2]
+                d = math.sqrt(dx * dx + dy * dy + dz * dz)
+                if d - 2.0 * r > touch or d < 1e-9 or nc >= len(m_a):
+                    continue
+                m_a[nc], m_b[nc] = a, b
+                m_n[nc, 0], m_n[nc, 1], m_n[nc, 2] = dx / d, dy / d, dz / d
+                m_fr[nc] = bc[a, 1] * bc[b, 1] * f_scale
+                vn = (bv[a, 0] - bv[b, 0]) * dx / d + (bv[a, 1] - bv[b, 1]) * dy / d + (bv[a, 2] - bv[b, 2]) * dz / d
+                m_target[nc] = -math.sqrt(bc[a, 2] * bc[b, 2]) * r_scale * vn if vn < -bounce else 0.0     # two moving bodies: no lower bound
+                if a == 0:
+                    touching += 1
+                nc += 1
+            elif sa == 0.0 or sb == 0.0:                  # ball on box: the ball is the contact's first body
+                s, x = (a, b) if sa == 0.0 else (b, a)
+                gap, n0, n1, n2 = _box_point(bp[s, 0], bp[s, 1], bp[s, 2], bc[x], bc[x, 9:12], r)
+                if gap > touch or nc >= len(m_a):
+                    continue
+                m_a[nc], m_b[nc] = s, x
+                m_n[nc, 0], m_n[nc, 1], m_n[nc, 2] = n0, n1, n2
+                m_fr[nc] = bc[s, 1] * bc[x, 1] * f_scale
+                vn = (bv[s, 0] - bv[x, 0]) * n0 + (bv[s, 1] - bv[x, 1]) * n1 + (bv[s, 2] - bv[x, 2]) * n2
+                m_target[nc] = -math.sqrt(bc[s, 2] * bc[x, 2]) * r_scale * vn if vn < -bounce else 0.0
+                if s == 0:
+                    touching += 1
+                nc += 1
+            else:                                         # box on box: each one's corners against the other
+                for turn in range(2):
+                    s, x = (a, b) if turn == 0 else (b, a)
+                    for kc in range(8):
+                        qx, qy, qz = _corner(bc[s], kc)
+                        gap, n0, n1, n2 = _box_point(qx, qy, qz, bc[x], bc[x, 9:12], CORNER)
+                        if gap > touch or nc >= len(m_a):
+                            continue
+                        m_a[nc], m_b[nc] = s, x
+                        m_n[nc, 0], m_n[nc, 1], m_n[nc, 2] = n0, n1, n2
+                        m_fr[nc] = bc[s, 1] * bc[x, 1] * f_scale
+                        vn = (bv[s, 0] - bv[x, 0]) * n0 + (bv[s, 1] - bv[x, 1]) * n1 + (bv[s, 2] - bv[x, 2]) * n2
+                        m_target[nc] = -math.sqrt(bc[s, 2] * bc[x, 2]) * r_scale * vn if vn < -bounce else 0.0
+                        nc += 1
     for i in range(nc):
         m_nimp[i] = 0.0
         m_timp[i, 0] = m_timp[i, 1] = m_timp[i, 2] = 0.0
-    # a frozen ball that nothing awake touches takes no part (its own weight is not in the solve)
-    for b in range(1, nb):
-        if bc[b, 7] == 0.0:
-            hit_by = False
-            for i in range(first_pair, nc):
-                if (m_a[i] == b and bc[m_b[i], 7] != 0.0) or (m_b[i] == b and bc[m_a[i], 7] != 0.0):
-                    hit_by = True
-            if hit_by:
-                bc[b, 7] = 0.5                           # struck: it is in the solve from this tick, awake from the next
+    # a frozen body that nothing awake touches takes no part; one that is touched is in the solve from this tick.
+    # Being in the solve passes on: what a touched body leans on or carries is touched in turn (a row, a pile)
+    changed = True
+    while changed:
+        changed = False
+        for i in range(first_pair, nc):
+            a, b = m_a[i], m_b[i]
+            if bc[a, 7] == 0.0 and bc[b, 7] != 0.0:
+                bc[a, 7] = 0.5
+                changed = True
+            elif bc[b, 7] == 0.0 and bc[a, 7] != 0.0:
+                bc[b, 7] = 0.5
+                changed = True
     # A ball striking a ball is an impact between those two alone: it is settled after everything else, once, and
     # what it does to their contacts with the floor shows from the next tick on. MEASURED: the struck ball leaves
     # the tick with the speed of the plain two-body rule (within 3%), and loses 6 to 16% of it in the tick after.
@@ -327,9 +425,10 @@ def _multi_tick(pos, vel, omega, push, ball, par, fans, fanpar, props, scene, ma
         for _ in range((iters if nc > 1 else 1) if phase == 0 else 1):
             for i in range(nc):
                 a, b = m_a[i], m_b[i]
-                if bc[a, 7] == 0.0 or (b >= 0 and bc[b, 7] == 0.0 and bc[a, 7] == 0.0):
+                if bc[a, 7] == 0.0 or (b >= 0 and bc[b, 7] == 0.0):
                     continue
-                if (b >= 0 and m_target[i] != 0.0) != (phase == 1):
+                late = b >= 0 and m_target[i] != 0.0 and bc[a, 8] == 0.0 and bc[b, 8] == 0.0
+                if late != (phase == 1):
                     continue
                 n0, n1, n2 = m_n[i, 0], m_n[i, 1], m_n[i, 2]
                 ima, iia = 1.0 / bc[a, 0], 1.0 / bc[a, 5]
@@ -350,7 +449,8 @@ def _multi_tick(pos, vel, omega, push, ball, par, fans, fanpar, props, scene, ma
                     bv[b, 0] -= j * imb * n0
                     bv[b, 1] -= j * imb * n1
                     bv[b, 2] -= j * imb * n2
-                # friction at the contact point: on body a the point is at -r n, on body b at +r n
+                # friction at the contact point: on body a the point is at -r n, on body b at +r n (a box does not
+                # turn: its inertia is beyond measure, so where the point is on it does not matter)
                 a0, a1, a2 = -r * n0, -r * n1, -r * n2
                 u0 = bv[a, 0] + (bw[a, 1] * a2 - bw[a, 2] * a1)
                 u1 = bv[a, 1] + (bw[a, 2] * a0 - bw[a, 0] * a2)
@@ -389,25 +489,70 @@ def _multi_tick(pos, vel, omega, push, ball, par, fans, fanpar, props, scene, ma
     for b in range(nb):
         if bc[b, 7] == 0.0:
             continue
-        _settle(bp[b], r, margin, 0.2, ox, oz, cell, nx, nz, start, items, A, B, C, lo_y, hi_y, N, stamp, tickbox, ci, cd, cq, cf, cn, cg, order)
+        if bc[b, 8] == 0.0:
+            _settle(bp[b], r, margin, 0.2, ox, oz, cell, nx, nz, start, items, A, B, C, lo_y, hi_y, N, stamp, tickbox, ci, cd, cq, cf, cn, cg, order)
+        else:
+            for _ in range(2):
+                bc[b, 21], bc[b, 22], bc[b, 23] = bp[b, 0], bp[b, 1], bp[b, 2]
+                under, _t = _distance(bp[b, 0] - bc[b, 10] * bc[b, 15], bp[b, 1] - bc[b, 10] * bc[b, 16], bp[b, 2] - bc[b, 10] * bc[b, 17], 1.5,
+                                      ox, oz, cell, nx, nz, start, items, A, B, C, lo_y, hi_y)
+                for kc in range(8):
+                    qx, qy, qz = _corner(bc[b], kc)
+                    m = _contacts(qx, qy, qz, CORNER, 0.2, ox, oz, cell, nx, nz, start, items, A, B, C, lo_y, hi_y, N, stamp, tickbox,
+                                  ci, cd, cq, cf, cn, cg, order)
+                    for i in range(m):
+                        k = order[i]
+                        if cg[k] < margin - 1e-6 and not (cn[k, 1] > 0.5 and under > 0.6):
+                            sh = (margin - cg[k]) / 4.0                 # four corners share a face's push
+                            bp[b, 0] += sh * cn[k, 0]
+                            bp[b, 1] += sh * cn[k, 1]
+                            bp[b, 2] += sh * cn[k, 2]
+    for b in range(nb):
+        bc[b, 21], bc[b, 22], bc[b, 23] = bp[b, 0], bp[b, 1], bp[b, 2]
     for a in range(nb):
         for b in range(a + 1, nb):
             if bc[a, 7] == 0.0 and bc[b, 7] == 0.0:
                 continue
-            dx, dy, dz = bp[a, 0] - bp[b, 0], bp[a, 1] - bp[b, 1], bp[a, 2] - bp[b, 2]
-            d = math.sqrt(dx * dx + dy * dy + dz * dz)
-            gap = d - 2.0 * r
-            if gap >= margin - 1e-6 or d < 1e-9:
-                continue
+            sa, sb = bc[a, 8], bc[b, 8]
             wa = 0.0 if bc[a, 7] == 0.0 else 1.0 / bc[a, 0]
             wb = 0.0 if bc[b, 7] == 0.0 else 1.0 / bc[b, 0]
+            if wa + wb == 0.0:
+                continue
+            if sa == 0.0 and sb == 0.0:
+                dx, dy, dz = bp[a, 0] - bp[b, 0], bp[a, 1] - bp[b, 1], bp[a, 2] - bp[b, 2]
+                d = math.sqrt(dx * dx + dy * dy + dz * dz)
+                gap = d - 2.0 * r
+                if gap >= margin - 1e-6 or d < 1e-9:
+                    continue
+                n0, n1, n2 = dx / d, dy / d, dz / d
+            elif sa == 0.0 or sb == 0.0:
+                s, x = (a, b) if sa == 0.0 else (b, a)
+                gap, n0, n1, n2 = _box_point(bp[s, 0], bp[s, 1], bp[s, 2], bc[x], bc[x, 9:12], r)
+                if gap >= margin - 1e-6:
+                    continue
+                if s == b:                                # the normal is from the box to the ball: turn it to point from b to a
+                    n0, n1, n2 = -n0, -n1, -n2
+            else:
+                gap, n0, n1, n2 = 1e9, 0.0, 0.0, 0.0
+                for turn in range(2):
+                    s, x = (a, b) if turn == 0 else (b, a)
+                    for kc in range(8):
+                        qx, qy, qz = _corner(bc[s], kc)
+                        g, e0, e1, e2 = _box_point(qx, qy, qz, bc[x], bc[x, 9:12], CORNER)
+                        if g < gap:
+                            gap = g
+                            n0, n1, n2 = (e0, e1, e2) if turn == 0 else (-e0, -e1, -e2)
+                if gap >= margin - 1e-6:
+                    continue
             sh = (margin - gap) / (wa + wb)
-            bp[a, 0] += sh * wa * dx / d
-            bp[a, 1] += sh * wa * dy / d
-            bp[a, 2] += sh * wa * dz / d
-            bp[b, 0] -= sh * wb * dx / d
-            bp[b, 1] -= sh * wb * dy / d
-            bp[b, 2] -= sh * wb * dz / d
+            bp[a, 0] += sh * wa * n0
+            bp[a, 1] += sh * wa * n1
+            bp[a, 2] += sh * wa * n2
+            bp[b, 0] -= sh * wb * n0
+            bp[b, 1] -= sh * wb * n1
+            bp[b, 2] -= sh * wb * n2
+            bc[a, 21], bc[a, 22], bc[a, 23] = bp[a, 0], bp[a, 1], bp[a, 2]
+            bc[b, 21], bc[b, 22], bc[b, 23] = bp[b, 0], bp[b, 1], bp[b, 2]
     # ---- back into the state
     for q in range(3):
         pos[q], vel[q], omega[q] = bp[0, q], bv[0, q], bw[0, q]
@@ -443,15 +588,16 @@ def _multi_tick(pos, vel, omega, push, ball, par, fans, fanpar, props, scene, ma
 
 
 @njit(cache=True)
-def _needs_multi(pos, vel, scene, r, dt):
-    """Whether this tick has to be the tick of several bodies: a loose ball is awake, or the player is about to
+def _needs_multi(pos, vel, props, scene, r, dt):
+    """Whether this tick has to be the tick of several bodies: a loose body is awake, or the player is about to
     touch one."""
     for k in range(len(scene)):
         if scene[k, 9] == 1.0:
             return True
         if scene[k, 9] == 0.0:
             dx, dy, dz = pos[0] - scene[k, 0], pos[1] - scene[k, 1], pos[2] - scene[k, 2]
-            reach = 2.0 * r + 0.5 + dt * math.sqrt(vel[0] * vel[0] + vel[1] * vel[1] + vel[2] * vel[2])
+            size = r if props[k, 6] == 0.0 else math.sqrt(props[k, 7] ** 2 + props[k, 8] ** 2 + props[k, 9] ** 2)
+            reach = r + size + 0.5 + dt * math.sqrt(vel[0] * vel[0] + vel[1] * vel[1] + vel[2] * vel[2])
             if dx * dx + dy * dy + dz * dz < reach * reach:
                 return True
     return False
@@ -499,7 +645,7 @@ def _rollout(pos, vel, omega, pushes, holds, ball, par, fans, fanpar, props, sce
     r = ball[6]
     for k in range(len(holds)):
         for _ in range(holds[k]):
-            multi = len(scene) > 0 and _needs_multi(pos, vel, scene, r, par[8])
+            multi = len(scene) > 0 and _needs_multi(pos, vel, props, scene, r, par[8])
             if multi:
                 # the player ball and the loose balls together (`_multi_tick`); it settles the positions itself
                 _multi_tick(pos, vel, omega, pushes[k], ball, par, fans, fanpar, props, scene, margin, y_min,
@@ -600,10 +746,13 @@ class World:
         m = self.mesh
         self.fans = np.zeros((0, 12)) if self.fans is None else np.ascontiguousarray(self.fans, np.float64).reshape(-1, 12)
         self.props = list(self.props or [])
-        self.prop_consts = np.array([[p["mass"], p["friction"], p["elasticity"], p["lin_damp"], p["rot_damp"], p["inertia"]] for p in self.props],
-                                    np.float64).reshape(-1, 6)
+        # per loose body: mass, friction, elasticity, damping (linear, angular), inertia, shape (0 sphere, 1 box), the
+        # box's half extents and its three axes in world
+        self.prop_consts = np.array([[p["mass"], p["friction"], p["elasticity"], p["lin_damp"], p["rot_damp"], p["inertia"],
+                                      1.0 if p.get("shape") == "box" else 0.0, *p.get("half", (0.0, 0.0, 0.0)),
+                                      *np.asarray(p.get("axes", np.eye(3)), float).ravel()] for p in self.props], np.float64).reshape(-1, 19)
         nb = len(self.props) + 1
-        self.multi = (np.empty((nb, 3)), np.empty((nb, 3)), np.empty((nb, 3)), np.empty((nb, 8)), np.empty(MCAP, np.int64), np.empty(MCAP, np.int64),
+        self.multi = (np.empty((nb, 3)), np.empty((nb, 3)), np.empty((nb, 3)), np.zeros((nb, 24)), np.empty(MCAP, np.int64), np.empty(MCAP, np.int64),
                       np.empty((MCAP, 3)), np.empty(MCAP), np.empty(MCAP), np.empty(MCAP), np.empty((MCAP, 3)), np.zeros(8))
         self._fanpar: dict = {}
         self.tri_fr = np.array([float(m.entities[o].get("friction", 0.7)) if m.entities else 0.7 for o in m.owner])

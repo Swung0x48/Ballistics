@@ -14,11 +14,11 @@ def quad(x0, x1, z0, z1, y):
 
 
 def level():
-    """A floor at 0, and three slabs at height 3 standing for placed parts: a dome of sector 1, a dome of sector 2, a box."""
+    """A floor at 0, and three slabs at height 3 standing for placed parts: a dome of sector 1, a dome of sector 2, a push board."""
     parts = [(quad(-40, 40, -40, 40, 0.0), dict(name="floor", groups=["Phys_Floors"], friction=0.7, elasticity=0.3)),
              (quad(-6, 6, -6, 6, 3.0), dict(name="P_Dome_MF", groups=[], placed=True, type="P_Dome", placement="P_Dome_01", sector=1)),
              (quad(14, 26, -6, 6, 3.0), dict(name="P_Dome_MF", groups=[], placed=True, type="P_Dome", placement="P_Dome_02", sector=2)),
-             (quad(-26, -14, -6, 6, 3.0), dict(name="P_Box_MF", groups=[], placed=True, type="P_Box", placement="P_Box_01", sector=1))]
+             (quad(-26, -14, -6, 6, 3.0), dict(name="P_Modul_25_Bridge", groups=[], placed=True, type="P_Modul_25", placement="P_Modul_25_01", sector=1))]
     A, B, C, owner, ents = [], [], [], [], []
     for tris, e in parts:
         ents.append(e)
@@ -33,7 +33,7 @@ def test_the_sectors_dome_is_fixed_geometry_and_the_others_are_not_there():
     one = in_sector(m, 1)
     kinds = {e.get("placement"): (bool(e.get("placed")), e.get("friction"), e.get("elasticity")) for e in one.entities if e.get("placement")}
     assert kinds["P_Dome_01"] == (False, body["friction"]["v"], body["elasticity"]["v"]) == (False, 0.2, 0.8)
-    assert kinds["P_Box_01"][0] is True                                  # anything else placed stays as it is
+    assert kinds["P_Modul_25_01"][0] is True                             # anything else placed stays as it is
     assert len(one.A) == len(m.A) - 2 and not (one.owner == 2).any()      # sector 2's dome is taken out
     assert int(one.placed.sum()) == 2
     every = in_sector(m)
@@ -60,7 +60,7 @@ def test_a_ball_bounces_on_the_dome_by_its_own_elasticity():
     st, done, pos, *_ = w.rollout(ph.WOOD, P, [20.0, 9.0, 0.0], [0, 0, 0], [0, 0, 0], np.zeros((1, 3)), [60])
     assert st == OK and pos[1] < 4.5                                     # where sector 2's dome is, there is nothing: it comes down on the floor
     st, *_ = w.rollout(ph.WOOD, P, [-20.0, 9.0, 0.0], [0, 0, 0], [0, 0, 0], np.zeros((1, 3)), [200])
-    assert st == PLACED                                                  # the box is still a placed thing
+    assert st == PLACED                                                  # the push board is still a placed thing
 
 
 def test_it_is_slippery():
