@@ -102,7 +102,7 @@ class Graph:
 # trigger distance. Objects that do not hinder a wood ball are not listed (score and life balls, the wood transformer).
 # Loose balls (P_Ball_*) are not kept out of: a rolling ball knocks them aside. That is ASSUMED too, and a way that
 # passes one is reported as passing it.
-KEEP_OUT = {"P_Trafo_Stone": TRIGGER_R + 0.3, "P_Trafo_Paper": TRIGGER_R + 0.3}
+KEEP_OUT = {"P_Trafo_Paper": TRIGGER_R + 0.3}      # the paper ball is not solved: a route does not go into a paper transformer
 LOOSE = ("P_Ball_",)       # loose balls: obstacles like everything placed, unless the caller takes them out with `without_loose`
 
 
@@ -126,6 +126,33 @@ def without_bodiless(mesh: Mesh) -> Mesh:
     out = mesh.subset(keep)
     out.meta["bodiless_dropped"] = int((~keep).sum())       # a coarse graph cached before this is of another mesh (`solve.graph_for`)
     return out
+
+
+FIXED_TYPES = ("P_Dome",)      # placed objects that are fixed rigid bodies: plain geometry while their sector is current
+
+
+def in_sector(mesh: Mesh, sector=None) -> Mesh:
+    """The mesh as it is while `sector` is the current one, as far as the placed objects that never move go (the
+    dome, P_Dome): those of the sector become plain fixed geometry, with the friction and elasticity the catalogue
+    has for them; those of other sectors are taken out (the game takes their bodies away). sector None: all of
+    them are there. Everything else placed stays as it is."""
+    hit = [i for i, e in enumerate(mesh.entities) if e.get("placed") and str(e.get("type", "")).startswith(FIXED_TYPES)]
+    if not hit:
+        return mesh
+    from . import things
+    cat = things.load()
+    ents = [dict(e) for e in mesh.entities]
+    drop = np.zeros(len(ents), bool)
+    for i in hit:
+        e = ents[i]
+        if sector is not None and e.get("sector") != sector:
+            drop[i] = True
+            continue
+        body = cat.of_type(e["type"]).bodies[0]
+        e.update(placed=False, fixed_body=True, friction=float(body["friction"]["v"]), elasticity=float(body["elasticity"]["v"]))
+    keep = ~drop[mesh.owner]
+    meta = dict(mesh.meta, fixed_bodies=list(FIXED_TYPES))
+    return Mesh(mesh.A[keep], mesh.B[keep], mesh.C[keep], mesh.owner[keep], mesh.rail[keep], mesh.tubes, ents, meta)
 
 
 def keep_out(placements) -> list:

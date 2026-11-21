@@ -41,7 +41,7 @@ CHUNK = STEP_TICKS
 BASE = "strict"           # the follower's world, and the only one whose crossings count: nothing placed may be touched
 STATUS = {DEAD: "fell out", TRIGGER: "entered a transformer's range", PLACED: "touched something placed"}
 BALLS = {"wood": ph.WOOD, "stone": ph.STONE, "paper": ph.PAPER}
-SOLVED_BALLS = ("wood", "stone")     # the paper ball is not a sphere in the game: a route does not go on as paper
+from .trafo import SOLVED as SOLVED_BALLS      # noqa: E402  the kinds a route goes on as
 
 
 def nearest_node(g, togo, pos, reach: float = 3.0) -> int:
@@ -201,20 +201,36 @@ def _flights(trace, least: int = 20) -> list:
 NUDGES = (1, 3, 10)       # the sizes of nudge a found passage is tried with: 1 is (0.03 in place, 0.3 in speed, 2 ticks in key timing)
 
 
-def _robust(world, search, seed, tape, trials: int = 20, rng_seed: int = 1, scale: int = 1, ball: ph.Ball = ph.WOOD) -> int:
+def _robust(world, search, seed, tape, trials: int = 20, rng_seed: int = 1, scale: int = 1, ball: ph.Ball = ph.WOOD, parts=None) -> int:
     """Of `trials` runs with the start nudged (0.03 in place, 0.3 in speed) and every key change up to 2 ticks early
-    or late: how many still arrive. scale: the nudge is that many times as large."""
+    or late: how many still arrive. scale: the nudge is that many times as large. parts: the crossing's stretches
+    (`fine.Crossing.parts`) instead of one tape: a nudged run must go through the same transformers; after each it
+    starts again as the new ball at rest, so only the first stretch carries the nudge of the start."""
     rng = np.random.default_rng(rng_seed)
     P = ph.Params()
     ok = 0
+    parts = parts or [dict(type="cross", ball=ball.name, tape=tape)]
+    ball = BALLS[parts[-1]["ball"]]
     for _ in range(trials):
         pos = seed[0] + rng.normal(0, 0.03 * scale, 3) * np.array([1, 0, 1])
         vel = seed[1] + rng.normal(0, 0.3 * scale, 3)
         omega, good = seed[2], True
         st = np.zeros(10)
-        for a, n in tape:
-            status, _d, pos, vel, omega, st, _ = world.rollout(ball, P, pos, vel, omega, fine.PUSHES[a:a + 1], [max(1, n + int(rng.integers(-2 * scale, 2 * scale + 1)))])
-            if status != OK:
+        for k, part in enumerate(parts):
+            if part["type"] == "transform":
+                pos, vel, omega = (np.array(x, float) for x in part["end"])
+                continue
+            into = parts[k + 1]["which"] if k + 1 < len(parts) and parts[k + 1]["type"] == "transform" else -1
+            went = False
+            for a, n in part["tape"]:
+                status, _d, pos, vel, omega, st, _ = world.rollout(BALLS[part["ball"]], P, pos, vel, omega, fine.PUSHES[a:a + 1], [max(1, n + int(rng.integers(-2 * scale, 2 * scale + 1)))])
+                if status == TRIGGER and int(st[9]) == into:
+                    went = True
+                    break
+                if status != OK:
+                    good = False
+                    break
+            if not good or (into >= 0 and not went):
                 good = False
                 break
         if good and not search.arrived(pos, vel, st):
@@ -304,16 +320,11 @@ def solve_sector(mesh, info, g, sector: int, tries: int = 300_000, seed: int = 0
         if r["status"] == "transform":
             # the jump: nothing for `body_after` ticks, then the new ball at rest at the hover point; the tick after
             # that it only falls, and from the next one the keys act
-            R = trafo.rules()
-            new = BALLS[item["kind"]]
-            p0, v0, o0 = trafo.new_state(item, R)
-            _st, _d, p1, v1, o1, _s, tr1 = worlds[mode_now].rollout(new, ph.Params(), p0, v0, o0, np.zeros((1, 3)), [1], trace=True)
-            wait = np.zeros((R.body_after, 9))
-            wait[:, :3] = p0
-            segs.append(dict(type="transform", mode=mode_now, ball=new.name, was=ball_now.name, at=item["name"], start=r["end"], tape=[],
-                             trace=np.vstack([wait, tr1]), end=(p1, v1, o1)))
-            log("   transformed %s -> %s by %s, %.2f game s" % (ball_now.name, new.name, item["name"], (R.body_after + 1) / 132))
-            ball_now, state, mode_now, seeds, older = new, (p1, v1, o1), BASE, [], []
+            new, tr1, end1, _s1, _st1 = trafo.stretch(worlds[mode_now], item)
+            segs.append(dict(type="transform", mode=mode_now, ball=new.name, was=ball_now.name, at=item["name"], which=r["which"], start=r["end"], tape=[],
+                             trace=tr1, end=end1))
+            log("   transformed %s -> %s by %s, %.2f game s" % (ball_now.name, new.name, item["name"], len(tr1) / 132))
+            ball_now, state, mode_now, seeds, older = new, end1, BASE, [], []
             nodes, kinds = replan(state[0])
             continue
         for e, k in enumerate(kinds):
@@ -391,7 +402,7 @@ def solve_sector(mesh, info, g, sector: int, tries: int = 300_000, seed: int = 0
         if older:
             pools.append(("the whole sector so far", thin(older, 120) + thin(usable, 80)))
         def attempt(mode, where, cand):
-            s = fine.Search(worlds[mode], targets, ball=ball_now, seed=seed, places=g.pos, togo=togo)
+            s = fine.Search(worlds[mode], targets, ball=ball_now, seed=seed, places=g.pos, togo=togo, transforms=True)
             ids = {}
             for si, h in cand:
                 idx = s.add_start(ph.State(h[2], h[3], h[4]))
@@ -435,9 +446,14 @@ def solve_sector(mesh, info, g, sector: int, tries: int = 300_000, seed: int = 0
             segs[si]["tape"] = segs[si]["tape"][:n_ticks // CHUNK]
             segs[si]["trace"] = segs[si]["trace"][:n_ticks]
             segs[si]["end"] = (h[2], h[3], h[4])
-            segs.append(dict(type="cross", mode=mode, ball=ball_now.name, no=b["no"], start=(h[2], h[3], h[4]), tape=c.tape, trace=c.trace, end=c.end_state))
+            for part in c.parts:                                  # one stretch, or several with the transformations between them
+                segs.append(dict(part, mode=mode, no=b["no"]) if part["type"] == "cross" else dict(part, mode=mode))
+                if part["type"] == "transform":
+                    log("   %s: the crossing goes through %s (%s -> %s)" % (b["no"], part["at"], part["was"], part["ball"]))
             through = [(ty, q) for ty, q in loose if np.linalg.norm(c.trace[:, :3] - q, axis=1).min() < 2.0 * BALL_R]
-            nudged = {k: _robust(worlds[mode], s, (h[2], h[3], h[4]), c.tape, scale=k, ball=ball_now) for k in NUDGES}
+            nudged = {k: _robust(worlds[mode], s, (h[2], h[3], h[4]), c.tape, scale=k, ball=ball_now, parts=c.parts) for k in NUDGES}
+            if len(c.parts) > 1:
+                ball_now, older = BALLS[c.end_ball], []            # earlier states are another kind of ball: no search starts from them
             b.update(status="crossed", mode=mode, ticks=c.ticks, back=float(np.linalg.norm(h[2] - b["near"])), flights=_flights(c.trace),
                      through=[ty for ty, _q in through],
                      arrives=nudged[1], nudged=nudged, trials=20, landed=np.array(c.end))
@@ -475,7 +491,7 @@ def replays(worlds, res) -> bool:
     where the one before ended (or at rest on the far side of an unresolved break)."""
     P = ph.Params()
     prev = None
-    for sg in res["segments"]:
+    for k, sg in enumerate(res["segments"]):
         if sg["type"] == "assumed":
             prev = None
             continue
@@ -485,7 +501,8 @@ def replays(worlds, res) -> bool:
             pushes = np.array([fine.PUSHES[a] for a, _ in sg["tape"]])
             st, done, pos, vel, omega, s, _ = worlds[sg["mode"]].rollout(BALLS[sg.get("ball", "wood")], P, sg["start"][0], sg["start"][1], sg["start"][2], pushes,
                                                                         [n for _, n in sg["tape"]])
-            ok = st == OK or (st == TRIGGER and sg["type"] == "follow")      # a stretch may end at a transformer
+            nxt = res["segments"][k + 1] if k + 1 < len(res["segments"]) else None
+            ok = st == OK or (st == TRIGGER and nxt is not None and nxt["type"] == "transform")      # a stretch may end at a transformer
             if not ok or sg["end"] is None or np.abs(pos - sg["end"][0]).max() > 1e-9:
                 return False
         prev = sg["end"]

@@ -69,9 +69,11 @@ def test_a_placed_object_blocks_and_a_trigger_is_kept_out_of():
     assert blocked.route(blocked.nearest((2, 2, 2.5)), blocked.nearest((28, 2, 2.5)))[0] is None
     free = coarse.build(mesh([(road, False)]))
     assert free.route(free.nearest((2, 2, 2.5)), free.nearest((28, 2, 2.5)))[0] is not None
-    # a transformer trigger in the middle of a road as wide as the trigger: no way past for a ball that must not change
-    kept = coarse.build(mesh([(road, False)]), avoid=coarse.keep_out([dict(type="P_Trafo_Stone", position=[15.0, 0.0, 2.5])]))
+    # a paper transformer in the middle of a road as wide as its range: no way past (the paper ball is not solved)
+    kept = coarse.build(mesh([(road, False)]), avoid=coarse.keep_out([dict(type="P_Trafo_Paper", position=[15.0, 0.0, 2.5])]))
     assert kept.route(kept.nearest((2, 2, 2.5)), kept.nearest((28, 2, 2.5)))[0] is None
+    # a stone transformer is not kept out of: the way leads through it (`solve.graph_for` makes it cost the transformation)
+    assert coarse.keep_out([dict(type="P_Trafo_Stone", position=[15.0, 0.0, 2.5])]) == []
 
 
 def test_the_coarse_plan_alone_lists_its_links_and_draws_with_its_keys_outside_the_map(tmp_path):

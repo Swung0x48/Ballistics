@@ -120,3 +120,53 @@ def test_the_balls_are_the_catalogues():
     assert ph.WOOD.force == cat["ball_wood"].numbers["push_impulse"]["v"]
     assert abs(ph.STONE.force / ph.STONE.mass - cat["ball_stone"].numbers["push_dv_per_step"]["v"]) < 1e-9
     assert abs(ph.PAPER.force / ph.PAPER.mass - cat["ball_paper"].numbers["push_dv_per_step"]["v"]) < 1e-9
+
+
+def test_the_search_goes_through_a_transformer_as_the_new_ball():
+    from ballistics import fine
+    m, P = floor(), ph.Params()
+    info = dict(placements=[place("S1", "Stone", 0.0)], death_boxes=[])
+    w = World.of(m, trafos=trafo.of(info))
+    targets = np.array([[x, 0.011, z] for x in (9.0, 10.0, 11.0) for z in (-1.0, 0.0, 1.0)])
+    start = ph.State(np.array([-9.0, 0.011, 0.0]), np.zeros(3), np.zeros(3))
+    # a wall of range between the start and the targets is made by taking the far targets only reachable through it:
+    # the straight way leads through S1; with transformations on, the search arrives as a stone ball
+    s = fine.Search(w, targets, seed=1, transforms=True)
+    s.add_start(start)
+    c = s.run(max_expansions=40_000, max_seconds=120.0)
+    assert c.found
+    kinds = [(p["type"], p["ball"]) for p in c.parts]
+    if len(c.parts) > 1:                                   # it went through (it may also have found a way around on the open floor)
+        assert kinds == [("cross", "wood"), ("transform", "stone"), ("cross", "stone")] and c.end_ball == "stone"
+        assert c.ticks == sum(len(p["trace"]) for p in c.parts) == len(c.trace) and c.tape == []
+        assert np.linalg.norm(c.parts[0]["end"][0]) < 4.3 and np.allclose(c.parts[1]["trace"][0, :3], [0.0, 3.0, 0.0])
+        assert staged._robust(w, s, (start.pos, start.vel, start.omega), c.tape, parts=c.parts) >= 0
+    # a corridor as narrow as the range leaves no way around: found with transformations on, not without
+    A = np.array([[-40.0, -2.0, -3.0], [40.0, -2.0, 3.0]]); B = np.array([[40.0, -2.0, -3.0], [-40.0, -2.0, 3.0]]); C = np.array([[-40.0, -2.0, 3.0], [40.0, -2.0, -3.0]])
+    road = Mesh(A, B, C, np.zeros(2, np.int64), np.zeros(2, bool), np.zeros((0, 7)), [dict(name="road", groups=[], friction=0.7, elasticity=0.3)], {})
+    w2 = World.of(road, trafos=trafo.of(info))
+    on = fine.Search(w2, targets[[1, 4, 7]], seed=1, transforms=True)
+    on.add_start(start)
+    c2 = on.run(max_expansions=40_000, max_seconds=120.0)
+    assert c2.found and [(p["type"], p["ball"]) for p in c2.parts] == [("cross", "wood"), ("transform", "stone"), ("cross", "stone")]
+    off = fine.Search(w2, targets[[1, 4, 7]], seed=1)
+    off.add_start(start)
+    assert not off.run(max_expansions=20_000, max_seconds=120.0).found
+
+
+def test_the_coarse_level_goes_through_a_stone_transformer_at_a_cost():
+    from test_staged import level, quad
+    from ballistics import solve
+    from ballistics.launch import FOLLOW_SPEED
+    m, info, _g = level([quad(0, 80, 0, 8, 0.0)], (74.0, 2.0, 4.0), launches=False)
+    info["placements"] = [dict(name="S", type="P_Trafo_Stone", sector=1, position=[30.0, 0.5, 4.0], x_axis=[1.0, 0.0, 0.0], y_axis=[0.0, 1.0, 0.0], z_axis=[0.0, 0.0, 1.0]),
+                          dict(name="P", type="P_Trafo_Paper", sector=1, position=[60.0, 0.5, -30.0], x_axis=[1.0, 0.0, 0.0], y_axis=[0.0, 1.0, 0.0], z_axis=[0.0, 0.0, 1.0])]
+    g = solve.graph_for(m, info, log=lambda *a: None)
+    inside = np.linalg.norm(g.pos - np.array([30.0, 0.5, 4.0]), axis=1) < 4.3
+    assert inside.any()                                                    # there are places in its range
+    extra = (trafo.rules().body_after + 1) / 66.0 * FOLLOW_SPEED
+    into = [c - float(np.linalg.norm(g.pos[v] - g.pos[u])) for u in np.flatnonzero(~inside) for v, c, k in g.adj[u] if inside[v] and k == "roll"]
+    out = [c - float(np.linalg.norm(g.pos[v] - g.pos[u])) for u in np.flatnonzero(inside) for v, c, k in g.adj[u] if not inside[v] and k == "roll"]
+    assert into and min(into) > extra - 1.0 and out and max(out) < 1.0       # going in costs the transformation, going out does not
+    res = staged.solve_sector(m, info, g, 1, tries=20_000, log=lambda *a: None)
+    assert res["solved"] and [(t["at"], t["to"]) for t in res["transforms"]] == [("S", "stone")] and res["end_ball"] == "stone"

@@ -32,6 +32,7 @@ import numpy as np
 from . import things
 
 KINDS = {"P_Trafo_Wood": "wood", "P_Trafo_Stone": "stone", "P_Trafo_Paper": "paper"}
+SOLVED = ("wood", "stone")       # the kinds a route can go on as: the paper ball is not a sphere in the game and is not solved yet
 
 
 @dataclass(frozen=True)
@@ -89,3 +90,17 @@ def new_state(item: dict, R: Rules | None = None):
     """(pos, vel, omega) of the new ball when it appears: at rest at the hover point."""
     R = R or rules()
     return item["pos"] + R.hover * item["up"], np.zeros(3), np.zeros(3)
+
+
+def stretch(world, item: dict, P=None, R: Rules | None = None):
+    """A transformation as a stretch of a route: (the new ball, its trace, its end state). The trace is `body_after`
+    rows at the hover point (nothing happens), then one tick of the new ball left alone: the tick after that is the
+    first the keys act in. The trace has the columns of a rollout's (`kernel.World.rollout`)."""
+    from . import physics as ph
+    R = R or rules()
+    new = {b.name: b for b in (ph.WOOD, ph.STONE, ph.PAPER)}[item["kind"]]
+    p0, v0, o0 = new_state(item, R)
+    status, _d, p1, v1, o1, stats, tr = world.rollout(new, P or ph.Params(), p0, v0, o0, np.zeros((1, 3)), [1], trace=True)
+    wait = np.zeros((R.body_after, 9))
+    wait[:, :3] = p0
+    return new, np.vstack([wait, tr]), (p1, v1, o1), stats, status

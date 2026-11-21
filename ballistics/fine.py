@@ -23,8 +23,9 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from . import physics as ph
+from . import trafo
 from .geometry import CONTACT_MARGIN
-from .kernel import OK, World
+from .kernel import OK, TRIGGER, World
 
 # The nine pushes the arrow keys can give: each held key is one unit push along a camera axis, and the camera's
 # four quarter turns map the axes onto each other, so the set is the same for every camera position.
@@ -53,6 +54,11 @@ class Crossing:
     nearest: np.ndarray | None = None             # the kept state nearest the target when nothing was found
     root: int = -1                                # which start it left from (the index `Search.add_start` returned)
     end_state: tuple | None = None                # (pos, vel, omega) at the end
+    # the crossing as stretches, in order: dict(type "cross", ball, start, tape, trace, end) and, where the ball went
+    # through a transformer, dict(type "transform", ball (the new kind), was, at, which, start, tape [], trace, end).
+    # `tape` above is the whole crossing's only when it is one stretch; `trace` is all of them joined
+    parts: list = field(default_factory=list)
+    end_ball: str = ""
 
     def keys(self) -> str:
         return " ".join("%s×%d" % (PUSH_NAMES[a], n) for a, n in self.tape)
@@ -76,10 +82,16 @@ def rest_state(world: World, x: float, z: float, from_y: float) -> ph.State:
 
 class Search:
     def __init__(self, world: World, targets, ball: ph.Ball = ph.WOOD, params: ph.Params | None = None, reach: float = 1.2, seed: int = 0,
-                 places=None, togo=None):
+                 places=None, togo=None, transforms: bool = False):
         """targets: the places to arrive on. places + togo (from `guide`), if given, steer the search by how far
-        each place still is from the goal; without them it is steered by the straight distance to the targets."""
+        each place still is from the goal; without them it is steered by the straight distance to the targets.
+        ball: the kind the starts are. transforms: a state that comes within a wood or stone transformer of another
+        kind is transformed (`ballistics.trafo`) and the search goes on from the new ball; without it, as with a
+        paper transformer, that is an end."""
         self.w, self.ball, self.P = world, ball, params or ph.Params()
+        self.transforms = bool(transforms) and world.trafos is not None
+        self.balls = {b.name: b for b in (ph.WOOD, ph.STONE, ph.PAPER)}
+        self.kind, self.jump = [], []            # per kept state: the ball's kind; the transformer it went through since its parent (-1: none)
         self.T = np.ascontiguousarray(targets, np.float64).reshape(-1, 3)
         self.reach = reach
         self.G = None
@@ -128,21 +140,22 @@ class Search:
         return bool(stats[8] > 0 and self.distance(pos) <= self.reach)
 
     # ---- the kept states
-    def _key(self, pos, vel, stats):
+    def _key(self, pos, vel, stats, kind):
         hs = math.hypot(vel[0], vel[2])
         heading = 8 if hs < 1.5 else int(((math.atan2(vel[2], vel[0]) + math.pi) / (math.pi / 4)) % 8)
         speed = sum(hs >= e for e in SPEED_EDGES)
-        return (int(pos[0] // CELL), int(pos[1] // CELL), int(pos[2] // CELL), heading, speed, int(stats[5] > 0))
+        return (int(pos[0] // CELL), int(pos[1] // CELL), int(pos[2] // CELL), heading, speed, int(stats[5] > 0), kind)
 
-    def _keep(self, pos, vel, omega, parent, act, hold, ticks, stats) -> int:
+    def _keep(self, pos, vel, omega, parent, act, hold, ticks, stats, kind=None, jump: int = -1) -> int:
         """Keep the state if its cell is new or it got there sooner; returns its index, or -1."""
-        key = self._key(pos, vel, stats)
+        kind = kind or self.ball.name
+        key = self._key(pos, vel, stats, kind)
         k = self.cell.get(key)
         if k is not None and self.ticks[self.slot[k]] <= ticks:
             return -1
         i = len(self.pos)
         for a, v in ((self.pos, pos.copy()), (self.vel, vel.copy()), (self.omega, omega.copy()), (self.parent, parent), (self.act, act),
-                     (self.hold, hold), (self.ticks, ticks)):
+                     (self.hold, hold), (self.ticks, ticks), (self.kind, kind), (self.jump, jump)):
             a.append(v)
         if k is None:
             self.cell[key] = len(self.slot)
@@ -182,50 +195,77 @@ class Search:
             i = self.slot[k]
             a = self.act[i] if (self.parent[i] >= 0 and self.rng.random() < 0.4) else int(self.rng.integers(0, len(PUSHES)))
             pos, vel, omega, parent, ticks, held = self.pos[i], self.vel[i], self.omega[i], i, self.ticks[i], 0
+            kind = self.kind[i]
+            ball = self.balls[kind]
             for _ in range(HOLDS[int(self.rng.integers(0, len(HOLDS)))]):
-                status, done, pos, vel, omega, stats, _ = self.w.rollout(self.ball, self.P, pos, vel, omega, PUSHES[a:a + 1], [CHUNK])
+                status, done, pos, vel, omega, stats, _ = self.w.rollout(ball, self.P, pos, vel, omega, PUSHES[a:a + 1], [CHUNK])
+                if status == TRIGGER and self.transforms and self.w.trafos[int(stats[9])]["kind"] in trafo.SOLVED:
+                    # transformed: the state kept is the new ball's, one tick after it appeared; this pick ends here
+                    which = int(stats[9])
+                    new, tr, end, st1, s1 = trafo.stretch(self.w, self.w.trafos[which], self.P)
+                    if s1 == OK:
+                        self._keep(end[0], end[1], end[2], parent, a, held + done, ticks + done + len(tr), st1, kind=new.name, jump=which)
+                    break
                 if status != OK:
                     break
                 ticks += done
                 held += done
-                j = self._keep(pos, vel, omega, parent, a, held, ticks, stats)
+                j = self._keep(pos, vel, omega, parent, a, held, ticks, stats, kind=kind)
                 if j < 0:
                     continue                       # nothing new at this point of the hold; it may still lead somewhere new
                 parent, held = j, 0
                 if self.arrived(pos, vel, stats):
                     # it has to stay: let it roll on with no keys for half a physics second
-                    s2, _d, p2, _v, _o, st2, _ = self.w.rollout(self.ball, self.P, pos, vel, omega, zero, [33])
+                    s2, _d, p2, _v, _o, st2, _ = self.w.rollout(ball, self.P, pos, vel, omega, zero, [33])
                     if s2 == OK and self.distance(p2) <= self.reach + 2.0:
                         self.goal = j
                         break
         return self._result(time.time() - t0)
 
     def tape_of(self, i: int):
+        """(the start the state i hangs on, its key tapes): one tape per stretch, [(push, ticks)], and for every
+        stretch but the last the transformer it ends in."""
         chain = []
         while self.parent[i] >= 0:
-            chain.append((self.act[i], self.hold[i]))
+            chain.append((self.act[i], self.hold[i], self.jump[i]))
             i = self.parent[i]
         chain.reverse()
-        tape = []
-        for a, n in chain:
+        tapes, tape = [], []
+        for a, n, jump in chain:
             if tape and tape[-1][0] == a:
                 tape[-1][1] += n
             else:
                 tape.append([a, n])
-        return i, [(a, n) for a, n in tape]
+            if jump >= 0:
+                tapes.append(([(x, m) for x, m in tape], jump))
+                tape = []
+        tapes.append(([(x, m) for x, m in tape], -1))
+        return i, tapes
 
     def _result(self, seconds: float) -> Crossing:
         h = np.where(np.array(self.ground), np.array(self.h), np.inf)
         best = int(h.argmin())
         if self.goal < 0:
             return Crossing(False, self.expansions, seconds, len(self.slot), float(h[best]), nearest=self.pos[self.slot[best]].copy())
-        root, tape = self.tape_of(self.goal)
-        out = replay(self.w, self.ball, self.P, ph.State(self.pos[root], self.vel[root], self.omega[root]), tape)
-        if out["ticks"] != self.ticks[self.goal] or np.abs(out["pos"] - self.pos[self.goal]).max() > 1e-6:
+        root, tapes = self.tape_of(self.goal)
+        state, kind, parts, out = (self.pos[root], self.vel[root], self.omega[root]), self.kind[root], [], None
+        for tape, jump in tapes:
+            out = replay(self.w, self.balls[kind], self.P, ph.State(*state), tape)
+            parts.append(dict(type="cross", ball=kind, start=state, tape=tape, trace=out["trace"], end=(out["pos"], out["vel"], out["omega"])))
+            if jump >= 0:
+                if out["status"] != TRIGGER or out["ticks"] != sum(n for _a, n in tape):
+                    raise RuntimeError("the key tape does not reproduce the transformation the search went through")
+                new, tr, end, _st, _s = trafo.stretch(self.w, self.w.trafos[jump], self.P)
+                parts.append(dict(type="transform", ball=new.name, was=kind, at=self.w.trafos[jump]["name"], which=jump, start=parts[-1]["end"],
+                                  tape=[], trace=tr, end=end))
+                state, kind = end, new.name
+        ticks = int(sum(len(p["trace"]) for p in parts))
+        if ticks != self.ticks[self.goal] or np.abs(out["pos"] - self.pos[self.goal]).max() > 1e-6:
             raise RuntimeError("the key tape does not reproduce the state the search arrived at")
-        return Crossing(True, self.expansions, seconds, len(self.slot), self.distance(self.pos[self.goal]), ticks=out["ticks"], tape=tape,
-                        trace=out["trace"], start=self.pos[root].copy(), end=out["pos"], stats=out["stats"], root=root,
-                        end_state=(out["pos"], out["vel"], out["omega"]))
+        return Crossing(True, self.expansions, seconds, len(self.slot), self.distance(self.pos[self.goal]), ticks=ticks,
+                        tape=parts[0]["tape"] if len(parts) == 1 else [], trace=np.vstack([p["trace"] for p in parts]),
+                        start=self.pos[root].copy(), end=out["pos"], stats=out["stats"], root=root,
+                        end_state=(out["pos"], out["vel"], out["omega"]), parts=parts, end_ball=kind)
 
 
 def replay(world: World, ball: ph.Ball, P: ph.Params, start: ph.State, tape) -> dict:

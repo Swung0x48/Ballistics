@@ -32,6 +32,7 @@ def world_for(mesh: Mesh, info: dict, mode: str, sector: int | None = None) -> W
     how the coarse level's launch edges are made (they are proposals)."""
     from . import fans, trafo
     solid_balls = MODES[mode]
+    mesh = coarse.in_sector(mesh, sector)             # the sector's domes are fixed geometry; other sectors' are not there
     if not solid_balls:
         mesh = coarse.without_loose(mesh)
     # the transformers in place: the sector's own (`ballistics.trafo`); without a sector, every one of the map
@@ -41,17 +42,34 @@ def world_for(mesh: Mesh, info: dict, mode: str, sector: int | None = None) -> W
 def graph_for(mesh: Mesh, info: dict, cache: Path | None = None, log=print):
     """The coarse graph of the mesh as given: pass the full mesh to have the loose balls in it as obstacles, or
     `coarse.without_loose(mesh)` to have them out."""
+    mesh = coarse.in_sector(mesh)                         # the domes are geometry for the coarse level too (in every sector: it has one graph)
+    fixed = mesh.meta.get("fixed_bodies")
+    from . import trafo
+    from .launch import FOLLOW_SPEED
+    marks = dict(fixed_bodies=fixed, transformers="wood and stone ones can be gone through, at the cost of the transformation")
     if cache is not None and cache.exists():
         g = pickle.load(open(cache, "rb"))
         n = g.info.get("mesh_triangles")                  # graphs cached before this was recorded have none
-        if n == len(mesh.A) or (n is None and not mesh.meta.get("bodiless_dropped")):
+        if (n == len(mesh.A) or (n is None and not mesh.meta.get("bodiless_dropped"))) and all(g.info.get(k) == v for k, v in marks.items()):
             return g
-        log("the cached coarse graph %s was made from another mesh (fans or markers were obstacles in it): building it again" % cache.name)
+        log("the cached coarse graph %s was made by other rules (fans, markers, domes or transformers were obstacles in it): building it again" % cache.name)
     from .launch import add_launches
     g = coarse.build(mesh, avoid=coarse.keep_out(info["placements"]), log=log)
     coarse.add_steps(g, mesh, log=log)
     add_launches(g, world_for(mesh, info, "strict"), log=log)
+    # a stone transformer can be gone through: the edges that lead into its range cost the transformation's time
+    # more, as way at the follower's pace (the coarse level does not know the ball's kind: it starts as wood, so a
+    # wood transformer costs nothing)
+    R = trafo.rules()
+    extra = (R.body_after + 1) / 66.0 * FOLLOW_SPEED
+    for t in trafo.of(info):
+        if t["kind"] != "stone":
+            continue
+        inside = np.linalg.norm(g.pos - t["pos"], axis=1) < R.radius
+        for u in np.flatnonzero(~inside):
+            g.adj[u] = [(v, c + extra if inside[v] else c, k) for v, c, k in g.adj[u]]
     g.info["mesh_triangles"] = len(mesh.A)
+    g.info.update(marks)
     if cache is not None:
         pickle.dump(g, open(cache, "wb"))
     return g
