@@ -103,7 +103,7 @@ class Graph:
 # Loose balls (P_Ball_*) are not kept out of: a rolling ball knocks them aside. That is ASSUMED too, and a way that
 # passes one is reported as passing it.
 KEEP_OUT = {"P_Trafo_Paper": TRIGGER_R + 0.3}      # the paper ball is not solved: a route does not go into a paper transformer
-LOOSE = ("P_Ball_", "P_Box", "P_Modul_34")       # loose balls, boxes, the falling rock: rigid bodies of their own (`ballistics.props`), not fixed shapes
+LOOSE = ("P_Ball_", "P_Box", "P_Modul_34", "P_Modul_01")       # loose balls, boxes, the falling rock, the gate: rigid bodies of their own (`ballistics.props`), not fixed shapes
 
 
 def without_loose(mesh: Mesh) -> Mesh:
@@ -130,6 +130,7 @@ def without_bodiless(mesh: Mesh) -> Mesh:
 
 
 FIXED_TYPES = ("P_Dome",)      # placed objects that are fixed rigid bodies: plain geometry while their sector is current
+FIXED_PARTS = ("P_Modul_01_Filler",)   # parts of mechanisms that are fixed rigid bodies the ball rolls on: the gate's filler plate (READ)
 
 
 def in_sector(mesh: Mesh, sector=None) -> Mesh:
@@ -137,7 +138,7 @@ def in_sector(mesh: Mesh, sector=None) -> Mesh:
     dome, P_Dome): those of the sector become plain fixed geometry, with the friction and elasticity the catalogue
     has for them; those of other sectors are taken out (the game takes their bodies away). sector None: all of
     them are there. Everything else placed stays as it is."""
-    hit = [i for i, e in enumerate(mesh.entities) if e.get("placed") and str(e.get("type", "")).startswith(FIXED_TYPES)]
+    hit = [i for i, e in enumerate(mesh.entities) if e.get("placed") and (str(e.get("type", "")).startswith(FIXED_TYPES) or e.get("name") in FIXED_PARTS)]
     if not hit:
         return mesh
     from . import things
@@ -149,10 +150,11 @@ def in_sector(mesh: Mesh, sector=None) -> Mesh:
         if sector is not None and e.get("sector") != sector:
             drop[i] = True
             continue
-        body = cat.of_type(e["type"]).bodies[0]
+        bodies = cat.of_type(e["type"]).bodies
+        body = next((b for b in bodies if b["name"] == e.get("name")), bodies[0])
         e.update(placed=False, fixed_body=True, friction=float(body["friction"]["v"]), elasticity=float(body["elasticity"]["v"]))
     keep = ~drop[mesh.owner]
-    meta = dict(mesh.meta, fixed_bodies=list(FIXED_TYPES))
+    meta = dict(mesh.meta, fixed_bodies=list(FIXED_TYPES) + list(FIXED_PARTS))
     return Mesh(mesh.A[keep], mesh.B[keep], mesh.C[keep], mesh.owner[keep], mesh.rail[keep], mesh.tubes, ents, meta)
 
 
@@ -408,6 +410,15 @@ class Relaxed:
         for u in range(n):
             for v, c, _k in fwd[u]:
                 self.back[v].append((u, c))
+
+    def with_edges(self, edges) -> "Relaxed":
+        """The same graph with these edges (u, v, cost, kind) added: a gate pushed open (`solve.gate_edges`)."""
+        out = Relaxed.__new__(Relaxed)
+        out.g, out.fwd, out.back = self.g, list(self.fwd), list(self.back)
+        for u, v, c, k in edges:
+            out.fwd[u] = out.fwd[u] + [(v, c, k)]
+            out.back[v] = out.back[v] + [(u, c)]
+        return out
 
     def togo(self, goal: int) -> np.ndarray:
         """How far each place is from the goal over this graph."""

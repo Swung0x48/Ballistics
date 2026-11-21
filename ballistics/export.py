@@ -85,6 +85,56 @@ def placed_parts(level: NmoLevel, templates, bmap=None) -> list:
     return out
 
 
+def placed_hulls(level: NmoLevel, templates, bmap=None) -> list:
+    """The collision hulls of the placed objects' bodies, where the catalogue names them (`hull.kind` convex_hulls):
+    [dict(placement, type, sector, body, mesh, vertices (world), faces)]. A body's hull is not the mesh it shows: the
+    template's script gives the body a few convex meshes that no object shows (P_Modul_01's gate: three, its groove:
+    three). Each is in its body's frame (DERIVED from the geometry: the groove's floor plate is the groove's own
+    shown mesh, and the gate's bar sits on the plate as the shown gate does), put where the map puts the object."""
+    from . import things
+    templates = Path(templates)
+    cat = things.load()
+    sector_of = {}
+    for g, names in level.groups.items():
+        m = SECTOR.match(g)
+        if m:
+            for n in names:
+                sector_of[n] = int(m.group(1))
+    cache: dict = {}
+    out = []
+    for o in level.objects.values():
+        kinds = [g for g in o.groups if g.startswith("P_")]
+        if not kinds or kinds[0].startswith(SKIP_TEMPLATES):
+            continue
+        kind = kinds[0]
+        th = cat.of_type(kind)
+        if th is None:
+            continue
+        wanted = {b["name"]: list((b.get("hull") or {}).get("meshes") or ()) for b in th.bodies if (b.get("hull") or {}).get("kind") == "convex_hulls"}
+        if not any(wanted.values()):
+            continue
+        if kind not in cache:
+            f = templates / (kind + ".nmo")
+            cache[kind] = read_nmo(f, bmap) if f.is_file() else None
+        t = cache[kind]
+        if t is None:
+            continue
+        m = np.asarray(o.matrix, np.float64)
+        for body, names in wanted.items():
+            part = t.objects.get(body)
+            if part is None:
+                continue
+            pm = np.asarray(part.matrix, np.float64)
+            for name in names:
+                if name not in t.meshes:
+                    continue
+                V, F = t.meshes[name]
+                W = (V @ pm[:3, :3] + pm[3, :3]) @ m[:3, :3] + m[3, :3]
+                out.append(dict(placement=o.name, type=kind, sector=sector_of.get(o.name), body=body, mesh=name,
+                                vertices=np.round(W, 6).tolist(), faces=F.tolist()))
+    return out
+
+
 def build_mesh(level: NmoLevel, fixture: bool = True, templates=None, bmap=None) -> Mesh:
     """The fixed bodies the player ball collides with, as triangles in world coordinates. With `templates` (the
     game's folder of placed-object templates), the placed objects' parts are added at their rest poses and marked
@@ -182,6 +232,8 @@ def export_map(nmo_path, out_dir, name: str | None = None, bmap=None, templates=
     mesh = build_mesh(level, templates=templates, bmap=bmap)
     mesh.save(out_dir / (name + "-mesh.npz"))
     info = build_map(level)
+    if templates is not None:
+        info["hulls"] = placed_hulls(level, templates, bmap)       # the bodies' own collision shapes, where they are not the shown mesh
     (out_dir / (name + "-map.json")).write_text(json.dumps(info, indent=1, ensure_ascii=False), encoding="utf8")
     return dict(name=name, objects=len(level.objects), triangles=len(mesh), rail_triangles=int(mesh.rail.sum()), entities=len(mesh.entities), tubes=len(mesh.tubes),
                 placed_parts=int(mesh.meta.get("placed_parts", 0)), placed_triangles=int(mesh.placed.sum()),

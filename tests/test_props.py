@@ -2,7 +2,7 @@
 are held against is in docs/mechanisms.md."""
 import numpy as np
 
-from ballistics import physics as ph, props, things
+from ballistics import kernel, physics as ph, props, things
 from ballistics.geometry import Mesh
 from ballistics.kernel import OK, World
 from ballistics.solve import world_for
@@ -144,7 +144,7 @@ def test_the_box_is_the_catalogues():
     info = dict(death_boxes=[], placements=[dict(name="b", type="P_Box", sector=1, position=[0.0, 1.0, 0.0], x_axis=[0.0, 0.0, 1.0], y_axis=[0.0, 1.0, 0.0], z_axis=[-1.0, 0.0, 0.0])])
     w = world_for(floor(), info, "strict", 1)
     assert len(w.props) == 1 and w.props[0]["settled"] and abs(w.props[0]["rest"][1] - 0.56) < 0.05      # it stands on the floor
-    assert w.props[0]["axes"][0] == [0.0, 0.0, 1.0] and w.prop_consts.shape == (1, 20) and w.prop_consts[0, 6] == 1.0
+    assert w.props[0]["axes"][0] == [0.0, 0.0, 1.0] and w.prop_consts.shape == (1, kernel.PROP_WIDTH) and w.prop_consts[0, 6] == 1.0
 
 
 def test_who_can_push_what():
@@ -264,3 +264,109 @@ def test_boxes_one_on_another_and_on_a_slope():
     scene[:, 9] = 1.0
     w.idle(scene, 900)
     assert scene[0, 9] == 0.0 and not scene[0, 3:6].any() and abs(scene[0, 0]) < 3.0     # at rest, not stuck with a growing speed, not slid away
+
+
+# ---- the sliding gate (P_Modul_01): made-up shapes of about its size, in its own frame (x along the groove)
+HEX = ((0, 1, 3, 2), (4, 6, 7, 5), (0, 4, 5, 1), (2, 3, 7, 6), (0, 2, 6, 4), (1, 5, 7, 3))
+
+
+def hexa(lo, hi, top=None):
+    """The 8 corners (x, y, z bits) and 12 triangles of a box; with top = (x lo, x hi), its top face has those x
+    instead (a trapezoid prism, like the gate's fence)."""
+    V = []
+    for i in (0, 1):
+        for j in (0, 1):
+            for k in (0, 1):
+                x = (top[i] if (top and j) else (lo[0], hi[0])[i])
+                V.append([x, (lo[1], hi[1])[j], (lo[2], hi[2])[k]])
+    F = []
+    for a, b, c, d in HEX:
+        F += [[a, b, c], [a, c, d]]
+    return V, F
+
+
+def gate_info():
+    shapes = dict(P_Modul_01_Pusher=[hexa((-5.5, -2.2, -1.33), (-5.0, 1.4, 2.63)), hexa((-4.77, -2.4, 0.05), (5.1, -0.39, 1.25)),
+                                     hexa((0.0, 0.1, 0.34), (4.96, 4.45, 0.96), top=(-1.07, 5.97))],
+                  P_Modul_01_Rinne=[hexa((-4.23, -2.9, 0.0), (9.5, -2.5, 1.3)), hexa((0.0, -2.5, -0.86), (8.5, 0.0, -0.02)),
+                                    hexa((0.0, -2.5, 1.32), (8.5, 0.0, 2.16))])
+    hulls = [dict(placement="G", type="P_Modul_01", sector=1, body=body, mesh="%s_%d" % (body, i), vertices=V, faces=F)
+             for body, hs in shapes.items() for i, (V, F) in enumerate(hs)]
+    return dict(placements=[dict(name="G", type="P_Modul_01", sector=1, position=[0.0, 0.0, 0.0], x_axis=[1.0, 0.0, 0.0], y_axis=[0.0, 1.0, 0.0],
+                                 z_axis=[0.0, 0.0, 1.0])], hulls=hulls, death_boxes=[])
+
+
+def test_a_gates_pieces_are_its_hulls():
+    parts = props.of(gate_info(), 1)
+    gate = [p for p in parts if p["kind"] == "P_Modul_01_Pusher"]
+    groove = [p for p in parts if p["kind"] == "P_Modul_01_Rinne"]
+    assert len(gate) == 3 and len(groove) == 3
+    first = parts.index(gate[0])
+    assert all(p["role"] == 1 and p["leader"] == first and p["mass"] == 3.0 for p in gate)          # one body of three pieces, mass 3
+    assert all(p["role"] == 2 and p["leader"] == -1 and p["mass"] == props.LOCKED for p in groove)   # fixed, only for the gate
+    assert [p["tris"] is not None for p in gate] == [False, False, True]                            # only the fence is not its box
+    assert len(gate[2]["tris"]) == 12
+
+
+def gate_run(ball, gap, v0, ticks=200):
+    """A ball on the lower road (a floor 2.81 under the gate's origin), `gap` before the target plate, starting at
+    v0 along the gate's x with that key held: how far the gate has slid after each tick."""
+    w = world_for(floor(-2.81), gate_info(), "strict", 1)
+    k0 = next(k for k, p in enumerate(w.props) if p["kind"] == "P_Modul_01_Pusher")
+    scene = w.scene()
+    x0 = scene[k0, 0]
+    pos, vel, om = np.array([-5.5 - 2.0 - gap, -0.81, 0.65]), np.array([v0, 0.0, 0.0]), np.array([0.0, 0.0, -v0 / 2.0])
+    out = []
+    for _ in range(ticks):
+        st, _d, pos, vel, om, _s, _t = w.rollout(ball, ph.Params(), pos, vel, om, np.array([[1.0, 0.0, 0.0]]), [1], scene=scene)
+        assert st == OK
+        out.append(scene[k0, 0] - x0)
+    return w, k0, np.array(out)
+
+
+def test_the_gate():
+    # MEASURED on the rebuilt engine (the catalogue's P_Modul_01), key held: a wood ball striking at 8.73 pushes it
+    # 2.19 to 2.28, at 6.55 1.44 to 1.49; a stone ball from touching pushes it to its stop (4.97 to 4.98) in 1.20 to
+    # 1.39 game s; a paper ball does not move it. Here (docs/mechanisms.md): 2.23, 1.51, the stop in about 1.3, 0.11
+    w, k0, d = gate_run(ph.WOOD, 1.0, 8.73)
+    hit = int(np.argmax(d > 0.003))
+    assert 2.0 < d[hit + 132] < 2.8
+    sank = w.props[k0]["placed"][1] - w.props[k0]["rest"][1]
+    assert 0.0 < sank < 0.11                                      # it settles onto the groove's floor (0.105 below its bar)
+    _w, _k, d = gate_run(ph.WOOD, 1.0, 6.55)
+    hit = int(np.argmax(d > 0.003))
+    assert 1.3 < d[hit + 132] < 1.7 and d[hit + 132] - d[hit + 66] < 0.1     # (1.44 to 1.49, stopped within 0.47 to 0.70 game s)
+    _w, _k, d = gate_run(ph.STONE, 0.05, 0.0, ticks=260)
+    assert d[198] > 4.85 and d.max() < 5.0                        # open within 1.5 game s, and no further than the groove's walls let it
+    _w, _k, d = gate_run(ph.PAPER, 1.0, 11.0)
+    assert d[-1] < 0.3
+
+
+def test_a_closed_gate_blocks_the_road_and_an_open_one_leaves_a_gap():
+    from ballistics import coarse
+    from ballistics.solve import gate_edges
+    info = gate_info()
+    # three lines of places across the gate's line (z 0.34 to 0.96) on the upper road (ball centres 1.95 up), and
+    # one place on the lower road in front of the target plate
+    pos, adj = [], []
+    for x in (2.2, 1.0, -3.0):
+        for z in np.arange(-6.0, 7.0, 1.0):
+            pos.append([x, 1.95, z])
+    n = len(pos)
+    pos.append([-7.8, -0.81, 0.65])
+    for i in range(n + 1):
+        adj.append([(i + 1, 1.0, "roll")] if i % 13 != 12 and i < n else [])
+    g = coarse.Graph(np.array(pos), np.zeros(n + 1, int), np.full(n + 1, -1), adj, [])
+    gates = gate_edges(g, info, props.part_boxes(info, None))
+    d = gates["G"]
+    xs = lambda edges: sorted(set(round(float(g.pos[u][0]), 1) for u, *_ in edges))
+    assert xs(d["edges"]) == [2.2]                               # in the gap the open gate leaves (MEASURED: 1.93 to 2.5 along its x)
+    left = [(u, v) for u in range(n) for v, _c, _k in g.adj[u]]
+    assert {round(float(g.pos[u][0]), 1) for u, _v in left} == {2.2, 1.0, -3.0}
+    assert len([1 for u, _v in left if g.pos[u][0] == -3.0]) == 12            # clear of the gate: none taken out
+    assert len([1 for u, _v in left if g.pos[u][0] == 1.0]) < 12              # blocked shut or open
+    assert d["operate"] == n and d["sector"] == 1
+    rel = coarse.Relaxed.__new__(coarse.Relaxed)
+    rel.g, rel.fwd, rel.back = g, [list(a) for a in g.adj], [[] for _ in range(n + 1)]
+    opened = rel.with_edges(d["edges"])
+    assert sum(len(a) for a in opened.fwd) == sum(len(a) for a in rel.fwd) + len(d["edges"])

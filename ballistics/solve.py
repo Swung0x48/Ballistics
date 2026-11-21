@@ -19,7 +19,7 @@ import numpy as np
 
 from . import coarse, fine
 from . import physics as ph
-from .geometry import Mesh
+from .geometry import BALL_R, Mesh
 from .kernel import OK, World
 
 MODES = {"strict": True, "free": False}
@@ -54,6 +54,89 @@ def props_parts(info: dict, shapes) -> list:
     return props.part_boxes(info, shapes)
 
 
+GATE_OPEN = 4.95          # how far a gate (P_Modul_01) pushed open along its groove has slid: MEASURED 4.97 to 4.98 at its stop
+
+
+def _hits(pts, boxes, clear: float, pushed=None) -> bool:
+    """Whether a ball centred at any of pts overlaps any of the pieces (centre, half, axes, hull triangles or None)
+    by more than `clear`: by its box, and where the piece is a hull that is not its box, by the hull.
+    pushed: (the index of a piece, a point of the face it is pushed on, the way it gives): a ball that touches
+    that piece from in front of that face pushes it, it is not stopped by it."""
+    from .kernel import PROP_WIDTH, _hull_point
+    for i, (c, half, axes, tris) in enumerate(boxes):
+        if pushed is not None and i == pushed[0]:
+            ahead = (pts - pushed[1]) @ pushed[2] > -0.5     # past the face (or at it): the piece is in the way
+            if not ahead.any():
+                continue
+            L = (pts[ahead] - c) @ axes.T
+            q = np.clip(L, -half, half)
+            if (np.linalg.norm(L - q, axis=1) < BALL_R - clear).any():
+                return True
+            continue
+        L = (pts - c) @ axes.T
+        q = np.clip(L, -half, half)
+        near = np.linalg.norm(L - q, axis=1) < BALL_R - clear
+        if not near.any():
+            continue
+        if not tris:
+            return True
+        row, prow = np.zeros(29), np.zeros(PROP_WIDTH)
+        row[21:24] = c
+        T = np.asarray(tris, float).ravel()
+        prow[23], prow[24:24 + len(T)] = len(tris), T
+        for p in pts[near]:
+            if _hull_point(float(p[0]), float(p[1]), float(p[2]), row, prow, BALL_R)[0] < -clear:
+                return True
+    return False
+
+
+def gate_edges(g, info: dict, parts: list) -> dict:
+    """The sliding gates (P_Modul_01) on the coarse level. A closed gate stands in the upper road: the edges a ball
+    on them would run into it with are taken out of the graph. Those of them that are clear once the gate is pushed
+    open (slid GATE_OPEN along its own x) are kept per gate, to be put back for a plan that opens it first.
+    Per gate: dict(sector, edges [(u, v, cost, kind)], axis (its x in world), face (the middle of the target
+    plate's face that is pushed), operate (the place the ball pushes from, on the lower road, or -1))."""
+    out = {}
+    bodies: dict = {}
+    for b in parts:
+        if b["kind"] == "P_Modul_01_Pusher":
+            bodies.setdefault(b["body"], []).append(b)
+    launches = g.info.get("launches", {})
+    for body, pieces in bodies.items():
+        place = body.split("/")[0]
+        p = next(q for q in info["placements"] if q["name"] == place)
+        axis = np.array(p["x_axis"], float) / np.linalg.norm(p["x_axis"])
+        closed = [(np.array(b["placed"], float), np.array(b["half"], float), np.array(b["axes"], float), b.get("tris")) for b in pieces]
+        opened = [(c + GATE_OPEN * axis, h, a, t) for c, h, a, t in closed]
+        centre = np.mean([c for c, _h, _a, _t in closed], axis=0)
+        reach = max(float(np.linalg.norm(c - centre) + np.linalg.norm(h)) for c, h, _a, _t in closed) + 30.0
+        # the target plate: the piece that sticks out furthest against the gate's x; it is pushed on its -x face.
+        # A ball rolling into that face pushes the gate open (that is how it is opened), it is not stopped by it
+        ti = min(range(len(closed)), key=lambda i: float((closed[i][0] - centre) @ axis))
+        tc, th = closed[ti][0], closed[ti][1]
+        face = tc - th[0] * axis
+        edges = []
+        for u in np.flatnonzero(np.linalg.norm(g.pos - centre, axis=1) < reach):
+            keep = []
+            for v, c, k in g.adj[u]:
+                way = np.asarray(launches[(u, v)]["way"], float) if k == "launch" and (u, v) in launches else np.array([g.pos[u], g.pos[v]])
+                seg = [way[0]]
+                for a, b2 in zip(way[:-1], way[1:]):
+                    n = int(np.linalg.norm(b2 - a) / 0.5) + 1
+                    seg += [a + (b2 - a) * (i / n) for i in range(1, n + 1)]
+                pts = np.array(seg)
+                if _hits(pts, closed, 0.1, pushed=(ti, face, axis)):
+                    if not _hits(pts, opened, 0.1):
+                        edges.append((int(u), int(v), float(c), k))
+                    continue
+                keep.append((v, c, k))
+            g.adj[u] = keep
+        spot = face - (BALL_R + 0.3) * axis
+        op = g.nearest(spot, 3.0)
+        out[place] = dict(sector=p.get("sector"), edges=edges, axis=axis, face=face, operate=int(op))
+    return out
+
+
 def graph_for(mesh: Mesh, info: dict, cache: Path | None = None, log=print):
     """The coarse graph of a map: the domes are geometry, the loose balls are not obstacles but cost to go through,
     a stone transformer costs its transformation, a paper transformer is kept out of."""
@@ -64,7 +147,8 @@ def graph_for(mesh: Mesh, info: dict, cache: Path | None = None, log=print):
     from . import props, trafo
     from .launch import FOLLOW_SPEED
     marks = dict(fixed_bodies=fixed, transformers="wood and stone ones can be gone through, at the cost of the transformation",
-                 loose_balls="bodies: gone through at a cost %s; parts of %s" % (sorted(props.COARSE_COST.items()), sorted(props.PARTS)))
+                 loose_balls="bodies: gone through at a cost %s; parts of %s" % (sorted(props.COARSE_COST.items()), sorted(props.PARTS)),
+                 gate_rule="a closed gate blocks the edges into it; the edges it clears when pushed open %.2f are kept per gate" % GATE_OPEN)
     if cache is not None and cache.exists():
         g = pickle.load(open(cache, "rb"))
         n = g.info.get("mesh_triangles")                  # graphs cached before this was recorded have none
@@ -95,9 +179,14 @@ def graph_for(mesh: Mesh, info: dict, cache: Path | None = None, log=print):
         for u in np.flatnonzero(~inside):
             g.adj[u] = [(v, c + props.COARSE_COST[kind] if inside[v] else c, k) for v, c, k in g.adj[u]]
     for b in parts:                                       # the same for a mechanism's parts (the block of a falling rock stands in the upper road)
+        if b["kind"] not in props.COARSE_COST:
+            continue
         inside = np.linalg.norm(g.pos - np.array(b["placed"], float), axis=1) < float(np.linalg.norm(b["half"])) + 1.0
         for u in np.flatnonzero(~inside):
             g.adj[u] = [(v, c + props.COARSE_COST[b["kind"]] if inside[v] else c, k) for v, c, k in g.adj[u]]
+    g.info["gates"] = gate_edges(g, info, parts)
+    for name, d in g.info["gates"].items():
+        log("gate %s (sector %s): %d edges wait for it to be opened; pushed from place %d" % (name, d["sector"], len(d["edges"]), d["operate"]))
     g.info["mesh_triangles"] = len(mesh.A)
     g.info.update(marks)
     if cache is not None:

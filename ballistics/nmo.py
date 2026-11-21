@@ -43,6 +43,7 @@ class NmoLevel:
     path: str
     objects: dict                           # name -> Object3D
     groups: dict                            # group name -> [object names], in file order
+    meshes: dict = field(default_factory=dict)   # mesh name -> (vertices (n, 3) in its object's frame, faces (m, 3)): every mesh, shown or not
 
     def members(self, group: str) -> list:
         return [self.objects[n] for n in self.groups.get(group, []) if n in self.objects]
@@ -78,7 +79,7 @@ def read_nmo(path, bmap=None, encodings=ENCODINGS) -> NmoLevel:
 
     if not bw.is_bmap_available():
         raise RuntimeError("the BMap native library in %s could not be loaded" % folder)
-    objects, groups = {}, {}
+    objects, groups, meshes = {}, {}, {}
     with tempfile.TemporaryDirectory() as tmp:
         with bw.BMFileReader(str(path), tmp, tmp, tuple(encodings)) as r:
             for o in r.get_3dobjects():
@@ -90,6 +91,10 @@ def read_nmo(path, bmap=None, encodings=ENCODINGS) -> NmoLevel:
                     V = np.array([v.to_const() for v in mesh.get_vertex_positions()], np.float64).reshape(-1, 3)
                     F = np.array([f.to_const() for f in mesh.get_face_indices()], np.int64).reshape(-1, 3)
                 objects[name] = Object3D(name, matrix, V, F)
+            for mesh in r.get_meshs():          # a mesh that no object shows: a collision hull a script gives to a body
+                if mesh.get_vertex_count() and mesh.get_face_count():
+                    meshes[mesh.get_name()] = (np.array([v.to_const() for v in mesh.get_vertex_positions()], np.float64).reshape(-1, 3),
+                                               np.array([f.to_const() for f in mesh.get_face_indices()], np.int64).reshape(-1, 3))
             for g in r.get_groups():
                 names = []
                 for o in g.get_objects():
@@ -101,4 +106,4 @@ def read_nmo(path, bmap=None, encodings=ENCODINGS) -> NmoLevel:
                 for n in names:
                     if n in objects:
                         objects[n].groups.append(g.get_name())
-    return NmoLevel(str(path), objects, groups)
+    return NmoLevel(str(path), objects, groups, meshes)

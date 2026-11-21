@@ -252,6 +252,8 @@ def _robust(world, search, seed, tape, trials: int = 20, rng_seed: int = 1, scal
     return ok
 
 
+OPERATE_COST = 20.0       # pushing a gate open, as way at the follower's pace: ASSUMED, only to rank plans
+OPERATE_TICKS = 198       # how long the push is held at the gate (1.5 game s: a stone ball pushes it open in 1.20 to 1.39, MEASURED)
 MORE_TRIES = 1.0          # after the first way across is found, the search goes on for as many tries again (at least MORE_AT_LEAST)
 MORE_AT_LEAST = 6000
 MOST_WAYS = 10            # ... or until it has this many ways
@@ -330,6 +332,23 @@ def solve_sector(mesh, info, g, sector: int, tries: int = 300_000, seed: int = 0
     reset = info["reset_points"][sector - 1]
     s0 = fine.rest_state(strict, reset[0], reset[2], reset[1] + 0.5)
     state = (s0.pos, s0.vel, s0.omega) if start is None else tuple(np.array(x, float) for x in start[:3])
+    # a closed gate blocks the upper road (`solve.gate_edges`): a plan may first go to it, push it open and then
+    # go on through it, if that is cheaper on the coarse level than the way without it
+    legs = []
+    here = nearest_node(g, togo, state[0])
+    best_cost = float(togo[here])
+    for name, d in sorted(g.info.get("gates", {}).items()):
+        if d["sector"] != sector or d["operate"] < 0 or not d["edges"]:
+            continue
+        rel_open = rel.with_edges(d["edges"])
+        to_gate, after = rel.togo(d["operate"]), rel_open.togo(goal)
+        cost = float(to_gate[here]) + OPERATE_COST + float(after[d["operate"]])
+        log("sector %d: through gate %s: %.0f on the coarse level, against %.0f without it" % (sector, name, cost, best_cost))
+        if cost < best_cost:
+            best_cost, legs = cost, [dict(gate=name, d=d, rel=rel_open, togo=after, to_gate=to_gate)]
+    final_goal = goal
+    if legs:
+        goal, togo = legs[0]["d"]["operate"], legs[0]["to_gate"]       # first to the gate
     # this sector's loose balls: at rest where they lie, or as the start has them (a route going on within the sector)
     state = state + (_scene_of(strict, start) if start is not None else strict.scene(),)
     entry = np.array(state[0], float)                             # where the ball enters the sector
@@ -363,6 +382,25 @@ def solve_sector(mesh, info, g, sector: int, tries: int = 300_000, seed: int = 0
         register(nodes, kinds)
         return nodes, kinds
 
+    legs_open = list(legs)
+
+    def operate(state):
+        """At the gate: hold the push nearest to its x until it has slid as far as it goes (or OPERATE_TICKS), then
+        plan on with it open. Returns the state after, or None if the ball was lost."""
+        leg = legs.pop(0)
+        d = leg["d"]
+        a = int(np.argmax(fine.PUSHES @ d["axis"]))
+        sc = _scene_of(strict, state)
+        status, done, pos, vel, omega, _st, tr = strict.rollout(ball_now, ph.Params(), state[0], state[1], state[2], fine.PUSHES[a:a + 1], [OPERATE_TICKS],
+                                                                 trace=True, scene=sc)
+        if status != OK:
+            log("   pushing gate %s: the ball was lost" % leg["gate"])
+            return None
+        end = (pos, vel, omega, sc)
+        segs.append(dict(type="follow", mode=BASE, ball=ball_now.name, start=state, tape=[(a, done)], trace=tr, end=end, operates=leg["gate"]))
+        log("   pushed gate %s for %.1f game s; on through it" % (leg["gate"], done / 132))
+        return end
+
     nodes, kinds = replan(state[0])
     first = [dict(breaks[k]) for k in order]                      # the list from the map alone, before anything is rolled
     log("sector %d: the coarse plan has %d places and %d breaks" % (sector, len(nodes), len(first)))
@@ -371,6 +409,12 @@ def solve_sector(mesh, info, g, sector: int, tries: int = 300_000, seed: int = 0
     older: list = []                                              # the same for the stretches before that
     mode_now = BASE
     for _round in range(80):
+        if len(nodes) < 2 and legs and np.linalg.norm(state[0] - g.pos[goal]) <= 2.5:
+            nxt = operate(state)                                  # a crossing arrived at the gate
+            if nxt is None:
+                break
+            state, goal, togo, rel = nxt, final_goal, legs_open[-1]["togo"], legs_open[-1]["rel"]
+            nodes, kinds = replan(state[0])
         if len(nodes) < 2:
             break
         # the way the follower sees: the plan's places, and for a launch on it the run-up and the landing of the
@@ -401,6 +445,13 @@ def solve_sector(mesh, info, g, sector: int, tries: int = 300_000, seed: int = 0
         for e, k in enumerate(kinds):
             if k in BREAK_KINDS and e + 1 <= r["index"] and breaks[(nodes[e], nodes[e + 1])]["status"] == "pending":
                 breaks[(nodes[e], nodes[e + 1])]["status"] = "rolled"
+        if r["status"] == "goal" and legs:
+            nxt = operate(r["end"])                               # at the gate: push it open, then on
+            if nxt is None:
+                break
+            state, goal, togo, rel = nxt, final_goal, legs_open[-1]["togo"], legs_open[-1]["rel"]
+            nodes, kinds = replan(state[0])
+            continue
         if r["status"] == "goal":
             break
         if r["status"] == "clear":
@@ -562,6 +613,7 @@ def solve_sector(mesh, info, g, sector: int, tries: int = 300_000, seed: int = 0
             s1 = fine.rest_state(strict, far[0], far[2], far[1] + 1.0)
             state, mode_now, seeds = (s1.pos, s1.vel, s1.omega, strict.scene()), BASE, []
             nodes, kinds = nodes[kt:], kinds[kt:]
+    goal = final_goal                                             # (a plan that never got to its gate has not reached it)
     # at the goal: the last stretch ends there, whether the follower rolled it or a searched crossing arrived on it
     reached = bool(segs and segs[-1]["type"] in ("follow", "cross") and segs[-1]["end"] is not None and np.linalg.norm(segs[-1]["end"][0] - g.pos[goal]) <= 2.5)
     unresolved = [breaks[k]["no"] for k in order if breaks[k]["status"] == "unresolved"]

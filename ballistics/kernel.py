@@ -15,7 +15,7 @@ from dataclasses import dataclass
 import numpy as np
 from numba import njit
 
-from .geometry import FACE, Mesh, _distance, _near
+from .geometry import FACE, Mesh, _closest, _distance, _near
 
 CAP = 64                # contacts looked at in one tick
 OK, DEAD, TRIGGER, PLACED = 0, 1, 2, 3
@@ -194,6 +194,7 @@ def _settle(pos, r, margin, reach, ox, oz, cell, nx, nz, start, items, A, B, C, 
 
 
 MCAP = 1024             # contacts of all the bodies together in one tick
+PROP_WIDTH = 24 + 9 * 12   # a loose body's constants: 24 numbers, then up to 12 hull triangles
 STILL_TICKS = 20        # a loose body that has not moved for this many ticks is frozen (0.3 physics s: the game's short test)
 STILL_SPEED = 0.05
 CORNER = 0.05           # a box touches by its corners: each is a little sphere of this radius
@@ -296,6 +297,80 @@ def _box_gap(c, x, y, z, ox, oz, cell, nx, nz, start, items, A, B, C, lo_y, hi_y
 
 
 @njit(cache=True)
+def _hull_point(px, py, pz, c, prow, rad):
+    """A sphere of radius rad at p against a piece that is a convex hull (its triangles about the centre c[21:24]
+    in prow[24:], prow[23] of them): (gap, normal x, y, z), the normal pointing from the hull to p."""
+    qx, qy, qz = px - c[21], py - c[22], pz - c[23]
+    best, bx, by, bz = 1e300, 0.0, 0.0, 0.0
+    inside, depth, dn0, dn1, dn2 = True, 1e300, 0.0, 0.0, 0.0
+    for t in range(int(prow[23])):
+        o = 24 + 9 * t
+        ax, ay, az = prow[o], prow[o + 1], prow[o + 2]
+        bbx, bby, bbz = prow[o + 3], prow[o + 4], prow[o + 5]
+        ccx, ccy, ccz = prow[o + 6], prow[o + 7], prow[o + 8]
+        x, y, z, _f = _closest(qx, qy, qz, ax, ay, az, bbx, bby, bbz, ccx, ccy, ccz)
+        d2 = (qx - x) ** 2 + (qy - y) ** 2 + (qz - z) ** 2
+        if d2 < best:
+            best, bx, by, bz = d2, x, y, z
+        ux, uy, uz = bbx - ax, bby - ay, bbz - az
+        vx, vy, vz = ccx - ax, ccy - ay, ccz - az
+        n0, n1, n2 = uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx
+        nl = math.sqrt(n0 * n0 + n1 * n1 + n2 * n2)
+        if nl < 1e-12:
+            continue
+        n0, n1, n2 = n0 / nl, n1 / nl, n2 / nl
+        if n0 * ax + n1 * ay + n2 * az < 0.0:            # outward: away from the centre, which is inside the hull
+            n0, n1, n2 = -n0, -n1, -n2
+        s = n0 * (qx - ax) + n1 * (qy - ay) + n2 * (qz - az)
+        if s > 0.0:
+            inside = False
+        elif -s < depth:
+            depth, dn0, dn1, dn2 = -s, n0, n1, n2
+    if not inside:
+        d = math.sqrt(best)
+        if d > 1e-12:
+            return (d - rad, (qx - bx) / d, (qy - by) / d, (qz - bz) / d)
+    return (-depth - rad, dn0, dn1, dn2)
+
+
+@njit(cache=True)
+def _pair_ok(bc, a, b):
+    """Whether two bodies of the tick touch at all: not two pieces of one body; a fixed part of a mechanism (role 2)
+    only with the parts of that mechanism that move and do not touch the level (role 1)."""
+    la = bc[a, 25]
+    if la >= 0.0 and la == bc[b, 25]:
+        return False
+    ra, rb = bc[a, 26], bc[b, 26]
+    if ra == 2.0 or rb == 2.0:
+        return ra + rb == 3.0 and bc[a, 27] == bc[b, 27]
+    return True
+
+
+@njit(cache=True)
+def _sync(bv, bw, bc, nb, b):
+    """The pieces of one body move as one: give b's velocity to the others."""
+    lead = bc[b, 25]
+    if lead < 0.0:
+        return
+    for s in range(1, nb):
+        if s != b and bc[s, 25] == lead:
+            for q in range(3):
+                bv[s, q], bw[s, q] = bv[b, q], bw[b, q]
+
+
+@njit(cache=True)
+def _shift(bp, bc, nb, b, dx, dy, dz):
+    """Move body b (and the other pieces of its body) by d."""
+    lead = bc[b, 25]
+    for s in range(nb):
+        if s == b or (lead >= 0.0 and bc[s, 25] == lead):
+            bp[s, 0] += dx
+            bp[s, 1] += dy
+            bp[s, 2] += dz
+            bc[s, 21], bc[s, 22], bc[s, 23] = bp[s, 0], bp[s, 1], bp[s, 2]
+
+
+@njit(cache=True)
 def _multi_tick(pos, vel, omega, push, ball, par, fans, fanpar, props, scene, margin, y_min,
                 ox, oz, cell, nx, nz, start, items, A, B, C, lo_y, hi_y, N, tri_fr, tri_el, tri_placed, tri_rail,
                 stamp, tickbox, ci, cd, cq, cf, cn, cg, order,
@@ -306,7 +381,11 @@ def _multi_tick(pos, vel, omega, push, ball, par, fans, fanpar, props, scene, ma
     ball is pressed onto the floor by the friction between the two, and the floor then drags on it.
     A loose body is a sphere, or a box that slides and does not turn (it touches by its eight corners).
     props (K, 20): mass, friction, elasticity, linear damping, angular damping, inertia, shape (0 sphere, 1 box),
-    half extents, the box's three axes in world, 1 if it is on a rail (it only slides along its own y axis). scene (K, 11), in place: position, velocity, angular velocity,
+    half extents, the box's three axes in world, 1 if it is on a rail (it only slides along its own y axis), then
+    [20] the first piece of its body (-1: a body of one piece), [21] its role (0 ordinary; 1 a part that does not touch
+    the level's mesh; 2 a fixed part that only touches its mechanism's parts of role 1), [22] which mechanism, [23]
+    how many triangles its hull has (0: it is the box), [24:] those triangles about its centre. The pieces of one
+    body each carry the body's mass and move as one. scene (K, 11), in place: position, velocity, angular velocity,
     flag (0 frozen, 1 awake, 2 gone), ticks it has been still.
     out: [0] the player's tick began with a hit, [1] how many points the player touches, [2] one is an edge or
     corner, [3] the best normal y of its mesh contacts, [4] carried, [5] on a rail, [6] it touches a placed object."""
@@ -320,6 +399,7 @@ def _multi_tick(pos, vel, omega, push, ball, par, fans, fanpar, props, scene, ma
     bw[0, 0], bw[0, 1], bw[0, 2] = omega[0], omega[1], omega[2]
     bc[0, 0], bc[0, 1], bc[0, 2], bc[0, 3], bc[0, 4], bc[0, 5], bc[0, 6], bc[0, 7], bc[0, 8] = ball[0], ball[4], ball[5], ball[2], ball[3], ball[7], -1.0, 1.0, 0.0
     bc[0, 24] = 0.0
+    bc[0, 25], bc[0, 26], bc[0, 27] = -1.0, 0.0, 0.0
     for k in range(K):
         if scene[k, 9] == 2.0:
             continue
@@ -331,12 +411,19 @@ def _multi_tick(pos, vel, omega, push, ball, par, fans, fanpar, props, scene, ma
         for q in range(13):
             bc[nb, 8 + q] = props[k, 6 + q]                             # shape, half extents, axes
         bc[nb, 24] = props[k, 19]                                       # 1: it only slides along its own y axis (a rail)
+        bc[nb, 25], bc[nb, 26], bc[nb, 27] = -1.0, props[k, 21], props[k, 22]
         nb += 1
+    for b in range(1, nb):                                              # the first piece of each body, as a body of this tick
+        lk = props[int(bc[b, 6]), 20]
+        if lk >= 0.0:
+            for s in range(1, nb):
+                if bc[s, 6] == lk:
+                    bc[b, 25] = float(s)
     lift = _fans_pushing(pos[0], pos[1], pos[2], fans, fanpar) * fanpar[4] / ball[0] if len(fans) > 0 else 0.0
     out[0] = 0.0
     # ---- move, then the velocity update (a frozen body does neither: nothing acts on it until it is struck)
     for b in range(nb):
-        if bc[b, 7] == 0.0:
+        if bc[b, 7] == 0.0 or bc[b, 26] == 2.0:          # (a fixed part never moves)
             continue
         mx, my, mz = bv[b, 0] * dt, bv[b, 1] * dt, bv[b, 2] * dt
         qx, qy, qz = bp[b, 0] + mx, bp[b, 1] + my, bp[b, 2] + mz
@@ -356,7 +443,7 @@ def _multi_tick(pos, vel, omega, push, ball, par, fans, fanpar, props, scene, ma
                     qx, qy, qz = bp[b, 0] + lo * mx, bp[b, 1] + lo * my, bp[b, 2] + lo * mz
                     if b == 0:
                         out[0] = 1.0
-        elif sweep != 0.0:
+        elif sweep != 0.0 and bc[b, 26] == 0.0:
             # a box: none of its corners may pass through a surface within the tick (a falling block lands, as a ball does)
             # (a corner is small: the move is looked at in pieces no longer than the corner, or it could step right through)
             pieces = int(math.sqrt(mx * mx + my * my + mz * mz) / CORNER) + 1
@@ -393,6 +480,8 @@ def _multi_tick(pos, vel, omega, push, ball, par, fans, fanpar, props, scene, ma
     nc = 0
     touching, edge, best_ny, carried, on_rail, placed = 0, False, -1.0, False, False, False
     for b in range(nb):
+        if bc[b, 26] != 0.0:
+            continue                                      # a part that does not touch the level's mesh
         if bc[b, 8] == 0.0:
             m = _contacts(bp[b, 0], bp[b, 1], bp[b, 2], r, touch, ox, oz, cell, nx, nz, start, items, A, B, C, lo_y, hi_y, N, stamp, tickbox,
                           ci, cd, cq, cf, cn, cg, order)
@@ -445,6 +534,8 @@ def _multi_tick(pos, vel, omega, push, ball, par, fans, fanpar, props, scene, ma
         for b in range(a + 1, nb):
             if bc[a, 7] == 0.0 and bc[b, 7] == 0.0:
                 continue                                  # two frozen bodies resting against each other
+            if not _pair_ok(bc, a, b):
+                continue
             sa, sb = bc[a, 8], bc[b, 8]
             if sa == 0.0 and sb == 0.0:                   # ball on ball
                 dx, dy, dz = bp[a, 0] - bp[b, 0], bp[a, 1] - bp[b, 1], bp[a, 2] - bp[b, 2]
@@ -464,6 +555,10 @@ def _multi_tick(pos, vel, omega, push, ball, par, fans, fanpar, props, scene, ma
                 gap, n0, n1, n2 = _box_point(bp[s, 0], bp[s, 1], bp[s, 2], bc[x], bc[x, 9:12], r)
                 if gap > touch or nc >= len(m_a):
                     continue
+                if props[int(bc[x, 6]), 23] > 0.0:      # a hull inside its box: nearer than the box, it may still be clear
+                    gap, n0, n1, n2 = _hull_point(bp[s, 0], bp[s, 1], bp[s, 2], bc[x], props[int(bc[x, 6])], r)
+                    if gap > touch:
+                        continue
                 m_a[nc], m_b[nc] = s, x
                 m_n[nc, 0], m_n[nc, 1], m_n[nc, 2] = n0, n1, n2
                 m_fr[nc] = bc[s, 1] * bc[x, 1] * f_scale
@@ -503,6 +598,15 @@ def _multi_tick(pos, vel, omega, push, ball, par, fans, fanpar, props, scene, ma
             elif bc[b, 7] == 0.0 and bc[a, 7] != 0.0:
                 bc[b, 7] = 0.5
                 changed = True
+        for b in range(1, nb):                            # a body's pieces wake together
+            lead = int(bc[b, 25])
+            if lead >= 0 and lead != b:
+                if bc[b, 7] == 0.0 and bc[lead, 7] != 0.0:
+                    bc[b, 7] = 0.5
+                    changed = True
+                elif bc[lead, 7] == 0.0 and bc[b, 7] != 0.0:
+                    bc[lead, 7] = 0.5
+                    changed = True
     # A ball striking a ball is an impact between those two alone: it is settled after everything else, once, and
     # what it does to their contacts with the floor shows from the next tick on. MEASURED: the struck ball leaves
     # the tick with the speed of the plain two-body rule (within 3%), and loses 6 to 16% of it in the tick after.
@@ -582,12 +686,14 @@ def _multi_tick(pos, vel, omega, push, ball, par, fans, fanpar, props, scene, ma
                     if bc[b, 24] != 0.0:
                         along = bv[b, 0] * bc[b, 15] + bv[b, 1] * bc[b, 16] + bv[b, 2] * bc[b, 17]
                         bv[b, 0], bv[b, 1], bv[b, 2] = along * bc[b, 15], along * bc[b, 16], along * bc[b, 17]
+                    _sync(bv, bw, bc, nb, b)
                 if bc[a, 24] != 0.0:
                     along = bv[a, 0] * bc[a, 15] + bv[a, 1] * bc[a, 16] + bv[a, 2] * bc[a, 17]
                     bv[a, 0], bv[a, 1], bv[a, 2] = along * bc[a, 15], along * bc[a, 16], along * bc[a, 17]
+                _sync(bv, bw, bc, nb, a)
     # ---- out of the surfaces and out of each other
     for b in range(nb):
-        if bc[b, 7] == 0.0:
+        if bc[b, 7] == 0.0 or bc[b, 26] != 0.0:
             continue
         if bc[b, 8] == 0.0:
             _settle(bp[b], r, margin, 0.2, ox, oz, cell, nx, nz, start, items, A, B, C, lo_y, hi_y, N, stamp, tickbox, ci, cd, cq, cf, cn, cg, order)
@@ -612,6 +718,8 @@ def _multi_tick(pos, vel, omega, push, ball, par, fans, fanpar, props, scene, ma
         for b in range(a + 1, nb):
             if bc[a, 7] == 0.0 and bc[b, 7] == 0.0:
                 continue
+            if not _pair_ok(bc, a, b):
+                continue
             sa, sb = bc[a, 8], bc[b, 8]
             wa = 0.0 if bc[a, 7] == 0.0 else 1.0 / bc[a, 0]
             wb = 0.0 if bc[b, 7] == 0.0 else 1.0 / bc[b, 0]
@@ -629,6 +737,10 @@ def _multi_tick(pos, vel, omega, push, ball, par, fans, fanpar, props, scene, ma
                 gap, n0, n1, n2 = _box_point(bp[s, 0], bp[s, 1], bp[s, 2], bc[x], bc[x, 9:12], r)
                 if gap >= margin - 1e-6:
                     continue
+                if props[int(bc[x, 6]), 23] > 0.0:
+                    gap, n0, n1, n2 = _hull_point(bp[s, 0], bp[s, 1], bp[s, 2], bc[x], props[int(bc[x, 6])], r)
+                    if gap >= margin - 1e-6:
+                        continue
                 if s == b:                                # the normal is from the box to the ball: turn it to point from b to a
                     n0, n1, n2 = -n0, -n1, -n2
             else:
@@ -645,14 +757,8 @@ def _multi_tick(pos, vel, omega, push, ball, par, fans, fanpar, props, scene, ma
                 if gap >= margin - 1e-6:
                     continue
             sh = (margin - gap) / (wa + wb)
-            bp[a, 0] += sh * wa * n0
-            bp[a, 1] += sh * wa * n1
-            bp[a, 2] += sh * wa * n2
-            bp[b, 0] -= sh * wb * n0
-            bp[b, 1] -= sh * wb * n1
-            bp[b, 2] -= sh * wb * n2
-            bc[a, 21], bc[a, 22], bc[a, 23] = bp[a, 0], bp[a, 1], bp[a, 2]
-            bc[b, 21], bc[b, 22], bc[b, 23] = bp[b, 0], bp[b, 1], bp[b, 2]
+            _shift(bp, bc, nb, a, sh * wa * n0, sh * wa * n1, sh * wa * n2)
+            _shift(bp, bc, nb, b, -sh * wb * n0, -sh * wb * n1, -sh * wb * n2)
     for b in range(1, nb):
         if bc[b, 24] != 0.0:
             along = (bp[b, 0] - held[b, 0]) * bc[b, 15] + (bp[b, 1] - held[b, 1]) * bc[b, 16] + (bp[b, 2] - held[b, 2]) * bc[b, 17]
@@ -662,15 +768,18 @@ def _multi_tick(pos, vel, omega, push, ball, par, fans, fanpar, props, scene, ma
         pos[q], vel[q], omega[q] = bp[0, q], bv[0, q], bw[0, q]
     for b in range(1, nb):
         k = int(bc[b, 6])
-        if bc[b, 7] == 0.0:
-            continue
+        bc[b, 28] = -1.0                                  # [28]: 1 if it may freeze now, 0 if not, -1 if it is not written back
+        if bc[b, 7] == 0.0 or bc[b, 26] == 2.0:
+            continue                                      # (a fixed part stays as it is: frozen)
         for q in range(3):
             scene[k, q], scene[k, 3 + q], scene[k, 6 + q] = bp[b, q], bv[b, q], bw[b, q]
         scene[k, 9] = 1.0
         sp = math.sqrt(bv[b, 0] ** 2 + bv[b, 1] ** 2 + bv[b, 2] ** 2) + r * math.sqrt(bw[b, 0] ** 2 + bw[b, 1] ** 2 + bw[b, 2] ** 2)
         scene[k, 10] = scene[k, 10] + 1.0 if sp < STILL_SPEED else 0.0
+        bc[b, 28] = 0.0
         if bp[b, 1] < y_min:
             scene[k, 9] = 2.0                             # fell out of the level
+            bc[b, 28] = -1.0
         elif scene[k, 10] >= STILL_TICKS:
             near_moving = False
             for i in range(first_pair, nc):
@@ -684,9 +793,21 @@ def _multi_tick(pos, vel, omega, push, ball, par, fans, fanpar, props, scene, ma
                     if so >= STILL_SPEED:
                         near_moving = True
             if not near_moving:
-                scene[k, 9] = 0.0                         # frozen where it is
-                for q in range(3):
-                    scene[k, 3 + q], scene[k, 6 + q] = 0.0, 0.0
+                bc[b, 28] = 1.0
+    for b in range(1, nb):
+        if bc[b, 28] != 1.0:
+            continue
+        lead = bc[b, 25]
+        ok = True
+        if lead >= 0.0:                                   # a body freezes only when every piece of it may
+            for s in range(1, nb):
+                if bc[s, 25] == lead and bc[s, 28] == 0.0:
+                    ok = False
+        if ok:
+            k = int(bc[b, 6])
+            scene[k, 9] = 0.0                             # frozen where it is
+            for q in range(3):
+                scene[k, 3 + q], scene[k, 6 + q] = 0.0, 0.0
     out[1], out[2], out[3] = float(touching), 1.0 if edge else 0.0, best_ny
     out[4], out[5], out[6] = 1.0 if carried else 0.0, 1.0 if on_rail else 0.0, 1.0 if placed else 0.0
 
@@ -698,7 +819,7 @@ def _needs_multi(pos, vel, props, scene, r, dt):
     for k in range(len(scene)):
         if scene[k, 9] == 1.0:
             return True
-        if scene[k, 9] == 0.0:
+        if scene[k, 9] == 0.0 and props[k, 21] != 2.0:     # (a fixed part does not touch the player)
             dx, dy, dz = pos[0] - scene[k, 0], pos[1] - scene[k, 1], pos[2] - scene[k, 2]
             size = r if props[k, 6] == 0.0 else math.sqrt(props[k, 7] ** 2 + props[k, 8] ** 2 + props[k, 9] ** 2)
             reach = r + size + 0.5 + dt * math.sqrt(vel[0] * vel[0] + vel[1] * vel[1] + vel[2] * vel[2])
@@ -883,12 +1004,17 @@ class World:
         self._ballc: dict = {}
         # per loose body: mass, friction, elasticity, damping (linear, angular), inertia, shape (0 sphere, 1 box), the
         # box's half extents and its three axes in world
-        self.prop_consts = np.array([[p["mass"], p["friction"], p["elasticity"], p["lin_damp"], p["rot_damp"], p["inertia"],
-                                      1.0 if p.get("shape") == "box" else 0.0, *p.get("half", (0.0, 0.0, 0.0)),
-                                      *np.asarray(p.get("axes", np.eye(3)), float).ravel(), 1.0 if p.get("slider") else 0.0]
-                                     for p in self.props], np.float64).reshape(-1, 20)
+        # [20] the first piece of its body, [21] role, [22] mechanism, [23] hull triangles, [24:] those triangles
+        self.prop_consts = np.zeros((len(self.props), PROP_WIDTH))
+        for k, p in enumerate(self.props):
+            tris = np.asarray(p.get("tris") or np.zeros((0, 9)), float).reshape(-1, 9)
+            self.prop_consts[k, :24] = [p["mass"], p["friction"], p["elasticity"], p["lin_damp"], p["rot_damp"], p["inertia"],
+                                        1.0 if p.get("shape") == "box" else 0.0, *p.get("half", (0.0, 0.0, 0.0)),
+                                        *np.asarray(p.get("axes", np.eye(3)), float).ravel(), 1.0 if p.get("slider") else 0.0,
+                                        float(p.get("leader", -1)), float(p.get("role", 0)), float(p.get("mech", 0)), float(len(tris))]
+            self.prop_consts[k, 24:24 + tris.size] = tris.ravel()
         nb = len(self.props) + 1
-        self.multi = (np.empty((nb, 3)), np.empty((nb, 3)), np.empty((nb, 3)), np.zeros((nb, 25)), np.empty(MCAP, np.int64), np.empty(MCAP, np.int64),
+        self.multi = (np.empty((nb, 3)), np.empty((nb, 3)), np.empty((nb, 3)), np.zeros((nb, 29)), np.empty(MCAP, np.int64), np.empty(MCAP, np.int64),
                       np.empty((MCAP, 3)), np.empty(MCAP), np.empty(MCAP), np.empty(MCAP), np.empty((MCAP, 3)), np.zeros(8))
         self._fanpar: dict = {}
         self.tri_fr = np.array([float(m.entities[o].get("friction", 0.7)) if m.entities else 0.7 for o in m.owner])

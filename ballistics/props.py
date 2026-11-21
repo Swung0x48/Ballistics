@@ -36,12 +36,23 @@ SETTLE_TICKS = 1320                                        # at most this long t
 # against a stone one, which it can only shove along slowly). Whether and how it gets through is the kernel's to say.
 COARSE_COST = {"paper": 2.0, "wood": 5.0, "stone": 30.0, "box": 15.0, "P_Modul_34_Kiste": 40.0, "P_Modul_34_Schiebestein": 80.0}
 
-# Mechanisms made of boxes. Each part is a box of its own in the scene, at the place and of the size its shape has in
-# the exported mesh (the template's, put where the map puts it); `slider`: it only slides along its own y axis.
+# Mechanisms made of bodies that slide and do not turn. Each part is a body of its own in the scene.
+#   `slider`: it only slides along its own y axis.
+#   `hulls`: its shape is its collision hulls (the map's `hulls`, `ballistics.export.placed_hulls`): a piece per
+#     hull, all of one body; without it, the box its shape has in the exported mesh (the template's, put where the
+#     map puts it).
+#   `role`: 0 an ordinary body; 1 one that does not touch the level's floors and rails (the game's group Floor):
+#     it touches balls, boxes and its mechanism's fixed parts; 2 a fixed part that touches only its mechanism's
+#     parts of role 1 (the ball goes through it).
 #   P_Modul_34, the falling rock: a crate standing on the lower floor carries a block that hangs on an upright rail.
 #   Push the crate out from under it and the block comes down (READ: the script's rail; MEASURED on the rebuilt engine:
 #   who can push the crate out, see docs/mechanisms.md).
-PARTS = {"P_Modul_34": {"P_Modul_34_Kiste": dict(slider=False), "P_Modul_34_Schiebestein": dict(slider=True)}}
+#   P_Modul_01, the sliding gate: the gate (target plate, bar and fence, one body of three hulls) lies in a groove
+#   (a floor plate and two walls) that only it touches; pushed along the groove it slides out of the upper road. The
+#   filler plate under it is road (`coarse.FIXED_PARTS`). READ: the groups, the hulls; the rest is contacts.
+PARTS = {"P_Modul_34": {"P_Modul_34_Kiste": dict(slider=False), "P_Modul_34_Schiebestein": dict(slider=True)},
+         "P_Modul_01": {"P_Modul_01_Pusher": dict(hulls=True, role=1), "P_Modul_01_Rinne": dict(hulls=True, role=2)}}
+MAX_TRIS = 12            # a hull piece that is not a box: at most this many triangles (a hexahedron)
 
 
 def bodies() -> dict:
@@ -63,27 +74,51 @@ def bodies() -> dict:
     return out
 
 
+def _piece(kind, name, body, p, axes, V, spec, mech, faces=None):
+    """A part's piece: the box around the vertices V (world) in the mechanism's axes, and, when V is a hull that is
+    not that box, its triangles about the box's centre."""
+    L = V @ axes.T                                   # in the mechanism's own axes
+    lo, hi = L.min(0), L.max(0)
+    centre = ((lo + hi) / 2) @ axes
+    tris = None
+    if faces is not None:
+        corner = np.all(np.minimum(np.abs(L - lo), np.abs(L - hi)) < 1e-4, axis=1)
+        if not corner.all():                         # not a box: keep its faces (a trapezoid prism: the gate's fence)
+            F = np.asarray(faces, int)
+            if len(F) > MAX_TRIS:
+                raise ValueError("%s: a hull of %d triangles (at most %d)" % (name, len(F), MAX_TRIS))
+            tris = [[float(v) for v in np.concatenate([V[f[0]] - centre, V[f[1]] - centre, V[f[2]] - centre])] for f in F]
+    return dict(kind=kind, name=name, body=body, sector=p.get("sector"), placed=[float(v) for v in centre], half=tuple(float(v) for v in (hi - lo) / 2),
+                axes=axes.tolist(), slider=bool(spec.get("slider", False)), role=int(spec.get("role", 0)), mech=mech, tris=tris)
+
+
 def part_boxes(info: dict, shapes, sector=None) -> list:
-    """The box-shaped parts of the mechanisms in PARTS, read from a mesh that still has the placed shapes:
-    [dict(kind (the part's name), name, sector, placed (centre), half, axes, slider)], the sector's or all."""
+    """The parts of the mechanisms in PARTS, as pieces that slide and do not turn: [dict(kind (the part's name),
+    name, body (the pieces of one body share it), sector, placed (centre), half, axes, slider, role, mech (which
+    mechanism, from 1), tris)], the sector's or all. A part without hulls is read from a mesh that still has the
+    placed shapes; one with hulls from the map's hulls."""
     out = []
-    if shapes is None:
-        return out
-    for p in info.get("placements", ()):
+    hulls = info.get("hulls", ())
+    for m, p in enumerate(info.get("placements", ())):
         parts = PARTS.get(p["type"])
         if not parts or (sector is not None and p.get("sector") != sector):
             continue
         axes = np.array([np.array(p[k], float) / np.linalg.norm(p[k]) for k in ("x_axis", "y_axis", "z_axis")])
-        for i, e in enumerate(shapes.entities):
-            if e.get("placement") != p["name"] or e.get("name") not in parts:
+        for part, spec in parts.items():
+            body = "%s/%s" % (p["name"], part)
+            if spec.get("hulls"):
+                for h in hulls:
+                    if h["placement"] == p["name"] and h["body"] == part:
+                        out.append(_piece(part, "%s/%s" % (body, h["mesh"]), body, p, axes, np.array(h["vertices"], float), spec, m + 1, h["faces"]))
                 continue
-            sel = shapes.owner == i
-            if not sel.any():
+            if shapes is None:
                 continue
-            V = np.vstack([shapes.A[sel], shapes.B[sel], shapes.C[sel]]) @ axes.T        # in the mechanism's own axes
-            lo, hi = V.min(0), V.max(0)
-            out.append(dict(kind=e["name"], name="%s/%s" % (p["name"], e["name"]), sector=p.get("sector"), placed=[float(v) for v in ((lo + hi) / 2) @ axes],
-                            half=tuple(float(v) for v in (hi - lo) / 2), axes=axes.tolist(), slider=bool(parts[e["name"]]["slider"])))
+            for i, e in enumerate(shapes.entities):
+                if e.get("placement") != p["name"] or e.get("name") != part:
+                    continue
+                sel = shapes.owner == i
+                if sel.any():
+                    out.append(_piece(part, body, body, p, axes, np.vstack([shapes.A[sel], shapes.B[sel], shapes.C[sel]]), spec, m + 1))
     return out
 
 
@@ -98,10 +133,14 @@ def of(info: dict, sector, mesh=None, shapes=None) -> list:
     table = bodies()
     out = []
     cat = things.load()
+    first: dict = {}
     for b in part_boxes(info, shapes, sector):
         c = next(x for x in cat[b["kind"][:10]].bodies if x["name"] == b["kind"])           # "P_Modul_34"
-        out.append(dict(b, shape="box", mass=float(c["mass"]["v"]), friction=float(c["friction"]["v"]), elasticity=float(c["elasticity"]["v"]),
-                        lin_damp=float(c["lin_damp"]["v"]), rot_damp=float(c["rot_damp"]["v"]), inertia=LOCKED, rest=list(b["placed"])))
+        fixed = b["role"] == 2
+        # every piece of a body carries the body's mass: they move as one (`kernel._multi_tick`)
+        out.append(dict(b, shape="box", mass=LOCKED if fixed else float(c["mass"]["v"]), friction=float(c["friction"]["v"]), elasticity=float(c["elasticity"]["v"]),
+                        lin_damp=float(c["lin_damp"]["v"]), rot_damp=float(c["rot_damp"]["v"]), inertia=LOCKED, rest=list(b["placed"]),
+                        leader=-1 if fixed else first.setdefault(b["body"], len(out))))
     for p in info.get("placements", ()):
         kind = KINDS.get(p["type"])
         if kind and p.get("sector") == sector:
@@ -114,7 +153,7 @@ def of(info: dict, sector, mesh=None, shapes=None) -> list:
         from .kernel import World
         w = World.of(mesh, stop_on_placed=False, props=out)
         scene = w.scene()
-        scene[:, 9] = 1.0                                  # awake where they were put
+        scene[:, 9] = [0.0 if b.get("role") == 2 else 1.0 for b in out]       # awake where they were put (a fixed part never is)
         w.idle(scene, SETTLE_TICKS)
         for k, b in enumerate(out):
             b["rest"] = [float(v) for v in scene[k, :3]]
