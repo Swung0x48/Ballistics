@@ -412,6 +412,10 @@ def summary(res: dict, log=print):
             ", ".join("%d (x%d)" % (v, k) for k, v in sc["nudged"].items()), sc["trials"],
             "it does not come back onto R1 before a break R1 leaves or the end" if rj is None else
             "back on R1 at %s, %.1f game s %s" % (np.round(rj["pos"], 1), abs(rj["saved"]) / 132, "ahead" if rj["saved"] >= 0 else "BEHIND")))
+        if route.get("extras"):
+            from . import extras
+            for line in extras.lines(route["extras"]):
+                log("   " + line)
     for a in res.get("alternatives", ()):
         if a["found"]:
             continue
@@ -461,6 +465,8 @@ def listing(name: str, results: list) -> dict:
             row = dict(id=rid, kind="standard" if a is None else "over an island", reaches_goal=bool(route["solved"]), left_breaks=list(route["unresolved"]),
                        game_seconds=route["ticks"] / 132 if route["solved"] else None, replay_agrees=bool(route["replays"]),
                        tolerance=tolerance(route), searched_passages=_crossings(route), segments=segments(route))
+            if route.get("extras"):                     # the score and life balls on the way (ballistics.extras)
+                row["extras"] = route["extras"]
             if a is not None:
                 sc = route["shortcut"]
                 row["shortcut"] = dict(island=dict(no=sc["no"], centre=sc["centre"], lo=sc["lo"], hi=sc["hi"], places=sc["size"]),

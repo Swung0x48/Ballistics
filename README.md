@@ -84,6 +84,7 @@ python -m ballistics calibrate --mesh data/Level_01-mesh.npz --run data/runs/<�
 | [docs/level-1.md](docs/level-1.md) | 第 1 关的结果 |
 | [docs/files.md](docs/files.md) | 输入的地图文件、导出的文件和路线文件的格式 |
 | [docs/things.md](docs/things.md) | 目录：三种球、每种机关和关卡规则各一条（刚体和数值、状态机、三种球的结论、对路线的影响），每个事实标了依据 |
+| [docs/mechanisms.md](docs/mechanisms.md) | 目录里已经接进求解的机关和物体：模拟了什么、依据、和原版记录的对照、还没做的 |
 | [docs/design.md](docs/design.md) | 思路：每个决定的理由、放弃过的做法、还没解决的问题 |
 
 关于游戏本身（和这个工具无关的事实，每条标了依据）：

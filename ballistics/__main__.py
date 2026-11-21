@@ -147,6 +147,8 @@ def main(argv=None):
             if not f.exists():
                 break
             results.append(pickle.load(open(f, "rb")))
+        from . import extras
+        extras.annotate(results, info)
         P, sector, t_ms, meta = route.reference_line(results, info, a.level)
         path = route.write_line(a.out, a.level, P, sector, t_ms, meta)
         print("%s: %d points, %.0f long, %.1f game s, sectors %s on the line; %s" % (
@@ -157,7 +159,7 @@ def main(argv=None):
         import json
         import pickle
 
-        from . import solve, staged
+        from . import extras, solve, staged
         from .geometry import Mesh
 
         mesh = Mesh.load(a.mesh)
@@ -178,8 +180,9 @@ def main(argv=None):
                 carry = pickle.load(open(before, "rb")).get("end_state")
             res = staged.solve_sector(mesh, info, g, sec, a.tries, start=carry)
             carry = res["end_state"]                              # None when the sector was not got through: the next one starts at rest
-            staged.summary(res)
             results[sec] = res
+            extras.annotate([results[k] for k in sorted(results)], info)     # what the routes collect on the way: changes nothing about them
+            staged.summary(res)
             pickle.dump(res, open(a.out / ("%s-staged-s%d.pkl" % (name, sec)), "wb"))
             if a.png:
                 from .render import draw_staged
@@ -192,6 +195,7 @@ def main(argv=None):
             for sec in sectors if a.shortcuts > 0 else ():
                 res = results[sec]
                 res["alternatives"] = shortcut.alternatives(mesh, info, g, sec, res, a.tries, a.shortcuts)
+                extras.annotate([results[k] for k in sorted(results)], info)
                 shortcut.summary(res)
                 pickle.dump(res, open(a.out / ("%s-staged-s%d.pkl" % (name, sec)), "wb"))
                 if a.png:
@@ -203,6 +207,7 @@ def main(argv=None):
                         draw_staged(mesh, route, a.png / ("%s-staged-s%d-%s.png" % (name, sec, rid.lower())),
                                     title="第 %d 小节 路线 %s：经孤岛 %s（%s，轨迹 %.1f 游戏秒%s）" % (sec, rid, sc["no"], state, route["ticks"] / 132, saved))
             have = [pickle.load(open(p, "rb")) for p in done if p.exists()]
+            extras.annotate(have, info)
             if have:                                              # every route of every sector solved so far, for other tools
                 json.dump(shortcut.listing(name, have), open(a.out / (name + "-routes.json"), "w", encoding="utf8"), ensure_ascii=False, indent=1)
         if a.png and not a.whole and all(p.exists() for p in done):       # every sector has a result: the whole level on one view

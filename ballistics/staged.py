@@ -458,6 +458,10 @@ def summary(res, log=print):
            "reaches the goal" if res["solved"] else "does NOT get through: %s left as break%s" % (", ".join(res["unresolved"]) or "the way", "s" if len(res["unresolved"]) > 1 else ""),
            res["ticks"] / 132, len(res["breaks"]), n_rolled, "agrees" if res["replays"] else "DISAGREES"))
     log("   the follower's stretches: %.1f game s" % (sum(len(sg["trace"]) for sg in res["segments"] if sg["type"] == "follow") / 132))
+    if res.get("extras"):
+        from . import extras
+        for line in extras.lines(res["extras"]):
+            log(line)
     for f in res.get("flights", ()):
         log("   the follower flew from %s: takes off at %.1f, %.1f across, %.1f down, lands at %s"
             % (np.round(f["start"], 1), f["speed"], f["across"], f["down"], np.round(f["end"], 1)))

@@ -513,6 +513,18 @@
    "note_zh": "还在往下走，最终停在哪没有量",
    "basis": "DERIVED",
    "how_zh": "第 10 关空船八次，醒后筐的位置对摆放原点的差，重建引擎"
+  },
+  "checkpoint_frame_lag": {
+   "label_zh": "按逐帧记录的球心判，第一次进大火焰 6.5 的那一帧到盘点事件隔几帧",
+   "v": [
+    0,
+    2
+   ],
+   "unit": "帧",
+   "note_zh": "100 次过盘点都在这个范围，没有多判也没有漏判；火焰取盘点原点上方 1.4948",
+   "basis": "MEASURED",
+   "src": "record",
+   "engine": "original"
   }
  },
  "machine": {

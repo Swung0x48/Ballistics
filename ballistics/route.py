@@ -32,9 +32,14 @@ TICK_MS = 1000.0 / 132.0            # one physics tick in game time
 
 def reference_line(results: list, info: dict, level: int, spacing: float = 0.5, time_sigma_ms: float = 40.0, tangent_span: float = 2.0):
     """results: the solver's sector results in order (staged.solve_sector). Returns (points, sector, t_ms, meta)."""
-    pos, sec, breaks = [], [], []
+    pos, sec, breaks, collected = [], [], [], []
     complete = True
     for res in results:
+        for r in (res.get("extras") or {}).get("extras", ()):       # set by ballistics.extras.annotate
+            if r["collected"] and not r["after_left_break"]:
+                collected.append(dict(name=r["name"], kind=r["kind"], sector=int(r["sector"]), route_sector=int(res["sector"]),
+                                      game_seconds_into_sector=float(r["game_seconds"]), closest=float(r["closest"]), marginal=bool(r["marginal"]),
+                                      points=r.get("points")))
         cut = False
         for sg in res["segments"]:
             if sg["type"] == "assumed":
@@ -80,7 +85,8 @@ def reference_line(results: list, info: dict, level: int, spacing: float = 0.5, 
                 spacing=spacing, time_sigma_ms=time_sigma_ms, tangent_span=tangent_span, length=float(arc[-1]), points=int(len(P)),
                 sector_range=ranges, game_ms=float(t_new[-1]), generator="ballistics",
                 source="a trajectory of the Ballistics physics kernel: a candidate, not run in the game",
-                complete=bool(complete), sectors_on_line=sorted(int(k) for k in np.unique(sector)), left_breaks=breaks)
+                complete=bool(complete), sectors_on_line=sorted(int(k) for k in np.unique(sector)), left_breaks=breaks,
+                collected=collected)
     return P.astype(np.float32), sector.astype(np.uint8), t_new.astype(np.float64), meta
 
 
