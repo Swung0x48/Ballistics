@@ -52,14 +52,15 @@ def route_states(worlds, res) -> list:
             reached = False
             out.append(dict(seg=si, n=0, t=t, gap=True))
             continue
-        pos, vel, omega = (np.array(x, float) for x in sg["start"])
+        pos, vel, omega = (np.array(x, float) for x in sg["start"][:3])
+        scene = staged._scene_of(worlds[sg["mode"]], sg["start"])
         n = 0
         for a, hold in sg["tape"]:
             for _ in range(hold // CHUNK):
-                _st, done, pos, vel, omega, stats, _ = worlds[sg["mode"]].rollout(staged.BALLS[sg.get("ball", "wood")], P, pos, vel, omega, fine.PUSHES[a:a + 1], [CHUNK])
+                _st, done, pos, vel, omega, stats, _ = worlds[sg["mode"]].rollout(staged.BALLS[sg.get("ball", "wood")], P, pos, vel, omega, fine.PUSHES[a:a + 1], [CHUNK], scene=scene)
                 n += done
                 t += done
-                out.append(dict(seg=si, n=n, t=t, pos=pos.copy(), vel=vel.copy(), omega=omega.copy(), carried=bool(stats[8] > 0), reached=reached,
+                out.append(dict(seg=si, n=n, t=t, pos=pos.copy(), vel=vel.copy(), omega=omega.copy(), scene=scene.copy(), carried=bool(stats[8] > 0), reached=reached,
                                 follow=sg["type"] == "follow"))
     left = 0 if res["reached"] else LEFT_BREAK
     for s in reversed(out):
@@ -224,7 +225,7 @@ def search_island(worlds, g, states, island, tries: int, seed: int = 0, least: f
     ids = {}
     for k in pool:
         st = states[k]
-        i = s.add_start(ph.State(st["pos"], st["vel"], st["omega"]), grounded=st["carried"])
+        i = s.add_start(ph.State(st["pos"], st["vel"], st["omega"]), grounded=st["carried"], scene=st.get("scene"))
         if i >= 0:
             ids[i] = k
     c = s.run(max_expansions=tries, max_seconds=1e9)
@@ -291,7 +292,7 @@ def _route_over(mesh, info, g, worlds, sector, res, no, key, about, s, c, st, tr
     from the landing as the solver takes it (its own follower and searches, the breaks it meets named with a ')."""
     from . import staged
 
-    depart = (st["pos"], st["vel"], st["omega"])
+    depart = (st["pos"], st["vel"], st["omega"], st.get("scene"))
     nudged = {n: staged._robust(worlds["strict"], s, depart, c.tape, scale=n) for n in staged.NUDGES}
     tail = staged.solve_sector(mesh, info, g, sector, tries, seed, log=lambda *a: None, start=c.end_state)
     segs = [dict(sg) for sg in res["segments"][:st["seg"]]] + [_cut(res["segments"][st["seg"]], st["n"], depart)]

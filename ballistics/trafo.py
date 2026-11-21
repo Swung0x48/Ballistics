@@ -92,15 +92,18 @@ def new_state(item: dict, R: Rules | None = None):
     return item["pos"] + R.hover * item["up"], np.zeros(3), np.zeros(3)
 
 
-def stretch(world, item: dict, P=None, R: Rules | None = None):
+def stretch(world, item: dict, P=None, R: Rules | None = None, scene=None):
     """A transformation as a stretch of a route: (the new ball, its trace, its end state). The trace is `body_after`
     rows at the hover point (nothing happens), then one tick of the new ball left alone: the tick after that is the
-    first the keys act in. The trace has the columns of a rollout's (`kernel.World.rollout`)."""
+    first the keys act in. The trace has the columns of a rollout's (`kernel.World.rollout`). scene: the loose
+    balls' state, changed in place (they go on moving while the ball is away); the end state carries it."""
     from . import physics as ph
     R = R or rules()
     new = {b.name: b for b in (ph.WOOD, ph.STONE, ph.PAPER)}[item["kind"]]
     p0, v0, o0 = new_state(item, R)
-    status, _d, p1, v1, o1, stats, tr = world.rollout(new, P or ph.Params(), p0, v0, o0, np.zeros((1, 3)), [1], trace=True)
+    scene = world.scene() if scene is None else scene
+    world.idle(scene, R.body_after, P)
+    status, _d, p1, v1, o1, stats, tr = world.rollout(new, P or ph.Params(), p0, v0, o0, np.zeros((1, 3)), [1], trace=True, scene=scene)
     wait = np.zeros((R.body_after, 9))
     wait[:, :3] = p0
-    return new, np.vstack([wait, tr]), (p1, v1, o1), stats, status
+    return new, np.vstack([wait, tr]), (p1, v1, o1, scene), stats, status

@@ -92,6 +92,8 @@ class Search:
         self.transforms = bool(transforms) and world.trafos is not None
         self.balls = {b.name: b for b in (ph.WOOD, ph.STONE, ph.PAPER)}
         self.kind, self.jump = [], []            # per kept state: the ball's kind; the transformer it went through since its parent (-1: none)
+        self.scene = []                          # per kept state: the loose balls' state (shared with its parent while nothing moved them)
+        self._rest = world.scene()
         self.T = np.ascontiguousarray(targets, np.float64).reshape(-1, 3)
         self.reach = reach
         self.G = None
@@ -140,22 +142,25 @@ class Search:
         return bool(stats[8] > 0 and self.distance(pos) <= self.reach)
 
     # ---- the kept states
-    def _key(self, pos, vel, stats, kind):
+    def _key(self, pos, vel, stats, kind, scene):
         hs = math.hypot(vel[0], vel[2])
         heading = 8 if hs < 1.5 else int(((math.atan2(vel[2], vel[0]) + math.pi) / (math.pi / 4)) % 8)
         speed = sum(hs >= e for e in SPEED_EDGES)
-        return (int(pos[0] // CELL), int(pos[1] // CELL), int(pos[2] // CELL), heading, speed, int(stats[5] > 0), kind)
+        # where the loose balls are, to the unit, is part of which state this is (0 while none has been moved)
+        moved = 0 if scene is self._rest or not len(scene) else hash(np.floor(scene[:, :3]).astype(np.int64).tobytes())
+        return (int(pos[0] // CELL), int(pos[1] // CELL), int(pos[2] // CELL), heading, speed, int(stats[5] > 0), kind, moved)
 
-    def _keep(self, pos, vel, omega, parent, act, hold, ticks, stats, kind=None, jump: int = -1) -> int:
+    def _keep(self, pos, vel, omega, parent, act, hold, ticks, stats, kind=None, jump: int = -1, scene=None) -> int:
         """Keep the state if its cell is new or it got there sooner; returns its index, or -1."""
         kind = kind or self.ball.name
-        key = self._key(pos, vel, stats, kind)
+        scene = self._rest if scene is None else scene
+        key = self._key(pos, vel, stats, kind, scene)
         k = self.cell.get(key)
         if k is not None and self.ticks[self.slot[k]] <= ticks:
             return -1
         i = len(self.pos)
         for a, v in ((self.pos, pos.copy()), (self.vel, vel.copy()), (self.omega, omega.copy()), (self.parent, parent), (self.act, act),
-                     (self.hold, hold), (self.ticks, ticks), (self.kind, kind), (self.jump, jump)):
+                     (self.hold, hold), (self.ticks, ticks), (self.kind, kind), (self.jump, jump), (self.scene, scene)):
             a.append(v)
         if k is None:
             self.cell[key] = len(self.slot)
@@ -165,12 +170,15 @@ class Search:
             self.slot[k], self.h[k] = i, self.score(pos)
         return i
 
-    def add_start(self, s: ph.State, grounded: bool = True) -> int:
+    def add_start(self, s: ph.State, grounded: bool = True, scene=None) -> int:
         """A state to grow from. Returns its index (the `root` of a crossing that leaves from it), or -1 if another
-        start already holds its cell."""
+        start already holds its cell. scene: the loose balls' state there (at rest where they lie, without it)."""
         st = np.zeros(10)
         st[5], st[6], st[8] = float(grounded), 1.0, float(grounded)
-        return self._keep(np.array(s.pos, float), np.array(s.vel, float), np.array(s.omega, float), -1, 0, 0, 0, st)
+        if scene is not None and (len(scene) != len(self._rest) or np.array_equal(scene, self._rest)):
+            scene = None
+        return self._keep(np.array(s.pos, float), np.array(s.vel, float), np.array(s.omega, float), -1, 0, 0, 0, st,
+                          scene=None if scene is None else np.array(scene, float))
 
     def _pick(self) -> int:
         n = len(self.slot)
@@ -197,26 +205,31 @@ class Search:
             pos, vel, omega, parent, ticks, held = self.pos[i], self.vel[i], self.omega[i], i, self.ticks[i], 0
             kind = self.kind[i]
             ball = self.balls[kind]
+            before = self.scene[i]                 # the loose balls: a copy to roll on, kept only if it changed
+            sc = before.copy()
             for _ in range(HOLDS[int(self.rng.integers(0, len(HOLDS)))]):
-                status, done, pos, vel, omega, stats, _ = self.w.rollout(ball, self.P, pos, vel, omega, PUSHES[a:a + 1], [CHUNK])
+                status, done, pos, vel, omega, stats, _ = self.w.rollout(ball, self.P, pos, vel, omega, PUSHES[a:a + 1], [CHUNK], scene=sc)
+                if len(sc) and not np.array_equal(sc, before):
+                    before = sc.copy()
                 if status == TRIGGER and self.transforms and self.w.trafos[int(stats[9])]["kind"] in trafo.SOLVED:
                     # transformed: the state kept is the new ball's, one tick after it appeared; this pick ends here
                     which = int(stats[9])
-                    new, tr, end, st1, s1 = trafo.stretch(self.w, self.w.trafos[which], self.P)
+                    new, tr, end, st1, s1 = trafo.stretch(self.w, self.w.trafos[which], self.P, scene=sc)
                     if s1 == OK:
-                        self._keep(end[0], end[1], end[2], parent, a, held + done, ticks + done + len(tr), st1, kind=new.name, jump=which)
+                        self._keep(end[0], end[1], end[2], parent, a, held + done, ticks + done + len(tr), st1, kind=new.name, jump=which,
+                                   scene=sc.copy() if len(sc) and not np.array_equal(sc, self._rest) else None)
                     break
                 if status != OK:
                     break
                 ticks += done
                 held += done
-                j = self._keep(pos, vel, omega, parent, a, held, ticks, stats, kind=kind)
+                j = self._keep(pos, vel, omega, parent, a, held, ticks, stats, kind=kind, scene=before)
                 if j < 0:
                     continue                       # nothing new at this point of the hold; it may still lead somewhere new
                 parent, held = j, 0
                 if self.arrived(pos, vel, stats):
                     # it has to stay: let it roll on with no keys for half a physics second
-                    s2, _d, p2, _v, _o, st2, _ = self.w.rollout(ball, self.P, pos, vel, omega, zero, [33])
+                    s2, _d, p2, _v, _o, st2, _ = self.w.rollout(ball, self.P, pos, vel, omega, zero, [33], scene=sc.copy())
                     if s2 == OK and self.distance(p2) <= self.reach + 2.0:
                         self.goal = j
                         break
@@ -248,14 +261,16 @@ class Search:
         if self.goal < 0:
             return Crossing(False, self.expansions, seconds, len(self.slot), float(h[best]), nearest=self.pos[self.slot[best]].copy())
         root, tapes = self.tape_of(self.goal)
-        state, kind, parts, out = (self.pos[root], self.vel[root], self.omega[root]), self.kind[root], [], None
+        state, kind, parts, out = (self.pos[root], self.vel[root], self.omega[root], self.scene[root].copy()), self.kind[root], [], None
         for tape, jump in tapes:
-            out = replay(self.w, self.balls[kind], self.P, ph.State(*state), tape)
-            parts.append(dict(type="cross", ball=kind, start=state, tape=tape, trace=out["trace"], end=(out["pos"], out["vel"], out["omega"])))
+            sc = state[3].copy()
+            out = replay(self.w, self.balls[kind], self.P, ph.State(state[0], state[1], state[2]), tape, scene=sc)
+            parts.append(dict(type="cross", ball=kind, start=state, tape=tape, trace=out["trace"], end=(out["pos"], out["vel"], out["omega"], sc)))
             if jump >= 0:
                 if out["status"] != TRIGGER or out["ticks"] != sum(n for _a, n in tape):
                     raise RuntimeError("the key tape does not reproduce the transformation the search went through")
-                new, tr, end, _st, _s = trafo.stretch(self.w, self.w.trafos[jump], self.P)
+                sc = sc.copy()
+                new, tr, end, _st, _s = trafo.stretch(self.w, self.w.trafos[jump], self.P, scene=sc)
                 parts.append(dict(type="transform", ball=new.name, was=kind, at=self.w.trafos[jump]["name"], which=jump, start=parts[-1]["end"],
                                   tape=[], trace=tr, end=end))
                 state, kind = end, new.name
@@ -265,14 +280,15 @@ class Search:
         return Crossing(True, self.expansions, seconds, len(self.slot), self.distance(self.pos[self.goal]), ticks=ticks,
                         tape=parts[0]["tape"] if len(parts) == 1 else [], trace=np.vstack([p["trace"] for p in parts]),
                         start=self.pos[root].copy(), end=out["pos"], stats=out["stats"], root=root,
-                        end_state=(out["pos"], out["vel"], out["omega"]), parts=parts, end_ball=kind)
+                        end_state=parts[-1]["end"], parts=parts, end_ball=kind)
 
 
-def replay(world: World, ball: ph.Ball, P: ph.Params, start: ph.State, tape) -> dict:
-    """Run a key tape from a state: the trajectory and what it met."""
+def replay(world: World, ball: ph.Ball, P: ph.Params, start: ph.State, tape, scene=None) -> dict:
+    """Run a key tape from a state: the trajectory and what it met. scene: the loose balls' state at the start,
+    changed in place."""
     pushes = np.array([PUSHES[a] for a, _ in tape]).reshape(-1, 3)
     holds = [n for _, n in tape]
-    status, done, pos, vel, omega, st, trace = world.rollout(ball, P, start.pos, start.vel, start.omega, pushes, holds, trace=True)
+    status, done, pos, vel, omega, st, trace = world.rollout(ball, P, start.pos, start.vel, start.omega, pushes, holds, trace=True, scene=scene)
     return dict(status=status, ticks=done, pos=pos, vel=vel, omega=omega, trace=trace,
                 stats=dict(impact_ticks=int(st[0]), edge_ticks=int(st[1]), multi_contact_ticks=int(st[2]), air_ticks=int(st[3]),
                            top_speed=float(st[4]), touching_at_end=bool(st[5] > 0)))

@@ -85,7 +85,7 @@ def _progress(tr, P, way, lo: int, hi: int):
     return best, int(k[int(np.argmax(reach >= best - 1e-9))])
 
 
-def choose_push(world, pos, vel, omega, P, way, best: int, ball: ph.Ball = ph.WOOD) -> int:
+def choose_push(world, pos, vel, omega, P, way, best: int, ball: ph.Ball = ph.WOOD, scene=None) -> int:
     """The follower's decision for one state: which of the nine pushes to hold next. From that state the kernel runs
     each push LOOK_TICKS ahead (and, if none gets on, each push for SWITCH_TICKS followed by each other push); the
     answer is the first push of the plan that gets furthest along the way P soonest without ending the ball. A plan
@@ -104,13 +104,14 @@ def choose_push(world, pos, vel, omega, P, way, best: int, ball: ph.Ball = ph.WO
 
     def fate(a_tape):
         pushes = np.array([fine.PUSHES[a] for a, _ in a_tape])
-        st, done, p2, v2, o2, s2, tr = world.rollout(ball, par, pos, vel, omega, pushes, [m for _, m in a_tape], trace=True)
+        sc = None if scene is None else scene.copy()          # each plan moves its own copy of the loose balls
+        st, done, p2, v2, o2, s2, tr = world.rollout(ball, par, pos, vel, omega, pushes, [m for _, m in a_tape], trace=True, scene=sc)
         if st == TRIGGER and int(s2[9]) in on_way:
             reach, at = _progress(tr, P, way, lo, hi) if len(tr) else (way[best], 0)
             return (reach - 0.02 * at), reach
         alive = st == OK
         if alive and s2[8] == 0:
-            st3, d3, p3, v3, o3, s3, tr3 = world.rollout(ball, par, p2, v2, o2, zero, [160], trace=True)
+            st3, d3, p3, v3, o3, s3, tr3 = world.rollout(ball, par, p2, v2, o2, zero, [160], trace=True, scene=sc)
             down = np.flatnonzero(tr3[:, 7] > 0)
             alive = bool(len(down)) and (st3 == OK or int(down[0]) < d3 - 1)
             if alive:
@@ -140,6 +141,7 @@ def follow(world, strict_world, start, P, max_ticks: int = 60000, ball: ph.Ball 
     through: `which` is its index in world.trafos, `end` the state at that tick; one it strays into off the way
     is a failure)."""
     pos, vel, omega = np.array(start[0], float), np.array(start[1], float), np.array(start[2], float)
+    scene = _scene_of(world, start)                           # the loose balls: carried along, changed by every rollout
     n = len(P)
     way = np.r_[0.0, np.cumsum(np.linalg.norm(np.diff(P, axis=0), axis=1))] if n > 1 else np.zeros(1)
     par = ph.Params()
@@ -154,15 +156,15 @@ def follow(world, strict_world, start, P, max_ticks: int = 60000, ball: ph.Ball 
         if carried and len(near) and lo + int(near[-1]) > best:          # a place counts as reached when the ball is rolling at it
             best, since = lo + int(near[-1]), 0
         if best >= n - 2 and carried and float(np.linalg.norm(P[n - 1] - pos)) <= 2.0:
-            return dict(status="goal", index=n - 1, tape=tape, trace=_stack(traces), history=history, end=(pos, vel, omega))
-        history.append((ticks, best, pos.copy(), vel.copy(), omega.copy()))
-        a = choose_push(world, pos, vel, omega, P, way, best, ball)
-        status, done, pos, vel, omega, st, tr = world.rollout(ball, par, pos, vel, omega, fine.PUSHES[a:a + 1], [STEP_TICKS], trace=True)
+            return dict(status="goal", index=n - 1, tape=tape, trace=_stack(traces), history=history, end=(pos, vel, omega, scene))
+        history.append((ticks, best, pos.copy(), vel.copy(), omega.copy(), scene.copy()))
+        a = choose_push(world, pos, vel, omega, P, way, best, ball, scene)
+        status, done, pos, vel, omega, st, tr = world.rollout(ball, par, pos, vel, omega, fine.PUSHES[a:a + 1], [STEP_TICKS], trace=True, scene=scene)
         if status == TRIGGER and world.trafos is not None and world.trafos[int(st[9])]["kind"] in SOLVED_BALLS \
                 and (np.linalg.norm(P - world.trafos[int(st[9])]["pos"], axis=1) < world.spheres[int(st[9]), 3]).any():
             # only a transformer the way itself leads through: one the ball strays into is a failure, as before
             return dict(status="transform", which=int(st[9]), index=best, tape=tape + [(a, done)], trace=_stack(traces + [tr]), history=history,
-                        end=(pos, vel, omega))
+                        end=(pos, vel, omega, scene))
         if status != OK:
             return dict(status="fail", reason=STATUS.get(status, "stopped"), index=best, tape=tape, trace=_stack(traces), history=history, end=None)
         carried = bool(st[8] > 0)
@@ -173,8 +175,15 @@ def follow(world, strict_world, start, P, max_ticks: int = 60000, ball: ph.Ball 
         if since > 528:
             return dict(status="fail", reason="got no further", index=best, tape=tape, trace=_stack(traces), history=history, end=None)
         if world.mesh is not strict_world.mesh and strict_world.mesh.distance(pos, BALL_R + 1.0)[0] - BALL_R > 0.1:
-            return dict(status="clear", index=best, tape=tape, trace=_stack(traces), history=history, end=(pos, vel, omega))
+            return dict(status="clear", index=best, tape=tape, trace=_stack(traces), history=history, end=(pos, vel, omega, scene))
     return dict(status="fail", reason="ran out of time", index=best, tape=tape, trace=_stack(traces), history=history, end=None)
+
+
+def _scene_of(world, state):
+    """The loose balls' state a state carries, as a copy to roll on; the world's own at rest when it carries none (or
+    one of another world: the diagnosis world has no loose balls)."""
+    sc = state[3] if len(state) > 3 else None
+    return world.scene() if sc is None or len(sc) != len(world.props) else np.array(sc, float)
 
 
 def _stack(traces):
@@ -215,15 +224,18 @@ def _robust(world, search, seed, tape, trials: int = 20, rng_seed: int = 1, scal
         pos = seed[0] + rng.normal(0, 0.03 * scale, 3) * np.array([1, 0, 1])
         vel = seed[1] + rng.normal(0, 0.3 * scale, 3)
         omega, good = seed[2], True
+        scene = _scene_of(world, seed)
         st = np.zeros(10)
         for k, part in enumerate(parts):
             if part["type"] == "transform":
-                pos, vel, omega = (np.array(x, float) for x in part["end"])
+                pos, vel, omega = (np.array(x, float) for x in part["end"][:3])
+                world.idle(scene, len(part["trace"]) - 1)
                 continue
             into = parts[k + 1]["which"] if k + 1 < len(parts) and parts[k + 1]["type"] == "transform" else -1
             went = False
             for a, n in part["tape"]:
-                status, _d, pos, vel, omega, st, _ = world.rollout(BALLS[part["ball"]], P, pos, vel, omega, fine.PUSHES[a:a + 1], [max(1, n + int(rng.integers(-2 * scale, 2 * scale + 1)))])
+                status, _d, pos, vel, omega, st, _ = world.rollout(BALLS[part["ball"]], P, pos, vel, omega, fine.PUSHES[a:a + 1],
+                                                                   [max(1, n + int(rng.integers(-2 * scale, 2 * scale + 1)))], scene=scene)
                 if status == TRIGGER and int(st[9]) == into:
                     went = True
                     break
@@ -234,7 +246,7 @@ def _robust(world, search, seed, tape, trials: int = 20, rng_seed: int = 1, scal
                 good = False
                 break
         if good and not search.arrived(pos, vel, st):
-            status, _d, pos, vel, omega, st, _ = world.rollout(ball, P, pos, vel, omega, np.zeros((1, 3)), [33])
+            status, _d, pos, vel, omega, st, _ = world.rollout(ball, P, pos, vel, omega, np.zeros((1, 3)), [33], scene=scene)
             good = status == OK and st[8] > 0 and search.distance(pos) <= search.reach + 2.0
         ok += bool(good)
     return ok
@@ -260,7 +272,9 @@ def solve_sector(mesh, info, g, sector: int, tries: int = 300_000, seed: int = 0
     togo = rel.togo(goal)
     reset = info["reset_points"][sector - 1]
     s0 = fine.rest_state(strict, reset[0], reset[2], reset[1] + 0.5)
-    state = (s0.pos, s0.vel, s0.omega) if start is None else tuple(np.array(x, float) for x in start)
+    state = (s0.pos, s0.vel, s0.omega) if start is None else tuple(np.array(x, float) for x in start[:3])
+    # this sector's loose balls: at rest where they lie, or as the start has them (a route going on within the sector)
+    state = state + (_scene_of(strict, start) if start is not None else strict.scene(),)
     entry = np.array(state[0], float)                             # where the ball enters the sector
     loose =[(p["type"], np.array(p["position"], float)) for p in info["placements"] if p["type"].startswith(coarse.LOOSE)]
     coarse_back = [[] for _ in range(len(g.pos))]
@@ -320,7 +334,7 @@ def solve_sector(mesh, info, g, sector: int, tries: int = 300_000, seed: int = 0
         if r["status"] == "transform":
             # the jump: nothing for `body_after` ticks, then the new ball at rest at the hover point; the tick after
             # that it only falls, and from the next one the keys act
-            new, tr1, end1, _s1, _st1 = trafo.stretch(worlds[mode_now], item)
+            new, tr1, end1, _s1, _st1 = trafo.stretch(worlds[mode_now], item, scene=_scene_of(worlds[mode_now], r["end"]))
             segs.append(dict(type="transform", mode=mode_now, ball=new.name, was=ball_now.name, at=item["name"], which=r["which"], start=r["end"], tape=[],
                              trace=tr1, end=end1))
             log("   transformed %s -> %s by %s, %.2f game s" % (ball_now.name, new.name, item["name"], len(tr1) / 132))
@@ -382,7 +396,7 @@ def solve_sector(mesh, info, g, sector: int, tries: int = 300_000, seed: int = 0
             state = segs[-1]["end"] if segs[-1]["end"] is not None else state
             if segs[-1]["end"] is None:                           # the stretch failed: go back to the last state it was fine in
                 h = r["history"][-1] if len(r["history"]) < 20 else r["history"][-17]
-                segs[-1]["tape"], segs[-1]["trace"], segs[-1]["end"] = segs[-1]["tape"][:h[0] // CHUNK], segs[-1]["trace"][:h[0]], (h[2], h[3], h[4])
+                segs[-1]["tape"], segs[-1]["trace"], segs[-1]["end"] = segs[-1]["tape"][:h[0] // CHUNK], segs[-1]["trace"][:h[0]], (h[2], h[3], h[4], h[5])
                 state = segs[-1]["end"]
             nodes, kinds = replan(state[0])
             continue
@@ -405,7 +419,7 @@ def solve_sector(mesh, info, g, sector: int, tries: int = 300_000, seed: int = 0
             s = fine.Search(worlds[mode], targets, ball=ball_now, seed=seed, places=g.pos, togo=togo, transforms=True)
             ids = {}
             for si, h in cand:
-                idx = s.add_start(ph.State(h[2], h[3], h[4]))
+                idx = s.add_start(ph.State(h[2], h[3], h[4]), scene=h[5] if mode == "strict" else None)
                 if idx >= 0:
                     ids[idx] = (si, h)
             if not ids:
@@ -445,13 +459,13 @@ def solve_sector(mesh, info, g, sector: int, tries: int = 300_000, seed: int = 0
             n_ticks = h[0]
             segs[si]["tape"] = segs[si]["tape"][:n_ticks // CHUNK]
             segs[si]["trace"] = segs[si]["trace"][:n_ticks]
-            segs[si]["end"] = (h[2], h[3], h[4])
+            segs[si]["end"] = (h[2], h[3], h[4], h[5])
             for part in c.parts:                                  # one stretch, or several with the transformations between them
                 segs.append(dict(part, mode=mode, no=b["no"]) if part["type"] == "cross" else dict(part, mode=mode))
                 if part["type"] == "transform":
                     log("   %s: the crossing goes through %s (%s -> %s)" % (b["no"], part["at"], part["was"], part["ball"]))
             through = [(ty, q) for ty, q in loose if np.linalg.norm(c.trace[:, :3] - q, axis=1).min() < 2.0 * BALL_R]
-            nudged = {k: _robust(worlds[mode], s, (h[2], h[3], h[4]), c.tape, scale=k, ball=ball_now, parts=c.parts) for k in NUDGES}
+            nudged = {k: _robust(worlds[mode], s, (h[2], h[3], h[4], h[5]), c.tape, scale=k, ball=ball_now, parts=c.parts) for k in NUDGES}
             if len(c.parts) > 1:
                 ball_now, older = BALLS[c.end_ball], []            # earlier states are another kind of ball: no search starts from them
             b.update(status="crossed", mode=mode, ticks=c.ticks, back=float(np.linalg.norm(h[2] - b["near"])), flights=_flights(c.trace),
@@ -467,14 +481,15 @@ def solve_sector(mesh, info, g, sector: int, tries: int = 300_000, seed: int = 0
             last = segs[-1]                                       # keep the stretch up to the last state it was fine in
             if r["history"]:
                 h = r["history"][-1] if len(r["history"]) < 20 else r["history"][-17]
-                last["tape"], last["trace"], last["end"] = last["tape"][:h[0] // CHUNK], last["trace"][:h[0]], (h[2], h[3], h[4])
+                last["tape"], last["trace"], last["end"] = last["tape"][:h[0] // CHUNK], last["trace"][:h[0]], (h[2], h[3], h[4], h[5])
             older = older + seeds
             far = g.pos[nodes[kt]]
             segs.append(dict(type="assumed", no=b["no"], to=far.copy()))
             s1 = fine.rest_state(strict, far[0], far[2], far[1] + 1.0)
-            state, mode_now, seeds = (s1.pos, s1.vel, s1.omega), BASE, []
+            state, mode_now, seeds = (s1.pos, s1.vel, s1.omega, strict.scene()), BASE, []
             nodes, kinds = nodes[kt:], kinds[kt:]
-    reached = bool(segs and segs[-1]["type"] == "follow" and segs[-1]["end"] is not None and np.linalg.norm(segs[-1]["end"][0] - g.pos[goal]) <= 2.5)
+    # at the goal: the last stretch ends there, whether the follower rolled it or a searched crossing arrived on it
+    reached = bool(segs and segs[-1]["type"] in ("follow", "cross") and segs[-1]["end"] is not None and np.linalg.norm(segs[-1]["end"][0] - g.pos[goal]) <= 2.5)
     unresolved = [breaks[k]["no"] for k in order if breaks[k]["status"] == "unresolved"]
     res = dict(sector=sector, tries=tries, segments=segs, breaks=[breaks[k] for k in order], first=first, reached=reached, unresolved=unresolved,
                solved=reached and not unresolved, ticks=int(sum(len(sg["trace"]) for sg in segs if sg["type"] != "assumed")),
@@ -500,7 +515,7 @@ def replays(worlds, res) -> bool:
         if sg["tape"]:
             pushes = np.array([fine.PUSHES[a] for a, _ in sg["tape"]])
             st, done, pos, vel, omega, s, _ = worlds[sg["mode"]].rollout(BALLS[sg.get("ball", "wood")], P, sg["start"][0], sg["start"][1], sg["start"][2], pushes,
-                                                                        [n for _, n in sg["tape"]])
+                                                                        [n for _, n in sg["tape"]], scene=_scene_of(worlds[sg["mode"]], sg["start"]))
             nxt = res["segments"][k + 1] if k + 1 < len(res["segments"]) else None
             ok = st == OK or (st == TRIGGER and nxt is not None and nxt["type"] == "transform")      # a stretch may end at a transformer
             if not ok or sg["end"] is None or np.abs(pos - sg["end"][0]).max() > 1e-9:

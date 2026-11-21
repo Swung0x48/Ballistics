@@ -107,7 +107,8 @@ LOOSE = ("P_Ball_",)       # loose balls: obstacles like everything placed, unle
 
 
 def without_loose(mesh: Mesh) -> Mesh:
-    """The mesh with the loose balls taken out: what the level is if a rolling ball knocks them aside (ASSUMED)."""
+    """The mesh with the loose balls' shapes taken out: they are bodies of their own (`ballistics.props`), or, in the
+    diagnosis mode, not there at all."""
     loose = np.array([bool(e.get("placed")) and str(e.get("type", "")).startswith(LOOSE) for e in mesh.entities], bool)
     return mesh.subset(~loose[mesh.owner]) if loose.any() else mesh
 

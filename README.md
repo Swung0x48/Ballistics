@@ -57,7 +57,7 @@ python -m ballistics calibrate --mesh data/Level_01-mesh.npz --run data/runs/<�
 
 ## 现状
 
-第一个验收目标是第 1 关：只靠球和静态网格，从出生点到飞船。**还没有达到**：第 1、2、4 小节能走通，第 3 小节有一处断点（一排道具球挡路，推道具球还没有建模）。详见 [docs/level-1.md](docs/level-1.md)。
+第一个验收目标是第 1 关：从出生点到飞船前的路面。**物理核里走通了**：四个小节都有一条不碰箱子和机关的路线（第 3 小节是撞开一排道具球过去的），共 159.8 游戏秒，没有优化。这些是手写物理核里的轨迹，还没有在游戏里跑过。详见 [docs/level-1.md](docs/level-1.md) 和 [docs/mechanisms.md](docs/mechanisms.md)。
 
 已有：
 

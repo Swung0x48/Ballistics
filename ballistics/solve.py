@@ -30,23 +30,31 @@ KIND_NAMES = {AIR: "air", RAIL: "on a rail", FLOOR: "on the floor"}
 def world_for(mesh: Mesh, info: dict, mode: str, sector: int | None = None) -> World:
     """sector: the sector the ball is solved in. Its fans push (`ballistics.fans`); without it no fan does, which is
     how the coarse level's launch edges are made (they are proposals)."""
-    from . import fans, trafo
+    from . import fans, props, trafo
     solid_balls = MODES[mode]
     mesh = coarse.in_sector(mesh, sector)             # the sector's domes are fixed geometry; other sectors' are not there
-    if not solid_balls:
-        mesh = coarse.without_loose(mesh)
+    mesh = coarse.without_loose(mesh)                 # the loose balls are bodies (strict) or not there (free): never fixed shapes
+    key = (id(info), sector)
+    if solid_balls and key not in _PROPS:             # letting them settle takes a moment: once per map and sector
+        _PROPS[key] = props.of(info, sector, mesh.subset(~mesh.placed) if mesh.placed.any() else mesh)
     # the transformers in place: the sector's own (`ballistics.trafo`); without a sector, every one of the map
-    return World.of(mesh, info["death_boxes"], fans=fans.of(info, sector), trafos=trafo.of(info, sector))
+    return World.of(mesh, info["death_boxes"], fans=fans.of(info, sector), trafos=trafo.of(info, sector),
+                    props=_PROPS[key] if solid_balls else None)
+
+
+_PROPS: dict = {}
 
 
 def graph_for(mesh: Mesh, info: dict, cache: Path | None = None, log=print):
-    """The coarse graph of the mesh as given: pass the full mesh to have the loose balls in it as obstacles, or
-    `coarse.without_loose(mesh)` to have them out."""
+    """The coarse graph of a map: the domes are geometry, the loose balls are not obstacles but cost to go through,
+    a stone transformer costs its transformation, a paper transformer is kept out of."""
     mesh = coarse.in_sector(mesh)                         # the domes are geometry for the coarse level too (in every sector: it has one graph)
+    mesh = coarse.without_loose(mesh)                     # the loose balls are bodies: no obstacles, but going through one costs (below)
     fixed = mesh.meta.get("fixed_bodies")
-    from . import trafo
+    from . import props, trafo
     from .launch import FOLLOW_SPEED
-    marks = dict(fixed_bodies=fixed, transformers="wood and stone ones can be gone through, at the cost of the transformation")
+    marks = dict(fixed_bodies=fixed, transformers="wood and stone ones can be gone through, at the cost of the transformation",
+                 loose_balls="bodies: gone through at a cost %s" % sorted(props.COARSE_COST.items()))
     if cache is not None and cache.exists():
         g = pickle.load(open(cache, "rb"))
         n = g.info.get("mesh_triangles")                  # graphs cached before this was recorded have none
@@ -68,6 +76,14 @@ def graph_for(mesh: Mesh, info: dict, cache: Path | None = None, log=print):
         inside = np.linalg.norm(g.pos - t["pos"], axis=1) < R.radius
         for u in np.flatnonzero(~inside):
             g.adj[u] = [(v, c + extra if inside[v] else c, k) for v, c, k in g.adj[u]]
+    # a loose ball can be knocked aside: the edges that lead into where it lies cost more, by its kind
+    for p in info.get("placements", ()):
+        kind = props.KINDS.get(p["type"])
+        if kind is None:
+            continue
+        inside = np.linalg.norm(g.pos - np.array(p["position"], float), axis=1) < 2.0 * props.RADIUS
+        for u in np.flatnonzero(~inside):
+            g.adj[u] = [(v, c + props.COARSE_COST[kind] if inside[v] else c, k) for v, c, k in g.adj[u]]
     g.info["mesh_triangles"] = len(mesh.A)
     g.info.update(marks)
     if cache is not None:

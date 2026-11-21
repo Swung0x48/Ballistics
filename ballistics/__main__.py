@@ -182,7 +182,7 @@ def main(argv=None):
             if carry is None and sec > 1 and before.exists():     # one sector asked for: go on from the result of the one before
                 carry = pickle.load(open(before, "rb")).get("end_state")
                 ball = pickle.load(open(before, "rb")).get("end_ball", "wood")
-            res = staged.solve_sector(mesh, info, g, sec, a.tries, start=carry, ball=ball)
+            res = staged.solve_sector(mesh, info, g, sec, a.tries, start=None if carry is None else carry[:3], ball=ball)      # the next sector has its own loose balls
             carry = res["end_state"]                              # None when the sector was not got through: the next one starts at rest
             ball = res["end_ball"]                                # a ball that is lost comes back as the kind it was
             results[sec] = res
