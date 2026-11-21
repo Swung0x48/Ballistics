@@ -114,3 +114,32 @@ def test_fans_and_markers_are_not_obstacles():
     kept = without_bodiless(m)
     assert sorted(set(kept.owner.tolist())) == [0, 3]
     assert without_bodiless(kept) is kept
+
+
+def test_a_push_is_chosen_by_its_direction_not_its_length():
+    # a diagonal push is longer than a straight one: towards a place nearly due east it must not win
+    from ballistics import fine
+    from ballistics.solve import push_towards
+    assert tuple(fine.PUSHES[push_towards([20.0, 0.0, -0.3])]) == (1.0, 0.0, 0.0)
+    assert tuple(fine.PUSHES[push_towards([-1.0, -1e-9, -1e-9])]) == (-1.0, 0.0, 0.0)
+    assert tuple(fine.PUSHES[push_towards([1.0, 0.0, 1.0])]) == (1.0, 0.0, 1.0)
+
+
+def test_a_ride_holds_each_leg_until_its_point_from_any_state():
+    # a paper ball in a fan's column, moving: pushed east until it is past x 6, then let go; with arrive_at it stops
+    # as soon as it is there
+    from ballistics.solve import push_towards, ride
+    m = floor(-4000.0)
+    w = World.of(m, fans=fans.of(INFO, 2))
+    start = (np.array([0.0, 8.0, 0.0]), np.array([0.0, 2.0, 0.3]), np.zeros(3))
+    tape, tr, st, end, _stats = ride(w, ph.PAPER, start, [(push_towards([1.0, 0.0, 0.0]), 300, np.array([6.0, 0.0, 0.0]), 2.0), (0, 40, None)])
+    assert st == OK and tape[0][0] == push_towards([1.0, 0.0, 0.0]) and abs(tr[tape[0][1] - 1, 0] - 6.0) < 2.5
+    assert sum(k for _a, k in tape) == len(tr) and np.allclose(end[0], tr[-1, :3])
+    # the same keys from the same state give the same end (it is a tape that replays)
+    st2, d2, p2, _v, _o, _s, _t = w.rollout(ph.PAPER, ph.Params(), *start, fine_pushes(tape), [k for _a, k in tape], trace=True)
+    assert np.allclose(p2, end[0])
+
+
+def fine_pushes(tape):
+    from ballistics import fine
+    return np.array([fine.PUSHES[a] for a, _k in tape])

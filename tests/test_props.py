@@ -442,3 +442,70 @@ def test_a_push_board_is_crossed_where_it_is_pushed():
     d = board_edges(g, info, props.part_boxes(info, None))["B/P_Modul_25_Bridge"]
     assert sorted(u for u, _v, _c, _k in d["edges"]) == [1, 2] and {v for _u, v, _c, _k in d["edges"]} <= {3, 4}       # from in front of it, across, one way
     assert all(k == "roll" for *_x, k in d["edges"]) and d["fall"][2] > 0.9
+
+
+# ---- the seesaw (P_Modul_30): made-up shapes of about its size, in the placement's frame (x along the board). Put at
+# 10 degrees with its low end at -x; the stoppers' tops at 0, the roads beyond them at 0.5
+def seesaw_mesh():
+    (A1, B1, C1), (A2, B2, C2) = road(-40.0, -8.0, 0.5), road(8.0, 40.0, 0.5)
+    # (road() runs along z: turn it to run along x)
+    A, B, C = [np.vstack([X1, X2])[:, [2, 1, 0]] for X1, X2 in ((A1, A2), (B1, B2), (C1, C2))]
+    return Mesh(A, B, C, np.zeros(4, np.int64), np.zeros(4, bool), np.zeros((0, 7)), [dict(name="floor", groups=[], friction=0.7, elasticity=0.3)], {})
+
+
+def seesaw_info():
+    board = [[7.3, 3.78, 2.5], [7.3, 3.78, -2.5], [7.21, 4.26, -2.5], [7.21, 4.26, 2.5],
+             [-7.28, 1.21, -2.5], [-7.28, 1.21, 2.5], [-7.36, 1.69, 2.5], [-7.36, 1.69, -2.5]]
+    axle = [[0.36, 2.63, -4.75], [0.36, 2.63, 4.95], [0.06, 2.21, -4.75], [0.06, 2.21, 4.95],
+            [-0.06, 2.92, -4.75], [-0.06, 2.92, 4.95], [-0.36, 2.5, -4.75], [-0.36, 2.5, 4.95]]
+    frame = [[0.985, 0.174, 0.0, 0.0], [-0.174, 0.985, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [-0.35, 4.553, 0.147, 1.0]]
+    hulls = [dict(placement="W", type="P_Modul_30", sector=1, body="P_Modul_30_Wippe", mesh="W_%d" % i, vertices=V, faces=[], frame=frame)
+             for i, V in enumerate((board, axle))]
+    stops = [dict(name="S/%d" % i, sector=None, vertices=hexa((x0, -0.5, -2.5), (x1, 0.0, 2.5))[0], faces=[]) for i, (x0, x1) in enumerate(((6.4, 7.4), (-7.4, -6.4)))]
+    return dict(placements=[dict(name="W", type="P_Modul_30", sector=1, position=[0.0, 0.0, 0.0], x_axis=[1.0, 0.0, 0.0], y_axis=[0.0, 1.0, 0.0],
+                                 z_axis=[0.0, 0.0, 1.0])], hulls=hulls, stoppers=stops, death_boxes=[])
+
+
+def seesaw_run(ball, v0, ticks=500):
+    """A ball on the road beyond the low end (x -11), at v0 towards the board with that key held: (the board's angle
+    after each tick in degrees, the ball's x after each tick)."""
+    w = world_for(seesaw_mesh(), seesaw_info(), "strict", 1)
+    k0 = next(k for k, p in enumerate(w.props) if p.get("hinge") and p["leader"] == k)
+    scene = w.scene()
+    pos, vel, om = np.array([-11.0, 2.51, 0.0]), np.array([v0, 0.0, 0.0]), np.array([0.0, 0.0, -v0 / 2.0])
+    ang, xs = [], []
+    for _ in range(ticks):
+        st, _d, pos, vel, om, _s, _t = w.rollout(ball, ph.Params(), pos, vel, om, np.array([[1.0, 0.0, 0.0]]), [1], scene=scene)
+        if st != OK:
+            break
+        ang.append(np.degrees(kernel._hinge_angle(w.prop_consts, k0, *scene[k0, :3])))
+        xs.append(pos[0])
+    return np.array(ang), np.array(xs), w, k0
+
+
+def test_the_seesaw():
+    w = world_for(seesaw_mesh(), seesaw_info(), "strict", 1)
+    k0 = next(k for k, p in enumerate(w.props) if p.get("hinge") and p["leader"] == k)
+    hg = w.props[k0]["hinge"]
+    rel = np.array(hg["mass_centre"]) - np.array(hg["anchor"])
+    assert abs(np.linalg.norm(rel[:2]) - 6.02) < 0.05 and abs(hg["inertia"] - 160.0) < 1.0      # the script's mass centre, the measured inertia
+    # woken, it falls to its low end and lies on the stopper there (MEASURED: 19.5 degrees from level, in about 0.5 game s)
+    lean = np.degrees(kernel._hinge_angle(w.prop_consts, k0, *w.scene()[k0, :3]))
+    assert 9.0 < lean < 10.3 and w.props[k0]["settled"]                    # 10 put, 9.5 more
+    # a stone ball fast enough tips it over and goes across with it (MEASURED: from 4.95 every time; here from 5.3)
+    ang, xs, _w, _k = seesaw_run(ph.STONE, 7.4)
+    assert ang.min() < -25.0 and xs.max() > 9.0
+    # a wood ball runs up it and flies off its high end; it does not tip it (MEASURED)
+    ang, xs, _w, _k = seesaw_run(ph.WOOD, 8.0, ticks=250)
+    assert xs.max() > 9.0 and ang.min() > 0.0
+
+
+def test_a_seesaw_is_crossed_from_its_low_end():
+    from ballistics import coarse
+    from ballistics.solve import seesaw_edges
+    info = seesaw_info()
+    pos = [[x, 2.5, 0.0] for x in (-11.0, -9.0, 9.0, 11.0)]
+    g = coarse.Graph(np.array(pos), np.zeros(4, int), np.full(4, -1), [[] for _ in pos], [])
+    d = seesaw_edges(g, info, props.part_boxes(info, None))["W/P_Modul_30_Wippe"]
+    assert sorted(u for u, _v, _c, _k in d["edges"]) == [0, 1] and {v for _u, v, _c, _k in d["edges"]} <= {2, 3}
+    assert d["low"][0] < -0.9                                            # its low end is at -x

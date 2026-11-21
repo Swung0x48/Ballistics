@@ -134,7 +134,7 @@ def gate_edges(g, info: dict, parts: list) -> dict:
             g.adj[u] = keep
         spot = face - (BALL_R + 0.3) * axis
         op = g.nearest(spot, 3.0)
-        out[place] = dict(sector=p.get("sector"), edges=edges, axis=axis, face=face, operate=int(op))
+        out[place] = dict(sector=p.get("sector"), edges=edges, axis=axis, face=face, operate=int(op), pieces=closed)
     return out
 
 
@@ -161,21 +161,38 @@ def board_edges(g, info: dict, parts: list) -> dict:
         floor = g.kind == 0
         near = np.flatnonzero(floor & (along > -4.0) & (along < -1.5) & (np.abs(across) <= 2.0) & (up > 0.5) & (up < 4.0))
         far = np.flatnonzero(floor & (along > 10.0) & (along < 14.0) & (np.abs(across) <= 2.0) & (np.abs(up - 2.2) < 2.5))
-        edges = []
+        edges, back = [], []
         for u in near:
             if not len(far):
                 break
             v = int(far[np.argmin(np.abs(across[far] - across[u]) + 0.1 * np.abs(along[far] - 11.0))])
             c = float(np.linalg.norm(g.pos[v] - g.pos[u])) + BOARD_COST
-            g.adj[u] = list(g.adj[u]) + [(v, c, "roll")]
             edges.append((int(u), v, c, "roll"))
-        out[b["body"]] = dict(sector=b.get("sector"), edges=edges, fall=fall)
+            back.append((v, int(u), c, "roll"))
+        # kept apart from the graph's own edges: whether they are there depends on the board's state (`coarse.StateGraph`)
+        pieces = [(np.array(q["placed"], float), np.array(q["half"], float), np.array(q["axes"], float), q.get("tris"))
+                  for q in parts if q["body"] == b["body"]]
+        out[b["body"]] = dict(sector=b.get("sector"), edges=edges, back=back, fall=fall, pieces=pieces)
     return out
 
 
 LIFT_WAITS = (0, 40, 80, 130)     # ticks a paper ball rises in the fan's column before it is pushed towards the way out
 LIFT_ENTRIES, LIFT_EXITS = 3, 40  # places tried per fan: where it is entered from, where it is left to
 LIFT_UNSURE = 1.5                 # the cost of a lift that only works with one of the two fan bounds is this many times its time
+LIFT_CHAIN = 25.0                 # a lift may go on into another fan's column this near (two fans in a row: level 2 sector 3's way up to the stone transformer)
+LIFT_CHAIN_WAITS = (0, 60, 120)   # ticks it rises in the second column before it is pushed on
+LIFT_CHAIN_BRAKES = (0, 16, 32)   # ticks it is pushed back once near the second column (or it flies past it)
+LIFT_CHAIN_EXITS = 20
+
+
+def push_towards(d) -> int:
+    """The push (`fine.PUSHES`) whose direction is nearest d's horizontal direction: by direction only, a diagonal
+    push is longer than a straight one but not nearer."""
+    d = np.asarray(d, float)
+    d = d[[0, 2]] if len(d) == 3 else d
+    d = d / max(np.linalg.norm(d), 1e-9)
+    h = fine.PUSHES[:, [0, 2]]
+    return int(np.argmax(h @ d / np.maximum(np.linalg.norm(h, axis=1), 1e-9)))
 
 
 def _lift_world(world, edge: str):
@@ -186,19 +203,26 @@ def _lift_world(world, edge: str):
     return w2
 
 
-def _lift_try(world, start, legs, reach: float = 1.0):
-    """A paper ball from rest at `start`: each leg (push, ticks, until) is held for up to `ticks` ticks, in chunks of 8,
-    until the ball's centre is horizontally within `reach` of its `until` point (None: the whole time). Returns
-    (tape [(push, ticks)], trace, whether it was not lost)."""
+def ride(world, ball, state, legs, reach: float = 1.0, scene=None, arrive_at=None):
+    """From state (pos, vel, omega): each leg (push, ticks, until[, reach]) is held for up to `ticks` ticks, in chunks
+    of 8, until the ball's centre is horizontally within reach of its `until` point (None: the whole time). With
+    arrive_at it stops after the chunk in which the ball is carried within 2.5 of that point. scene: the loose
+    bodies' state, changed in place. Returns (tape [(push, ticks)], trace, status, (pos, vel, omega), stats)."""
     from .kernel import OK
-    pos, vel, om = np.array(start, float), np.zeros(3), np.zeros(3)
-    tape, traces = [], []
-    for a, ticks, until in legs:
+    pos, vel, om = (np.array(x, float) for x in state[:3])
+    tape, traces, stats = [], [], np.zeros(10)
+
+    def out(st):
+        return tape, (np.concatenate(traces) if traces else np.zeros((0, 9))), st, (pos, vel, om), stats
+
+    for leg in legs:
+        a, ticks, until = leg[:3]
+        near = leg[3] if len(leg) > 3 else reach
         done = 0
         while done < ticks:
-            if until is not None and math.hypot(pos[0] - until[0], pos[2] - until[2]) < reach:
+            if until is not None and math.hypot(pos[0] - until[0], pos[2] - until[2]) < near:
                 break
-            st, d, pos, vel, om, s, tr = world.rollout(ph.PAPER, ph.Params(), pos, vel, om, fine.PUSHES[a:a + 1], [8], trace=True)
+            st, d, pos, vel, om, stats, tr = world.rollout(ball, ph.Params(), pos, vel, om, fine.PUSHES[a:a + 1], [8], trace=True, scene=scene)
             traces.append(tr)
             if tape and tape[-1][0] == a:
                 tape[-1] = (a, tape[-1][1] + d)
@@ -206,12 +230,20 @@ def _lift_try(world, start, legs, reach: float = 1.0):
                 tape.append((a, d))
             done += d
             if st != OK:
-                return tape, np.concatenate(traces), False
-    return tape, (np.concatenate(traces) if traces else np.zeros((0, 9))), True
+                return out(st)
+            if arrive_at is not None and len(tr) and ((np.linalg.norm(tr[:, :3] - arrive_at, axis=1) <= 2.5) & (tr[:, 7] > 0)).any():
+                return out(OK)
+    return out(OK)
+
+
+def _lift_try(world, start, legs, reach: float = 1.0):
+    """A paper ball from rest at `start` along the legs (`ride`). Returns (tape, trace, status)."""
+    tape, tr, st, _end, _stats = ride(world, ph.PAPER, (start, np.zeros(3), np.zeros(3)), legs, reach)
+    return tape, tr, st
 
 
 def fan_lifts(g, mesh: Mesh, info: dict, log=print) -> dict:
-    """The fans' lift edges, for a paper ball only (`coarse.Layered`): from a place near a fan's axis up to a place
+    """The fans' lift edges, for a paper ball only (`coarse.StateGraph`): from a place near a fan's axis up to a place
     beside or above it, found by rolling the paper ball in the kernel with that sector's fans: it rolls to the axis,
     rises in the column for a while (LIFT_WAITS), then is pushed towards the way out and let go there. An edge is
     kept where that ends on the place, carried. It is tried again with the fans' two bounds for a ball at a box's
@@ -225,10 +257,57 @@ def fan_lifts(g, mesh: Mesh, info: dict, log=print) -> dict:
     sectors = sorted({p["sector"] for p in info["placements"] if p["type"] == fans.TYPE and p.get("sector")})
     pushes = fine.PUSHES
 
-    def towards(d):
-        d = np.asarray(d, float)
-        d = d / max(np.linalg.norm(d), 1e-9)
-        return int(np.argmax(pushes[:, [0, 2]] @ d))
+    towards = push_towards
+
+    def keep(u, v, start, best, bounds, s):
+        ok = {}
+        for e, wb in bounds.items():
+            st, d, p2, _v, _o, _s2, tr2 = wb.rollout(ph.PAPER, ph.Params(), start, np.zeros(3), np.zeros(3),
+                                                    np.array([pushes[a] for a, _k in best["tape"]]), [k for _a, k in best["tape"]], trace=True)
+            ok[e] = bool(len(tr2) and np.linalg.norm(tr2[-1, :3] - P[v]) <= (5.0 if st == TRIGGER else 2.5))
+        both = ok["least"] and ok["most"]
+        way, last = [], None
+        for q in best["trace"][:, :3]:
+            if last is None or np.linalg.norm(q - last) >= 1.0:
+                way.append(q)
+                last = q
+        way.append(P[v])
+        cost = best["ticks"] / 66.0 * FOLLOW_SPEED * (1.0 if both else LIFT_UNSURE)
+        key = (int(u), int(v))
+        if key not in out or cost < out[key]["cost"]:
+            out[key] = dict(sector=s, tape=best["tape"], ticks=best["ticks"], way=np.array(way, np.float32), both=both, bounds=ok, cost=cost,
+                            chain=best.get("chain", False), fan=np.array(best["fan"], float), legs=best["legs"], ends_in=best.get("ends_in"))
+
+    from .kernel import TRIGGER
+
+    def arrive(tape, tr, v, status=None):
+        near = np.flatnonzero((np.linalg.norm(tr[:, :3] - P[v], axis=1) <= 2.5) & (tr[:, 7] > 0))
+        ends_in = None
+        if not len(near) and status == TRIGGER and np.linalg.norm(tr[-1, :3] - P[v]) <= 5.0:
+            near = np.array([len(tr) - 1])                 # it went into a transformer's range there (in the air, maybe): that is arriving
+            ends_in = min(w.trafos, key=lambda t: float(np.linalg.norm(np.asarray(t["pos"], float) - tr[-1, :3])))["kind"]
+        if not len(near):
+            return None
+        ticks = int(near[0]) + 1
+        cut, n = [], 0
+        for a, k in tape:                                  # the tape up to the arrival
+            if n >= ticks:
+                break
+            cut.append((a, min(k, ticks - n)))
+            n += k
+        return dict(tape=cut, ticks=ticks, trace=tr[:ticks], ends_in=ends_in)
+
+    from . import trafo as _trafo
+
+    def with_trafos(pick, cand, s):
+        """The exits picked, and always the places beside a transformer of the sector among the candidates (a lift is
+        often the way to one)."""
+        T = [t["pos"] for t in _trafo.of(info, s)]
+        if not T or not len(cand):
+            return pick
+        d = np.min([np.linalg.norm(P[cand] - np.asarray(t, float), axis=1) for t in T], axis=0)
+        near = cand[np.argsort(d)][:6]
+        return list(pick) + [int(v) for v in near if d[list(cand).index(v)] < 6.0 and int(v) not in pick]
 
     for s in sectors:
         w = world_for(mesh, info, "free", s)
@@ -251,6 +330,7 @@ def fan_lifts(g, mesh: Mesh, info: dict, log=print) -> dict:
                     break
                 pick.append(int(ex[k]))
                 dmin = np.minimum(dmin, np.linalg.norm(P[ex] - P[ex[k]], axis=1))
+            pick = with_trafos(pick, ex, s)
             for u in ent:
                 start = P[u] + np.array([0.0, 0.014, 0.0])
                 for v in pick:
@@ -261,69 +341,213 @@ def fan_lifts(g, mesh: Mesh, info: dict, log=print) -> dict:
                         legs = []
                         if hd[u] > 1.0:
                             legs.append((towards(o[[0, 2]] - P[u, [0, 2]]), 90, o))
-                        legs.append((0, wait, None))
-                        legs.append((towards(P[v, [0, 2]] - o[[0, 2]]), 300, P[v]))
-                        legs.append((0, 120, None))
-                        tape, tr, alive = _lift_try(w, start, legs)
-                        if not len(tr):
-                            continue
-                        near = np.flatnonzero((np.linalg.norm(tr[:, :3] - P[v], axis=1) <= 2.5) & (tr[:, 7] > 0))
-                        if not len(near):
-                            continue
-                        ticks = int(near[0]) + 1
-                        if best is None or ticks < best["ticks"]:
-                            cut, n = [], 0
-                            for a, k in tape:                  # the tape up to the arrival
-                                if n >= ticks:
-                                    break
-                                cut.append((a, min(k, ticks - n)))
-                                n += k
-                            best = dict(tape=cut, ticks=ticks, trace=tr[:ticks])
-                    if best is None:
+                        climb = [(0, wait, None), (towards(P[v, [0, 2]] - o[[0, 2]]), 300, P[v]), (0, 120, None)]
+                        tape, tr, alive = _lift_try(w, start, legs + climb)
+                        got = arrive(tape, tr, v, alive) if len(tr) else None
+                        if got is not None and (best is None or got["ticks"] < best["ticks"]):
+                            best = dict(got, legs=climb, fan=o)
+                    if best is not None:
+                        keep(u, v, start, best, bounds, s)
+                # two fans in a row: up this one, across into the next one's column, up that, then on to a place
+                for f2 in w.fans:
+                    o2 = f2[:3]
+                    if np.allclose(o2, o) or math.hypot(o2[0] - o[0], o2[2] - o[2]) > LIFT_CHAIN:
                         continue
-                    ok = {}
-                    for e, wb in bounds.items():
-                        st, d, p2, _v, _o, _s2, tr2 = wb.rollout(ph.PAPER, ph.Params(), start, np.zeros(3), np.zeros(3),
-                                                                np.array([pushes[a] for a, _k in best["tape"]]), [k for _a, k in best["tape"]], trace=True)
-                        ok[e] = bool(len(tr2) and np.linalg.norm(tr2[-1, :3] - P[v]) <= 2.5)
-                    both = ok["least"] and ok["most"]
-                    way, last = [], None
-                    for q in best["trace"][:, :3]:
-                        if last is None or np.linalg.norm(q - last) >= 1.0:
-                            way.append(q)
-                            last = q
-                    way.append(P[v])
-                    cost = best["ticks"] / 66.0 * FOLLOW_SPEED * (1.0 if both else LIFT_UNSURE)
-                    key = (int(u), int(v))
-                    if key not in out or cost < out[key]["cost"]:
-                        out[key] = dict(sector=s, tape=best["tape"], ticks=best["ticks"], way=np.array(way, np.float32), both=both, bounds=ok, cost=cost)
-    log("fan lifts: %d edges for a paper ball (%d of them with both fan bounds)" % (len(out), sum(e["both"] for e in out.values())))
+                    hd2 = np.hypot(P[:, 0] - o2[0], P[:, 2] - o2[2])
+                    ex2 = np.flatnonzero(floor & (hd2 >= 4.0) & (hd2 <= 32.0) & (P[:, 1] >= o2[1] - 1.5) & (P[:, 1] <= o2[1] + 25.0))
+                    if not len(ex2):
+                        continue
+                    pick2 = [int(ex2[0])]
+                    dmin2 = np.linalg.norm(P[ex2] - P[pick2[0]], axis=1)
+                    while len(pick2) < min(LIFT_CHAIN_EXITS, len(ex2)):
+                        k = int(dmin2.argmax())
+                        if dmin2[k] < 1.5:
+                            break
+                        pick2.append(int(ex2[k]))
+                        dmin2 = np.minimum(dmin2, np.linalg.norm(P[ex2] - P[ex2[k]], axis=1))
+                    pick2 = with_trafos(pick2, ex2, s)
+                    for v in pick2:
+                        if P[v, 1] - P[u, 1] < 1.0 and math.hypot(P[v, 0] - P[u, 0], P[v, 2] - P[u, 2]) < 8.0:
+                            continue
+                        best = None
+                        for wait in LIFT_WAITS:
+                            for wait2, brake in [(a_, b_) for a_ in LIFT_CHAIN_WAITS for b_ in LIFT_CHAIN_BRAKES]:
+                                legs = []
+                                if hd[u] > 1.0:
+                                    legs.append((towards(o[[0, 2]] - P[u, [0, 2]]), 90, o))
+                                climb = [(0, wait, None), (towards(o2[[0, 2]] - o[[0, 2]]), 300, o2, 6.0), (towards(o[[0, 2]] - o2[[0, 2]]), brake, None),
+                                         (0, wait2, None), (towards(P[v, [0, 2]] - o2[[0, 2]]), 300, P[v]), (0, 120, None)]
+                                tape, tr, alive = _lift_try(w, start, legs + climb)
+                                got = arrive(tape, tr, v, alive) if len(tr) else None
+                                if got is not None and (best is None or got["ticks"] < best["ticks"]):
+                                    best = dict(got, chain=True, legs=climb, fan=o)
+                        if best is not None:
+                            keep(u, v, start, best, bounds, s)
+    log("fan lifts: %d edges for a paper ball (%d of them with both fan bounds, %d through two fans)" % (len(out), sum(e["both"] for e in out.values()),
+                                                                                                  sum(e.get("chain", False) for e in out.values())))
     return out
 
 
-def layered_for(g, info: dict):
-    """The relaxed coarse graph in two layers by the ball's kind (`coarse.Layered`), made once per graph."""
-    lay = getattr(g, "_layered", None)
-    if lay is not None:
-        return lay
+def _link_rules(rel, g, region, tk, trafos, radius: float, mechs: list) -> dict:
+    """What the relaxed graph's links (gap, bridge: a break the fine search tries) mean for the states. A link is
+    taken as the straight way between its two places (ASSUMED: it says nothing of how it is crossed):
+    * one that enters a transformer's range on the way arrives as that kind, as an edge into the range does;
+    * one that runs into a closed gate or a standing push board (their pieces as put) is not there while it is so.
+    {(global u, global v): (kind index or -1, mask of mechanism bits that must be set)}."""
+    out = {}
+    T = [(np.asarray(t["pos"], float), coarse.KIND_INDEX[t["kind"]]) for t in trafos]
+    block = []
+    for m, mc in enumerate(mechs):
+        if mc["type"] in ("gate", "board") and mc.get("pieces"):
+            cen = np.mean([c for c, _h, _a, _t in mc["pieces"]], axis=0)
+            size = max(float(np.linalg.norm(c - cen) + np.linalg.norm(h)) for c, h, _a, _t in mc["pieces"])
+            block.append((m, mc["pieces"], cen, size))
+    P = g.pos
+    for gu in np.flatnonzero(region):
+        a = P[gu]
+        for v, _c, k in rel.fwd[gu]:
+            if k not in ("gap", "bridge") or not region[v]:
+                continue
+            b = P[v]
+            ab = b - a
+            L2 = max(float(ab @ ab), 1e-12)
+            ek, best = -1, -1.0
+            if tk[v] < 0:
+                for c, kind in T:
+                    t = min(max(float((c - a) @ ab) / L2, 0.0), 1.0)
+                    if np.linalg.norm(a + t * ab - c) < radius and t > best:
+                        ek, best = kind, t
+            mask = 0
+            for m, pieces, cen, size in block:
+                t = min(max(float((cen - a) @ ab) / L2, 0.0), 1.0)
+                if np.linalg.norm(a + t * ab - cen) > size + BALL_R:
+                    continue
+                n = int(np.sqrt(L2) / 0.5) + 1
+                pts = a + ab * (np.arange(n + 1)[:, None] / n)
+                if _hits(pts, pieces, 0.1):
+                    mask |= 1 << m
+            if ek >= 0 or mask:
+                out[(int(gu), int(v))] = (ek, mask)
+    return out
+
+
+GATE_FULL = 4.5           # a gate counts as open once it has slid this far (the edges it clears are made for 4.95)
+BOARD_DOWN = 60.0         # a push board counts as down once it has turned this far over (degrees)
+
+
+def state_graph_for(g, info: dict, sector: int, world, operate_cost: float):
+    """The coarse level of a sector over the ball's kind and its mechanisms' states (`coarse.StateGraph`), and how to
+    read those states from the kernel's scene: (graph, reader(kind name, scene) -> state index). Only the places
+    of the sector's region take part: its reset point, its goal and what is placed in it, 60 wider."""
     from . import trafo
+    from .kernel import _hinge_angle
     from .launch import FOLLOW_SPEED
     rel = getattr(g, "_relaxed", None)
     if rel is None:
         rel = g._relaxed = coarse.Relaxed(g)
+    anchors = [info["start"]] + info["checkpoints"] + [info["airship"]]
+    pts = [np.array(info["reset_points"][sector - 1], float)] + ([np.array(anchors[sector], float)] if anchors[sector] is not None else [])
+    pts += [np.array(p["position"], float) for p in info["placements"] if p.get("sector") == sector]
+    P = np.array(pts)
+    region = np.all((g.pos >= P.min(0) - 60.0) & (g.pos <= P.max(0) + 60.0), axis=1)
     R = trafo.rules()
     cost = (R.body_after + 1) / 66.0 * FOLLOW_SPEED
-    into_paper, into_other = {}, {}
-    for t in trafo.of(info):
-        for v in np.flatnonzero(np.linalg.norm(g.pos - t["pos"], axis=1) < R.radius):
-            if t["kind"] == "paper":
-                into_paper[int(v)] = cost
-            else:
-                into_other[int(v)] = cost if t["kind"] == "wood" else 0.0     # (a stone one's cost is on the edge already)
-    lifts = [(u, v, e["cost"]) for (u, v), e in g.info.get("lifts", {}).items()]
-    drop = [(u, v) for d in g.info.get("boards", {}).values() for u, v, *_x in d["edges"]]
-    lay = g._layered = coarse.Layered(rel, g, into_paper, into_other, lifts, drop)
-    return lay
+    tk = np.full(len(g.pos), -1, np.int64)
+    for t in trafo.of(info, sector):
+        tk[np.linalg.norm(g.pos - t["pos"], axis=1) < R.radius] = coarse.KIND_INDEX[t["kind"]]
+
+    # a lift that ends in a transformer's range on the way (its run stopped there) ends as that kind, whatever place it is kept for
+    lifts = [(u, v, e["cost"], coarse.KIND_INDEX[e["ends_in"]] if e.get("ends_in") else -1)
+             for (u, v), e in g.info.get("lifts", {}).items() if e.get("sector") == sector]
+    # a run-up rolled as another kind (it starts in a transformer's range) is that kind's only where the range is this
+    # sector's: elsewhere the ball there is not that kind
+    skip = [(w, v) for (w, v), e in g.info.get("launches", {}).items() if e.get("ball", "wood") != "wood" and tk[w] != coarse.KIND_INDEX[e["ball"]]]
+    mechs, readers = [], []
+    props = world.props
+    for name, d in sorted(g.info.get("gates", {}).items()):
+        if d["sector"] != sector or not d["edges"]:
+            continue
+        edges = [(coarse.GATE_THROUGH, u, v, c, 0, k) for u, v, c, k in d["edges"]]
+        if d["operate"] >= 0:
+            edges.append((coarse.GATE_OPERATE, d["operate"], d["operate"], 0.0, 0, "operate"))
+        k = next((i for i, p in enumerate(props) if p["name"].startswith(name + "/P_Modul_01_Pusher") and p.get("leader") == i), None)
+        if k is None:
+            continue
+        axis, rest = np.array(d["axis"], float), np.array(props[k]["rest"], float)
+        mechs.append(dict(name=name, type="gate", edges=edges, axis=axis, operate=d["operate"], pieces=d.get("pieces")))
+        readers.append(lambda sc, k=k, axis=axis, rest=rest: int((sc[k, :3] - rest) @ axis >= GATE_FULL))
+    for name, d in sorted(g.info.get("boards", {}).items()):
+        if d["sector"] != sector or not d["edges"]:
+            continue
+        edges = [(coarse.BOARD_PUSH, u, v, c, 0, k) for u, v, c, k in d["edges"]]
+        edges += [(coarse.BOARD_OVER, u, v, c, 0, k) for u, v, c, k in d["edges"] + d["back"]]
+        k = next((i for i, p in enumerate(props) if p["name"].startswith(name + "/") and p.get("hinge") and p.get("leader") == i), None)
+        if k is None:
+            continue
+        mechs.append(dict(name=name, type="board", edges=edges, pieces=d.get("pieces")))
+        readers.append(lambda sc, k=k: int(np.degrees(_hinge_angle(world.prop_consts, k, sc[k, 0], sc[k, 1], sc[k, 2])) >= BOARD_DOWN))
+    for name, d in sorted(g.info.get("seesaws", {}).items()):
+        if d["sector"] != sector or not (d["edges"] or d["other"]):
+            continue
+        edges = [(coarse.SEESAW, u, v, c, 0, k) for u, v, c, k in d["edges"]] + [(coarse.SEESAW, u, v, c, 1, k) for u, v, c, k in d["other"]]
+        k = next((i for i, p in enumerate(props) if p["name"].startswith(name + "/") and p.get("hinge") and p.get("leader") == i), None)
+        if k is None:
+            continue
+        mechs.append(dict(name=name, type="seesaw", edges=edges))
+        # put at 10 degrees, it falls to its first low end (about +9.6 from where it was put); tipped over, -29.6
+        readers.append(lambda sc, k=k: int(np.degrees(_hinge_angle(world.prop_consts, k, sc[k, 0], sc[k, 1], sc[k, 2])) < -10.0))
+    sg = coarse.StateGraph(rel, g, region, tk, cost, lifts, mechs, operate_cost,
+                           links=_link_rules(rel, g, region, tk, trafo.of(info, sector), R.radius, mechs), skip=skip)
+    M = len(mechs)
+
+    def state_of(kind: str, scene) -> int:
+        bits = 0
+        if scene is not None and len(scene) == len(props):
+            for m, rd in enumerate(readers):
+                bits |= rd(scene) << m
+        return (coarse.KIND_INDEX[kind] << M) | bits
+
+    return sg, state_of
+
+
+SEESAW_COST = 5.0         # going over a seesaw, on top of the way: ASSUMED, only to rank ways
+
+
+def seesaw_edges(g, info: dict, parts: list) -> dict:
+    """The seesaws (P_Modul_30) on the coarse level. Woken, a seesaw falls to the end its mass centre leans to; a
+    ball from that low end goes up it and on: a wood or paper one flies off the high end onto the far side, a stone
+    one tips it over and goes down with it (MEASURED on the rebuilt engine). From the high end every ball falls into
+    the gap. So the places on the road beyond its low end (7.5 to 12 from the axle, within 2 of its middle) get an
+    edge across to the places beyond its high end (8.5 to 16), one way. Once a stone ball has tipped it over it is the
+    other way round: the coarse level does not keep that. Per seesaw: dict(sector, edges, low (the way to its low end, level))."""
+    out = {}
+    for b in parts:
+        if not b.get("hinge") or not b["kind"].startswith("P_Modul_30") or b["body"] in out:
+            continue
+        hg = b["hinge"]
+        a, o, com = np.array(hg["axis"], float), np.array(hg["anchor"], float), np.array(hg["mass_centre"], float)
+        along = np.cross(a, [0.0, 1.0, 0.0])
+        along /= np.linalg.norm(along)
+        if (com - o) @ along < 0:
+            along = -along                                 # along: towards the low end
+        side = np.cross([0.0, 1.0, 0.0], along)
+        rel = g.pos - o
+        x, y, z = rel @ along, rel[:, 1], rel @ side
+        floor = g.kind == 0
+        def across(sign):
+            """From the road beyond the end at `sign` (1: the end low as it falls first) to beyond the other end."""
+            near = np.flatnonzero(floor & (sign * x > 7.5) & (sign * x < 12.0) & (np.abs(z) <= 2.0) & (y > -3.0) & (y < 2.0))
+            far = np.flatnonzero(floor & (sign * x < -8.5) & (sign * x > -16.0) & (np.abs(z) <= 2.5) & (y > -3.0) & (y < 6.0))
+            out_ = []
+            for u in near:
+                if not len(far):
+                    break
+                v = int(far[np.argmin(np.abs(z[far] - z[u]) + 0.1 * np.abs(sign * x[far] + 11.0))])
+                out_.append((int(u), v, float(np.linalg.norm(g.pos[v] - g.pos[u])) + SEESAW_COST, "roll"))
+            return out_
+        # kept apart from the graph's own edges: which are there depends on which end is low (`coarse.StateGraph`)
+        out[b["body"]] = dict(sector=b.get("sector"), edges=across(1.0), other=across(-1.0), low=along)
+    return out
 
 
 def graph_for(mesh: Mesh, info: dict, cache: Path | None = None, log=print):
@@ -339,7 +563,10 @@ def graph_for(mesh: Mesh, info: dict, cache: Path | None = None, log=print):
                  loose_balls="bodies: gone through at a cost %s; parts of %s" % (sorted(props.COARSE_COST.items()), sorted(props.PARTS)),
                  gate_rule="a closed gate blocks the edges into it, the target plate only past the face it is pushed on; the edges it clears when pushed open %.2f are kept per gate" % GATE_OPEN,
                  board_rule="a push board is crossed where it is pushed: road places in front of it lead across to the far side, cost %.1f more" % BOARD_COST,
-                 lift_rule="fan lifts for a paper ball (exits 4 to 32 out, -1.5 to 25 up): waits %s, %d entries and %d exits per fan, unsure x%.1f" % (LIFT_WAITS, LIFT_ENTRIES, LIFT_EXITS, LIFT_UNSURE))
+                 seesaw_rule="a seesaw is crossed from its low end to beyond its high end, cost %.1f more; kept apart, by state" % SEESAW_COST,
+                 state_rule="board, seesaw and gate edges and the transformations' costs are in the state graph, not the graph's own edges",
+                 launch_rule="a run-up inside a transformer's range is that kind's",
+                 lift_rule="fan lifts for a paper ball, ridden by their legs, with the kind they end in (exits 4 to 32 out, -1.5 to 25 up, always those by a transformer; two fans in a row within %.0f, braking %s): waits %s, %d entries and %d exits per fan, unsure x%.1f" % (LIFT_CHAIN, LIFT_CHAIN_BRAKES, LIFT_WAITS, LIFT_ENTRIES, LIFT_EXITS, LIFT_UNSURE))
     if cache is not None and cache.exists():
         g = pickle.load(open(cache, "rb"))
         n = g.info.get("mesh_triangles")                  # graphs cached before this was recorded have none
@@ -349,18 +576,14 @@ def graph_for(mesh: Mesh, info: dict, cache: Path | None = None, log=print):
     from .launch import add_launches
     g = coarse.build(mesh, avoid=coarse.keep_out(info["placements"]), log=log)
     coarse.add_steps(g, mesh, log=log)
-    add_launches(g, world_for(mesh, info, "strict"), log=log)
-    # a stone transformer can be gone through: the edges that lead into its range cost the transformation's time
-    # more, as way at the follower's pace (the coarse level does not know the ball's kind: it starts as wood, so a
-    # wood transformer costs nothing)
     R = trafo.rules()
-    extra = (R.body_after + 1) / 66.0 * FOLLOW_SPEED
+    by_kind = dict(wood=ph.WOOD, stone=ph.STONE, paper=ph.PAPER)
+    ball_at = {}
     for t in trafo.of(info):
-        if t["kind"] != "stone":
-            continue
-        inside = np.linalg.norm(g.pos - t["pos"], axis=1) < R.radius
-        for u in np.flatnonzero(~inside):
-            g.adj[u] = [(v, c + extra if inside[v] else c, k) for v, c, k in g.adj[u]]
+        for k in np.flatnonzero(np.linalg.norm(g.pos - t["pos"], axis=1) < R.radius):
+            ball_at[int(k)] = by_kind[t["kind"]]
+    add_launches(g, world_for(mesh, info, "strict"), log=log, ball_at=ball_at)
+    # (a transformer is gone through at the cost of the transformation: by the ball's kind, in `coarse.StateGraph`)
     # a loose ball can be knocked aside: the edges that lead into where it lies cost more, by its kind
     for p in info.get("placements", ()):
         kind = props.KINDS.get(p["type"])
@@ -377,6 +600,9 @@ def graph_for(mesh: Mesh, info: dict, cache: Path | None = None, log=print):
             g.adj[u] = [(v, c + props.COARSE_COST[b["kind"]] if inside[v] else c, k) for v, c, k in g.adj[u]]
     g.info["gates"] = gate_edges(g, info, parts)
     g.info["boards"] = board_edges(g, info, parts)
+    g.info["seesaws"] = seesaw_edges(g, info, parts)
+    for name, d in g.info["seesaws"].items():
+        log("seesaw %s (sector %s): %d edges across it" % (name, d["sector"], len(d["edges"])))
     g.info["lifts"] = fan_lifts(g, mesh, info, log=log)
     for name, d in g.info["boards"].items():
         log("push board %s (sector %s): %d edges across it" % (name, d["sector"], len(d["edges"])))

@@ -110,6 +110,24 @@
     "src": "record",
     "engine": "rebuilt",
     "note_zh": "诞生记录里读到的三个分量（不求主轴、不加平行轴项）；按模板凸包均匀密度复算对不上，所以用记录的。原版没有核对。绕铰链轴（木板本地 z）的惯量 = 25.922 + 3 × 2.498² = 44.65。"
+   },
+   "hinge": {
+    "v": {
+     "anchor": [
+      -0.669,
+      -0.234,
+      0.0
+     ],
+     "axis": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "frame": "template"
+    },
+    "basis": "READ",
+    "src": "template",
+    "note_zh": "铰链框架 P_Modul_25_HingeFrame 的原点，在模板（摆放）的坐标系里；motion.anchor 是同一个点。"
    }
   }
  ],

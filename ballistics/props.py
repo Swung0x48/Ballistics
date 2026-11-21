@@ -51,12 +51,16 @@ COARSE_COST = {"paper": 2.0, "wood": 5.0, "stone": 30.0, "box": 15.0, "P_Modul_3
 #     the mass centre the script gives it (in its own frame) and the measured inertia about that.
 #   P_Modul_25, the push board: a board on a hinge at the end of a road. Woken, it leans back onto the road (its
 #     wedge); pushed over its top from the road it falls forward across the gap onto a stopper and is a bridge.
+#   P_Modul_30, the seesaw: a board on a hinge with its mass centre above the axle, in the group Floor (it goes
+#     through the floors; the stoppers under its two ends hold it). Woken, it falls to one end; a ball that gets past
+#     the axle may tip it over to the other.
 #   P_Modul_01, the sliding gate: the gate (target plate, bar and fence, one body of three hulls) lies in a groove
 #   (a floor plate and two walls) that only it touches; pushed along the groove it slides out of the upper road. The
 #   filler plate under it is road (`coarse.FIXED_PARTS`). READ: the groups, the hulls; the rest is contacts.
 PARTS = {"P_Modul_34": {"P_Modul_34_Kiste": dict(slider=False), "P_Modul_34_Schiebestein": dict(slider=True)},
          "P_Modul_01": {"P_Modul_01_Pusher": dict(hulls=True, role=1), "P_Modul_01_Rinne": dict(hulls=True, role=2)},
-         "P_Modul_25": {"P_Modul_25_Bridge": dict(hulls=True, role=0, hinge=True)}}
+         "P_Modul_25": {"P_Modul_25_Bridge": dict(hulls=True, role=0, hinge=True)},
+         "P_Modul_30": {"P_Modul_30_Wippe": dict(hulls=True, role=1, hinge=True)}}
 STOPPER = "Phys_FloorStopper"       # the catalogue's body for the stoppers (in collision_rules)
 
 
@@ -95,6 +99,11 @@ def _piece(kind, name, body, p, axes, V, spec, mech, hull=False):
             tris = [[float(v) for v in np.concatenate([H[f[0]] - centre, H[f[1]] - centre, H[f[2]] - centre])] for f in F]
         if spec.get("hinge") or spec.get("role") == 4:
             verts = [[float(v) for v in h - centre] for h in H]
+            if spec.get("hinge") and len(H) <= 8:
+                # a hinged piece touches by its corners; where its edge lies on the edge of what holds it (a seesaw's end
+                # as wide as its stopper) a corner falls on the side, so each corner also has a point a little inside it
+                Hc = H.mean(0)
+                verts += [[float(v) for v in (h + 0.03 * (Hc - h)) - centre] for h in H]
     return dict(kind=kind, name=name, body=body, sector=p.get("sector"), placed=[float(v) for v in centre], half=tuple(float(v) for v in (hi - lo) / 2),
                 axes=axes.tolist(), slider=bool(spec.get("slider", False)), role=int(spec.get("role", 0)), mech=mech, tris=tris, verts=verts)
 
@@ -103,9 +112,12 @@ def _hinge(cat_body, p, hulls, mass):
     """A hinged body's hinge in world, from the catalogue (axis and point in the template's frame, the script's mass
     centre in the body's own frame, the inertia about that along the body's axes) and the body's frame in the map."""
     PA = np.array([np.array(p[k], float) / np.linalg.norm(p[k]) for k in ("x_axis", "y_axis", "z_axis")])
-    axis = np.array(cat_body["motion"]["axis"], float) @ PA
+    h = cat_body["hinge"]["v"]                         # (the catalogue's motion.anchor is in the template's frame for one entry, the body's for another)
+    if h.get("frame") != "template":
+        raise ValueError("%s: the hinge is given in the frame %r, not the template's" % (cat_body["name"], h.get("frame")))
+    axis = np.array(h["axis"], float) @ PA
     axis /= np.linalg.norm(axis)
-    anchor = np.array(cat_body["motion"]["anchor"], float) @ PA + np.array(p["position"], float)
+    anchor = np.array(h["anchor"], float) @ PA + np.array(p["position"], float)
     F = np.array(hulls[0]["frame"], float)
     R, T = F[:3, :3], F[3, :3]
     com = np.array(cat_body["mass_center"]["v"], float) @ R + T

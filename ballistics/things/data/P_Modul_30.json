@@ -84,6 +84,47 @@
     "v": "frozen",
     "basis": "READ",
     "src": "dump"
+   },
+   "mass_center": {
+    "v": [
+     0.0,
+     4.0,
+     0.0
+    ],
+    "unit": "木板本地坐标，从物体原点量起",
+    "basis": "READ",
+    "src": "dump",
+    "note_zh": "脚本的 Shift Mass Center（dump 打印时 y、z 对调，改正后是 (0, 4, 0)）；刚体的核心放在这一点。"
+   },
+   "inertia": {
+    "v": [
+     7.3905,
+     51.6972,
+     51.1663
+    ],
+    "unit": "质量 × 长度²，绕质心、沿木板本地 x、y、z 轴",
+    "basis": "MEASURED",
+    "src": "record",
+    "engine": "rebuilt",
+    "note_zh": "诞生记录里读到的三个分量（不求主轴、不加平行轴项）；原版没有核对。绕铰链轴 = 51.1663 + 3 × 6.0245² = 160.0。"
+   },
+   "hinge": {
+    "v": {
+     "anchor": [
+      0.0,
+      2.562,
+      0.0
+     ],
+     "axis": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "frame": "template"
+    },
+    "basis": "READ",
+    "src": "template",
+    "note_zh": "铰链框架 P_Modul_30_HingeFrame 在模板 (0, 2.562, 0)，轴沿模板 z；换到木板本地是 (0, −2.024, −0.15)，即 motion.anchor。"
    }
   }
  ],

@@ -485,9 +485,11 @@ def _pair_ok(bc, a, b):
     if la >= 0.0 and la == bc[b, 25]:
         return False
     ra, rb = bc[a, 26], bc[b, 26]
-    if ra == 4.0 or rb == 4.0:                            # a stopper: stops mechanisms and props, not the player ball
-        o = b if ra == 4.0 else a                         # (nor what is in the group Floor with it: the gate)
-        return o != 0 and bc[o, 26] == 0.0
+    if ra == 4.0 or rb == 4.0:                            # a stopper (group Ball): stops mechanisms and props, not the player ball (same group)
+        o = b if ra == 4.0 else a
+        return o != 0 and bc[o, 26] != 2.0 and bc[o, 26] != 4.0
+    if ra == 1.0 and rb == 1.0:
+        return False                                      # two parts in the group Floor: the same group does not collide (READ)
     if ra == 2.0 or rb == 2.0:
         return ra + rb == 3.0 and bc[a, 27] == bc[b, 27]
     return True
@@ -859,8 +861,8 @@ def _multi_tick(pos, vel, omega, push, ball, par, fans, fanpar, props, scene, ma
                         ub0, ub1, ub2 = _pvel(b, px, py, pz, bp, bv, bw, bc, props)
                     vn = (ua0 - ub0) * n0 + (ua1 - ub1) * n1 + (ua2 - ub2) * n2
                     kn = _kdir(a, px, py, pz, n0, n1, n2, bp, bc, props) + (_kdir(b, px, py, pz, n0, n1, n2, bp, bc, props) if b >= 0 else 0.0)
-                    if kn < 1e-12:
-                        continue
+                    if kn < 1e-6:
+                        continue                          # neither side can give along this normal (a hinge against its axis, on a fixed thing): an impulse there only makes its friction lock the hinge
                     j = (m_target[i] - vn) / kn
                     new = max(0.0, m_nimp[i] + j)
                     j = new - m_nimp[i]
@@ -980,8 +982,10 @@ def _multi_tick(pos, vel, omega, push, ball, par, fans, fanpar, props, scene, ma
                 ps = props[int(bc[s, 6])]
                 for kc in range(int(ps[38]) if ps[38] > 0.0 else 8):
                     qx, qy, qz = _vert(bc[s], ps, kc)
-                    m = _contacts(qx, qy, qz, HULL_CORNER, 0.2, ox, oz, cell, nx, nz, start, items, A, B, C, lo_y, hi_y, N, stamp, tickbox,
-                                  ci, cd, cq, cf, cn, cg, order)
+                    m = 0
+                    if bc[s, 26] == 0.0:                  # (one in the group Floor goes through the level's floors)
+                        m = _contacts(qx, qy, qz, HULL_CORNER, 0.2, ox, oz, cell, nx, nz, start, items, A, B, C, lo_y, hi_y, N, stamp, tickbox,
+                                      ci, cd, cq, cf, cn, cg, order)
                     for i in range(m):
                         k = order[i]
                         if cg[k] < margin - 1e-6:

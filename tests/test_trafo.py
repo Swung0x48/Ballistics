@@ -165,8 +165,22 @@ def test_the_coarse_level_goes_through_a_stone_transformer_at_a_cost():
     inside = np.linalg.norm(g.pos - np.array([30.0, 0.5, 4.0]), axis=1) < 4.3
     assert inside.any()                                                    # there are places in its range
     extra = (trafo.rules().body_after + 1) / 66.0 * FOLLOW_SPEED
-    into = [c - float(np.linalg.norm(g.pos[v] - g.pos[u])) for u in np.flatnonzero(~inside) for v, c, k in g.adj[u] if inside[v] and k == "roll"]
-    out = [c - float(np.linalg.norm(g.pos[v] - g.pos[u])) for u in np.flatnonzero(inside) for v, c, k in g.adj[u] if not inside[v] and k == "roll"]
-    assert into and min(into) > extra - 1.0 and out and max(out) < 1.0       # going in costs the transformation, going out does not
+    # the coarse level's state graph: a wood ball going into its range becomes a stone one, at the transformation's cost
+    from ballistics import coarse
+    sg, _state_of = solve.state_graph_for(g, info, 1, solve.world_for(m, info, "strict", 1), 0.0)
+    wood, stone = coarse.WOOD << sg.M, coarse.STONE << sg.M
+    into, out = [], []
+    for u in np.flatnonzero(~inside):
+        if sg.loc[u] < 0:
+            continue
+        for s2, v, c, k in sg.step(wood, int(sg.loc[u])):
+            if inside[sg.glob[v]] and k == "roll":
+                into.append((s2, c - float(np.linalg.norm(g.pos[sg.glob[v]] - g.pos[u]))))
+    for u in np.flatnonzero(inside):
+        for s2, v, c, k in sg.step(stone, int(sg.loc[u])):
+            if not inside[sg.glob[v]] and k == "roll":
+                out.append((s2, c - float(np.linalg.norm(g.pos[sg.glob[v]] - g.pos[u]))))
+    assert into and all(s2 == stone for s2, _c in into) and min(c for _s, c in into) > extra - 1.0
+    assert out and all(s2 == stone for s2, _c in out) and max(c for _s, c in out) < 1.0       # going out costs nothing and it stays stone
     res = staged.solve_sector(m, info, g, 1, tries=20_000, log=lambda *a: None)
     assert res["solved"] and [(t["at"], t["to"]) for t in res["transforms"]] == [("S", "stone")] and res["end_ball"] == "stone"

@@ -69,31 +69,30 @@ def test_a_placed_object_blocks_and_a_trigger_is_kept_out_of():
     assert blocked.route(blocked.nearest((2, 2, 2.5)), blocked.nearest((28, 2, 2.5)))[0] is None
     free = coarse.build(mesh([(road, False)]))
     assert free.route(free.nearest((2, 2, 2.5)), free.nearest((28, 2, 2.5)))[0] is not None
-    # no transformer is kept out of: the way leads through it (`solve.layered_for` makes it cost the transformation,
-    # and a paper one takes the plan into the paper ball's layer)
+    # no transformer is kept out of: the way leads through it (`coarse.StateGraph` makes it cost the transformation,
+    # and the ball that kind after it)
     for kind in ("P_Trafo_Stone", "P_Trafo_Paper"):
         assert coarse.keep_out([dict(type=kind, position=[15.0, 0.0, 2.5])]) == []
 
 
-def test_the_coarse_level_in_two_layers_by_the_balls_kind():
-    """Through a paper transformer the plan goes on in the paper ball's layer; a lift is there only; a push board's
-    edge is not."""
+def test_the_coarse_level_goes_on_as_the_kind_a_transformer_makes():
+    """Through a paper transformer the plan goes on as a paper ball; a lift is there for a paper ball only."""
     road = quad(0, 40, 0, 5, 0.0)
     g = coarse.build(mesh([(road, False)]))
     rel = coarse.Relaxed(g)
     N = len(g.pos)
     a, b, t = g.nearest((2, 2, 2.5)), g.nearest((38, 2, 2.5)), g.nearest((20, 2, 2.5))
-    into_paper = {int(v): 7.0 for v in np.flatnonzero(np.linalg.norm(g.pos - g.pos[t], axis=1) < 4.3)}
-    lay = coarse.Layered(rel, g, into_paper, {}, lifts=[(b, a, 1.0)], drop=[])
-    togo = lay.togo(a)
-    nodes, kinds = lay.plan(b, togo)                              # from b back to a, as a wood ball: through the transformer
-    assert nodes[-1] in (a, N + a) and any(n >= N for n in nodes) and nodes[0] < N
-    first_paper = next(i for i, n in enumerate(nodes) if n >= N)
-    assert all(i >= first_paper for i, k in enumerate(kinds) if k == "lift")   # a lift only once it is a paper ball
-    nodes, kinds = lay.plan(N + b, togo)                          # as a paper ball: the lift goes straight there
-    assert kinds == ["lift"] and nodes[-1] == N + a
-    lay2 = coarse.Layered(rel, g, {}, {}, drop=[(u, v) for u in range(N) for v, _c, _k in g.adj[u]])
-    assert lay2.togo(a)[N + b] == np.inf or lay2.togo(a)[N + b] > togo[b]       # without its edges the paper layer has only the links
+    tk = np.full(N, -1)
+    tk[np.linalg.norm(g.pos - g.pos[t], axis=1) < 4.3] = coarse.PAPER
+    sg = coarse.StateGraph(rel, g, np.ones(N, bool), tk, 7.0, [(b, a, 1.0)], [], 0.0)
+    togo = sg.togo(a)
+    nodes, kinds, states = sg.plan(coarse.WOOD, b, togo)          # from b to a, as a wood ball: through the transformer
+    assert nodes[-1] == a and states[0] == coarse.WOOD and states[-1] == coarse.PAPER
+    first_paper = states.index(coarse.PAPER)
+    assert all(i + 1 > first_paper for i, k in enumerate(kinds) if k == "lift")   # a lift only once it is a paper ball
+    nodes, kinds, states = sg.plan(coarse.PAPER, b, togo)        # as a paper ball: the lift goes straight there
+    assert kinds == ["lift"] and nodes[-1] == a
+    assert togo[coarse.PAPER, b] == 1.0 and togo[coarse.WOOD, b] > 7.0
 
 
 def test_the_coarse_plan_alone_lists_its_links_and_draws_with_its_keys_outside_the_map(tmp_path):
@@ -151,3 +150,128 @@ def test_a_low_step_is_proposed_upwards_only_and_a_high_one_is_not():
     g = coarse.build(m)
     coarse.add_steps(g, m)
     assert g.route(g.nearest((3, 2, 4)), g.nearest((17, coarse.STEP_UP + 2.4, 4)))[0] is None
+
+
+class _Rel:
+    """A relaxed graph of nothing but these edges."""
+    def __init__(self, n, edges):
+        self.fwd = [[] for _ in range(n)]
+        for u, v, c in edges:
+            self.fwd[u].append((v, c, "roll"))
+            self.fwd[v].append((u, c, "roll"))
+
+
+def _line(n):
+    return coarse.Graph(np.array([[float(i), 0.0, 0.0] for i in range(n)]), np.zeros(n, int), np.full(n, -1), [[] for _ in range(n)], [])
+
+
+def test_the_coarse_level_keeps_a_push_board_down():
+    """0 is a wood transformer's range, 2 is in front of a push board, 3 beyond it, 4 the goal. A paper ball at 1
+    has to become a wood ball to push it over; once it lies, a paper ball goes across."""
+    g = _line(5)
+    rel = _Rel(5, [(0, 1, 1.0), (1, 2, 1.0), (3, 4, 1.0)])
+    tk = np.array([coarse.WOOD, -1, -1, -1, -1])
+    board = dict(name="B", type="board", edges=[(coarse.BOARD_PUSH, 2, 3, 2.0, 0, "roll"), (coarse.BOARD_OVER, 2, 3, 2.0, 0, "roll"), (coarse.BOARD_OVER, 3, 2, 2.0, 0, "roll")])
+    sg = coarse.StateGraph(rel, g, np.ones(5, bool), tk, 10.0, [], [board], 0.0)
+    togo = sg.togo(4)
+    paper_up, paper_down = coarse.PAPER * 2 + 0, coarse.PAPER * 2 + 1
+    nodes, kinds, states = sg.plan(paper_up, 1, togo)
+    assert nodes == [1, 0, 1, 2, 3, 4]                           # back to become wood, then over
+    assert states[-1] >> 1 == coarse.WOOD and states[-1] & 1 == 1 # it lies now
+    assert togo[paper_down, 2] == 2.0 + 1.0                       # lying, a paper ball goes straight across
+    tk2 = np.full(5, -1)
+    sg2 = coarse.StateGraph(rel, g, np.ones(5, bool), tk2, 10.0, [], [board], 0.0)
+    assert not np.isfinite(sg2.togo(4)[paper_up, 1])             # no way to become a ball that can push it
+
+
+def test_the_coarse_level_turns_a_seesaw_over():
+    """A seesaw between 1 and 2, low at 1. Any ball goes up from 1 to 2; a stone ball tips it, and then it is low
+    at 2: from there back to 1."""
+    g = _line(4)
+    rel = _Rel(4, [(0, 1, 1.0), (2, 3, 1.0)])
+    seesaw = dict(name="W", type="seesaw", edges=[(coarse.SEESAW, 1, 2, 3.0, 0, "roll"), (coarse.SEESAW, 2, 1, 3.0, 1, "roll")])
+    sg = coarse.StateGraph(rel, g, np.ones(4, bool), np.full(4, -1), 10.0, [], [seesaw], 0.0)
+    to3, to0 = sg.togo(3), sg.togo(0)
+    wood_low1, stone_low1 = coarse.WOOD * 2 + 0, coarse.STONE * 2 + 0
+    assert np.isfinite(to3[wood_low1, 0]) and np.isfinite(to3[stone_low1, 0])
+    nodes, kinds, states = sg.plan(stone_low1, 0, to3)
+    assert nodes == [0, 1, 2, 3] and states[-1] & 1 == 1          # tipped: low at 2 now
+    assert np.isfinite(to0[coarse.STONE * 2 + 1, 3])               # and back the other way
+    assert not np.isfinite(to0[wood_low1, 3])                      # not while it is low at 1
+
+
+def test_a_link_through_a_transformer_or_a_standing_board_counts():
+    """0 - 1 - 2 by road, 2 - 3 a link (a break) that passes through a paper transformer's range on the way and runs
+    into a push board while it stands; 3 is the goal. A wood ball across the link arrives as a paper ball, and only
+    once the board is down."""
+    g = _line(4)
+    rel = _Rel(4, [(0, 1, 1.0), (1, 2, 1.0)])
+    rel.fwd[2].append((3, 50.0, "bridge"))
+    tk = np.full(4, -1)
+    board = dict(name="B", type="board", edges=[(coarse.BOARD_PUSH, 0, 1, 1.0, 0, "roll")])
+    links = {(2, 3): (coarse.PAPER, 1)}
+    sg = coarse.StateGraph(rel, g, np.ones(4, bool), tk, 10.0, [], [board], 0.0, links=links)
+    togo = sg.togo(3)
+    up, down = coarse.WOOD * 2, coarse.WOOD * 2 + 1
+    assert togo[down, 2] == 50.0 + 10.0                           # down: across, and a paper ball on the far side
+    assert togo[coarse.PAPER * 2 + 1, 2] == 50.0                  # (a paper ball already: no transformation)
+    assert togo[up, 2] == 2.0 + 2.0 + 50.0 + 10.0                 # standing: back to push it down first
+    nodes, kinds, states = sg.plan(up, 0, togo)
+    assert nodes == [0, 1, 2, 3] and states[-1] == coarse.PAPER * 2 + 1
+    assert togo[up, 0] == 1.0 + 1.0 + 50.0 + 10.0                 # the plan's cost is what togo says
+    rel2 = _Rel(4, [(0, 1, 1.0), (1, 2, 1.0)])
+    rel2.fwd[2].append((3, 50.0, "bridge"))
+    sg2 = coarse.StateGraph(rel2, g, np.ones(4, bool), tk, 10.0, [], [], 0.0, links={(2, 3): (-1, 1)})
+    assert not np.isfinite(sg2.togo(3)[0, 2])                     # a board that cannot be pushed down: no way
+
+
+def test_a_lift_that_lands_in_a_transformers_range_lands_as_its_kind():
+    """A paper ball's lift from 0 up to 1, inside a stone transformer's range; the goal 2 is on by road. The lift lands
+    a stone ball, at the transformation's cost."""
+    g = _line(3)
+    rel = _Rel(3, [(1, 2, 1.0)])
+    tk = np.array([-1, coarse.STONE, -1])
+    sg = coarse.StateGraph(rel, g, np.ones(3, bool), tk, 10.0, [(0, 1, 5.0)], [], 0.0)
+    togo = sg.togo(2)
+    assert togo[coarse.PAPER, 0] == 5.0 + 10.0 + 1.0
+    nodes, kinds, states = sg.plan(coarse.PAPER, 0, togo)
+    assert nodes == [0, 1, 2] and kinds[0] == "lift" and states[1] == coarse.STONE
+
+
+def test_a_ball_of_another_kind_inside_a_range_pays_the_transformation_both_ways():
+    """1 and 2 are inside a stone transformer's range; a wood ball at 1 (put there by a mechanism, say) is
+    transformed: forward and backward agree that going on costs the transformation."""
+    g = _line(3)
+    rel = _Rel(3, [(0, 1, 1.0), (1, 2, 1.0)])
+    tk = np.array([-1, coarse.STONE, coarse.STONE])
+    sg = coarse.StateGraph(rel, g, np.ones(3, bool), tk, 10.0, [], [], 0.0)
+    togo = sg.togo(2)
+    assert togo[coarse.WOOD, 1] == 1.0 + 10.0 and togo[coarse.STONE, 1] == 1.0
+    nodes, kinds, states = sg.plan(coarse.WOOD, 1, togo)
+    assert nodes == [1, 2] and states == [coarse.WOOD, coarse.STONE]
+    assert min(e[2] for e in sg.step(coarse.WOOD, 1) if e[1] == 2) == 11.0
+
+
+def test_dropping_an_edge_takes_only_that_kind_and_a_mechanisms_too():
+    g = _line(3)
+    rel = _Rel(3, [(1, 2, 10.0)])
+    rel.fwd[0] += [(1, 1.0, "step"), (1, 2.0, "launch")]
+    gate = dict(name="G", type="gate", edges=[(coarse.GATE_THROUGH, 0, 2, 1.0, 0, "step")])
+    sg = coarse.StateGraph(rel, g, np.ones(3, bool), np.full(3, -1), 10.0, [], [gate], 0.0)
+    open_ = coarse.WOOD * 2 + 1
+    assert sg.togo(2)[open_, 0] == 1.0
+    sg.drop(0, 1, "step")
+    sg.drop(0, 2, "step")
+    togo = sg.togo(2)
+    assert togo[open_, 0] == 2.0 + 10.0                          # the launch is still there; the gate's step edge is not
+    assert min(e[2] + togo[e[0], e[1]] for e in sg.step(open_, 0)) == togo[open_, 0]
+
+
+def test_a_lift_that_ends_in_a_range_on_the_way_ends_as_its_kind():
+    g = _line(3)
+    rel = _Rel(3, [(1, 2, 1.0)])
+    sg = coarse.StateGraph(rel, g, np.ones(3, bool), np.full(3, -1), 10.0, [(0, 1, 5.0, coarse.STONE)], [], 0.0)
+    togo = sg.togo(2)
+    assert togo[coarse.PAPER, 0] == 5.0 + 10.0 + 1.0
+    nodes, kinds, states = sg.plan(coarse.PAPER, 0, togo)
+    assert nodes == [0, 1, 2] and states[1] == coarse.STONE

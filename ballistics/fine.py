@@ -98,7 +98,11 @@ class Search:
         self.reach = reach
         self.G = None
         self._guide = {}                         # by the ball's kind ("paper", or "other"): (places, how far each is, grid)
-        if places is not None:
+        self._by_state = None                    # or by the coarse state (`solve.state_graph_for`): (places, (S, N) togo, state_of)
+        if places is not None and isinstance(togo, dict) and "by_state" in togo:
+            self._by_state = (np.ascontiguousarray(places, np.float64), togo["by_state"], togo["state_of"])
+            self.G, self.togo, self._ggrid = self._guide_of_state(0)
+        elif places is not None:
             for k, t in (togo.items() if isinstance(togo, dict) else (("other", togo),)):
                 ok = np.isfinite(t)
                 G, T = np.ascontiguousarray(places, np.float64)[ok], np.asarray(t, np.float64)[ok]
@@ -132,11 +136,28 @@ class Search:
                 return d                           # nothing outside the cells looked at can be nearer
         return float(np.sqrt(((self.T - p) ** 2).sum(1)).min())
 
-    def score(self, p, kind: str | None = None) -> float:
-        """What the search steers by: lower is nearer the goal (by the coarse level's layer of the ball's kind)."""
+    def _guide_of_state(self, st: int):
+        got = self._guide.get(("state", st))
+        if got is None:
+            places, T, _fn = self._by_state
+            t = T[st]
+            ok = np.isfinite(t)
+            G, TT = places[ok], t[ok]
+            grid: dict = {}
+            for i, p in enumerate(G):
+                grid.setdefault((int(p[0] // 6), int(p[2] // 6)), []).append(i)
+            got = self._guide[("state", st)] = (G, TT, grid)
+        return got
+
+    def score(self, p, kind: str | None = None, scene=None) -> float:
+        """What the search steers by: lower is nearer the goal (by the coarse level's state the ball is in: its kind,
+        and with a state graph also the mechanisms' states its scene has)."""
         if self.G is None:
             return self.distance(p)
-        G, T, grid = self._guide.get("paper" if kind == "paper" else "other") or (self.G, self.togo, self._ggrid)
+        if self._by_state is not None:
+            G, T, grid = self._guide_of_state(self._by_state[2](kind or self.ball.name, scene))
+        else:
+            G, T, grid = self._guide.get("paper" if kind == "paper" else "other") or (self.G, self.togo, self._ggrid)
         if not len(G):
             return self.distance(p)
         i, j = int(p[0] // 6), int(p[2] // 6)
@@ -172,10 +193,10 @@ class Search:
             a.append(v)
         if k is None:
             self.cell[key] = len(self.slot)
-            for a, v in ((self.slot, i), (self.h, self.score(pos, kind)), (self.visits, 0), (self.ground, bool(stats[5] > 0))):
+            for a, v in ((self.slot, i), (self.h, self.score(pos, kind, scene)), (self.visits, 0), (self.ground, bool(stats[5] > 0))):
                 a.append(v)
         else:
-            self.slot[k], self.h[k] = i, self.score(pos, kind)
+            self.slot[k], self.h[k] = i, self.score(pos, kind, scene)
         return i
 
     def add_start(self, s: ph.State, grounded: bool = True, scene=None) -> int:

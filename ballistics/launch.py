@@ -7,6 +7,9 @@ one arrow-key push is held towards the ledge, the ball rolls off, flies (with th
 lands. The edge goes from the place where it started to the place where it landed, and carries the keys, the
 take-off speed and the landing speed. Nothing placed on the map may be touched on the way.
 
+The run-ups are a wood ball's, except where the run-up starts inside a transformer's range: a ball there is that
+transformer's kind (and a wood ball would stop on the range at once), so it runs as that kind.
+
 What these edges do not cover yet: a ball that arrives already moving (every run-up here starts from rest), leaving a
 rail sideways before its end, and steering in the air other than holding or releasing the one key.
 """
@@ -39,7 +42,9 @@ def _push_towards(dx: float, dz: float) -> int:
     return at
 
 
-def add_launches(g: Graph, world: World, ball: ph.Ball = ph.WOOD, log=lambda *a: None) -> int:
+def add_launches(g: Graph, world: World, ball: ph.Ball = ph.WOOD, log=lambda *a: None, ball_at=None) -> int:
+    """ball_at: {place: ball} for places where a run-up starts as another ball (inside a transformer's range)."""
+    ball_at = ball_at or {}
     P = g.pos
     n = g.info["rest_places"]
     par = ph.Params()
@@ -95,9 +100,10 @@ def add_launches(g: Graph, world: World, ball: ph.Ball = ph.WOOD, log=lambda *a:
     t0 = time.time()
     best: dict = {}
     for w, u, a, L in jobs:
+        bw = ball_at.get(int(w), ball)
         start = P[w] + np.array([0.0, CONTACT_MARGIN if w < n else 0.0, 0.0])
         t1 = min(420, int(66 * (1.3 * math.sqrt(2.0 * max(L, 1.0) / 8.0) + 1.0)))
-        st, done, _p, _v, _o, _s, tr = world.rollout(ball, par, start, np.zeros(3), np.zeros(3), fine.PUSHES[a:a + 1], [t1], trace=True)
+        st, done, _p, _v, _o, _s, tr = world.rollout(bw, par, start, np.zeros(3), np.zeros(3), fine.PUSHES[a:a + 1], [t1], trace=True)
         air = tr[:, 3] == 0
         run = np.convolve(air.astype(np.int64), np.ones(8, np.int64), "valid") if len(air) >= 8 else np.zeros(0)
         off = np.flatnonzero(run == 8)
@@ -107,7 +113,7 @@ def add_launches(g: Graph, world: World, ball: ph.Ball = ph.WOOD, log=lambda *a:
         if n1 < 1:
             continue
         for b in (a, 0):                                   # the key still held in the air, or released
-            st, done, pos, vel, omega, s, tr2 = world.rollout(ball, par, start, np.zeros(3), np.zeros(3), np.array([fine.PUSHES[a], fine.PUSHES[b]]),
+            st, done, pos, vel, omega, s, tr2 = world.rollout(bw, par, start, np.zeros(3), np.zeros(3), np.array([fine.PUSHES[a], fine.PUSHES[b]]),
                                                              [n1, 300], trace=True)
             c = tr2[n1 + 8:, 7] > 0
             held = np.convolve(c.astype(np.int64), np.ones(4, np.int64), "valid") if len(c) >= 4 else np.zeros(0)
@@ -130,7 +136,7 @@ def add_launches(g: Graph, world: World, ball: ph.Ball = ph.WOOD, log=lambda *a:
                 best[(w, v)] = dict(tape=[(a, n1), (b, ticks - n1)], ticks=ticks, site=u, runup=L, launch_speed=float(tr2[n1, 6]),
                                     way=np.array(way, np.float32),
                                     land_speed=float(tr2[j, 6]), across=float(math.hypot(tr2[j, 0] - tr2[n1, 0], tr2[j, 2] - tr2[n1, 2])),
-                                    down=float(tr2[n1, 1] - tr2[j, 1]), keys_in_air=bool(b))
+                                    down=float(tr2[n1, 1] - tr2[j, 1]), keys_in_air=bool(b), ball=bw.name)
     g.info["launches"] = best
     for (w, v), e in best.items():
         g.adj[w].append((v, e["ticks"] / 66.0 * FOLLOW_SPEED + STOP_COST, "launch"))

@@ -86,6 +86,7 @@ python -m ballistics calibrate --mesh data/Level_01-mesh.npz --run data/runs/<�
 | [docs/things.md](docs/things.md) | 目录：三种球、每种机关和关卡规则各一条（刚体和数值、状态机、三种球的结论、对路线的影响），每个事实标了依据 |
 | [docs/mechanisms.md](docs/mechanisms.md) | 目录里已经接进求解的机关和物体：模拟了什么、依据、和原版记录的对照、还没做的 |
 | [docs/design.md](docs/design.md) | 思路：每个决定的理由、放弃过的做法、还没解决的问题 |
+| [docs/route-generator-plan.md](docs/route-generator-plan.md) | 计划：作为路线生成器还缺什么（分段的路线文件、覆盖、为机关规划、多样性、反馈通道） |
 
 关于游戏本身（和这个工具无关的事实，每条标了依据）：
 

@@ -103,7 +103,7 @@ class Graph:
 # Loose balls (P_Ball_*) are not kept out of: a rolling ball knocks them aside. That is ASSUMED too, and a way that
 # passes one is reported as passing it.
 KEEP_OUT: dict = {}      # nothing placed is kept out of now (a paper transformer was, until the paper ball was solved)
-LOOSE = ("P_Ball_", "P_Box", "P_Modul_34", "P_Modul_01", "P_Modul_25")       # loose balls, boxes, the falling rock, the gate, the push board: rigid bodies of their own (`ballistics.props`), not fixed shapes
+LOOSE = ("P_Ball_", "P_Box", "P_Modul_34", "P_Modul_01", "P_Modul_25", "P_Modul_30")       # loose balls, boxes, the falling rock, the gate, the push board, the seesaw: rigid bodies of their own (`ballistics.props`), not fixed shapes
 
 
 def without_loose(mesh: Mesh) -> Mesh:
@@ -445,75 +445,266 @@ class Relaxed:
         return nodes, kinds
 
 
-class Layered:
-    """The relaxed coarse graph in two layers, by the ball's kind: 0 a wood or stone ball, 1 a paper ball. A place u
-    is u in layer 0 and N + u in layer 1. The layers have the same edges, except:
-    * an edge into a paper transformer's range leads from layer 0 into layer 1, at the transformation's cost; one
-      into a wood or stone transformer's range leads from layer 1 into layer 0 (a stone one's cost is on the edge
-      already, `solve.graph_for`; a wood one's is added);
-    * layer 1 has the fans' lift edges (`solve.fan_lifts`): only a paper ball is blown up;
-    * in layer 1 the edges across push boards cost `dear` more: a paper ball cannot push one over (READ), it can only
-      roll across one that a wood or stone ball has pushed over before;
-      the coarse level does not know whether that was done, the kernel does.
-    The goal is reached in either layer."""
+# ---------------- the coarse level with the mechanisms' states
+WOOD, STONE, PAPER = 0, 1, 2                 # the ball's kind, as a state of the coarse level
+KIND_INDEX = {"wood": WOOD, "stone": STONE, "paper": PAPER}
+GATE_THROUGH, GATE_OPERATE, BOARD_PUSH, BOARD_OVER, SEESAW = 1, 2, 3, 4, 5
+_INF = 1e300
 
-    def __init__(self, rel: "Relaxed", g: Graph, into_paper: dict, into_other: dict, lifts=(), drop=(), dear: float = 200.0):
+
+@njit(cache=True)
+def _state_togo(n, M, bptr, bsrc, bcost, bek, bmask, tk, tcost, lptr, lsrc, lcost, lk, cptr, csrc, ccost, cmech, ctype, cside, goal):
+    """How far each (state, place) is from the goal, which counts in any state. A state is kind * 2^M + bits (bit m:
+    mechanism m's state). Backwards over: plain edges (u -> v; v inside a transformer's range makes the ball its
+    kind there, at tcost unless it is that kind already; a link that passes through a range, bek, likewise; a link
+    with bmask is there only while those mechanisms' bits are set), the paper ball's lifts, and the mechanisms'
+    edges, each with the state it needs and the state it leaves (see `StateGraph`)."""
+    S = 3 * (1 << M)
+    togo = np.full((S, n), _INF)
+    heap = [(0.0, 0, 0)]
+    heap.pop()
+    for s in range(S):
+        togo[s, goal] = 0.0
+        heapq.heappush(heap, (0.0, s, goal))
+    while len(heap) > 0:
+        d, s, v = heapq.heappop(heap)
+        if d > togo[s, v]:
+            continue
+        k = s >> M
+        bits = s & ((1 << M) - 1)
+        for e in range(bptr[v], bptr[v + 1]):
+            if (bits & bmask[e]) != bmask[e]:
+                continue
+            t = tk[v] if tk[v] >= 0 else bek[e]
+            u = bsrc[e]
+            nd = d + bcost[e]
+            if t < 0:
+                if nd < togo[s, u]:
+                    togo[s, u] = nd
+                    heapq.heappush(heap, (nd, s, u))
+            elif k == t:
+                for k2 in range(3):
+                    s2 = (k2 << M) | bits
+                    nd2 = nd + (0.0 if k2 == t else tcost)
+                    if nd2 < togo[s2, u]:
+                        togo[s2, u] = nd2
+                        heapq.heappush(heap, (nd2, s2, u))
+        # a lift is a paper ball's; it lands as the kind of a transformer's range it lands in (or ends in on the way, lk)
+        s2 = (2 << M) | bits
+        for e in range(lptr[v], lptr[v + 1]):
+            tl = tk[v] if tk[v] >= 0 else (lk[e] if lk[e] >= 0 else 2)
+            if k != tl:
+                continue
+            u = lsrc[e]
+            nd = d + lcost[e] + (tcost if tl != 2 else 0.0)
+            if nd < togo[s2, u]:
+                togo[s2, u] = nd
+                heapq.heappush(heap, (nd, s2, u))
+        for e in range(cptr[v], cptr[v + 1]):
+            u = csrc[e]
+            nd = d + ccost[e]
+            m = cmech[e]
+            bit = (bits >> m) & 1
+            typ = ctype[e]
+            preds = (-1, -1)
+            if typ == 1:                                   # through an open gate
+                if bit == 1:
+                    preds = (s, -1)
+            elif typ == 2:                                 # a stone ball pushes the gate open
+                if bit == 1 and k == 1:
+                    preds = (s & ~(1 << m), -1)
+            elif typ == 3:                                 # a wood or stone ball pushes the board over, going across it
+                if bit == 1 and k != 2:
+                    preds = (s, s & ~(1 << m))
+            elif typ == 4:                                 # across a board that lies
+                if bit == 1:
+                    preds = (s, -1)
+            elif typ == 5:                                 # up the seesaw from its low end (cside: which end is low): a stone ball tips it
+                side = cside[e]
+                if k == 1:
+                    if bit == 1 - side:
+                        preds = ((s & ~(1 << m)) | (side << m), -1)
+                elif bit == side:
+                    preds = (s, -1)
+            for s2 in preds:
+                if s2 >= 0 and nd < togo[s2, u]:
+                    togo[s2, u] = nd
+                    heapq.heappush(heap, (nd, s2, u))
+    return togo
+
+
+def _csr(n, edges):
+    """Edges (src, dst, cost, *rest) as a CSR by dst: (ptr, src, cost, rest columns...)."""
+    order = sorted(range(len(edges)), key=lambda i: edges[i][1])
+    ptr = np.zeros(n + 1, np.int64)
+    for i in order:
+        ptr[edges[i][1] + 1] += 1
+    ptr = np.cumsum(ptr)
+    src = np.array([edges[i][0] for i in order], np.int64)
+    cost = np.array([edges[i][2] for i in order], np.float64)
+    rest = [np.array([edges[i][3 + j] for i in order], np.int64) for j in range(len(edges[0]) - 3)] if edges else []
+    return ptr, src, cost, rest
+
+
+class StateGraph:
+    """The coarse level of one sector over states: the ball's kind (wood, stone, paper) and each mechanism's state
+    (bit m of `bits`): a gate open, a push board down, a seesaw down at its other end. A state index is
+    kind * 2^M + bits. Only the places of the sector's region take part.
+
+    The edges: the relaxed graph's (for any state; one into a transformer's range of another kind makes the ball that
+    kind, at the transformation's cost), the paper ball's lifts, and the mechanisms':
+    * a gate (P_Modul_01): the edges it clears once open, only while it is open; at its push place an "operate"
+      step by a stone ball opens it (a wood ball cannot open it all the way: MEASURED);
+    * a push board (P_Modul_25): from the road in front of it across, a wood or stone ball pushes it over on the way
+      (a paper ball cannot: READ); across it either way while it lies;
+    * a seesaw (P_Modul_30): from its low end up and across, by any ball; a stone one tips it, so that the other end
+      is low after (MEASURED).
+    mechs: [dict(name, type ("gate", "board", "seesaw"), ...edges)] as `solve` makes them. links: {(u, v): (kind
+    index or -1, bits mask)} for the relaxed graph's links that pass through a transformer's range or a mechanism
+    (`solve._link_rules`). lifts: (u, v, cost[, the kind index it ends as when that is a transformer's it enters on the
+    way, not one v is in]). skip: (u, v) edges of the relaxed graph that are not there in this sector."""
+
+    def __init__(self, rel, g, region, trafo_kind, trafo_cost: float, lifts, mechs: list, operate_cost: float, links=None, skip=()):
         N = len(g.pos)
-        self.g, self.N = g, N
-        drop = set(drop)
-        fwd = [None] * (2 * N)
-        for u in range(N):
-            f0, f1 = [], []
-            for v, c, k in rel.fwd[u]:
-                if v in into_paper:
-                    f0.append((N + v, c + into_paper[v], k))
-                else:
-                    f0.append((v, c, k))
-                c1 = c + dear if (u, v) in drop else c
-                if v in into_other:
-                    f1.append((v, c1 + into_other[v], k))
-                else:
-                    f1.append((N + v, c1, k))
-            fwd[u], fwd[N + u] = f0, f1
-        for u, v, c in lifts:
-            fwd[N + u] = fwd[N + u] + [(N + v, c, "lift")]
-        self.fwd = fwd
-        self.back = [[] for _ in range(2 * N)]
-        for u in range(2 * N):
-            for v, c, _k in fwd[u]:
-                self.back[v].append((u, c))
+        self.g, self.N, self.mechs = g, N, list(mechs)
+        self.M = len(self.mechs)
+        self.S = 3 * (1 << self.M)
+        ids = np.flatnonzero(region)
+        self.glob = ids                                    # local -> global
+        self.loc = np.full(N, -1, np.int64)
+        self.loc[ids] = np.arange(len(ids))
+        n = self.n = len(ids)
+        loc = self.loc
+        # plain edges (both ways of the relaxed graph): kept as python lists for the plan, as a CSR by target for togo
+        links = links or {}
+        skip = set(skip)
+        self.fwd = [[] for _ in range(n)]
+        base, base_kind = [], []
+        for gu in ids:
+            u = int(loc[gu])
+            for v_, c, k in rel.fwd[gu]:
+                v = int(loc[v_])
+                if v >= 0 and (int(gu), int(v_)) not in skip:
+                    ek, mask = links.get((int(gu), int(v_)), (-1, 0)) if k in ("gap", "bridge") else (-1, 0)
+                    self.fwd[u].append((v, float(c), k, int(ek), int(mask)))
+                    base.append((u, v, float(c), int(ek), int(mask)))
+                    base_kind.append(k)
+        self.tk = np.array([int(trafo_kind[gu]) for gu in ids], np.int64)
+        self.tcost = float(trafo_cost)
+        self.lfwd = [[] for _ in range(n)]
+        lift = []
+        for e in lifts:
+            gu, gv, c = e[:3]
+            lk = int(e[3]) if len(e) > 3 else -1
+            u, v = int(loc[gu]), int(loc[gv])
+            if u >= 0 and v >= 0:
+                self.lfwd[u].append((v, float(c), lk))
+                lift.append((u, v, float(c), lk))
+        self.cfwd = [[] for _ in range(n)]
+        cond, cond_kind = [], []
+        for m, mc in enumerate(self.mechs):
+            for typ, gu, gv, c, side, kind in mc["edges"]:
+                u, v = int(loc[gu]), int(loc[gv])
+                if u < 0 or v < 0:
+                    continue
+                c = float(c) + (operate_cost if typ == GATE_OPERATE else 0.0)
+                self.cfwd[u].append((v, c, kind, m, typ, side))
+                cond.append((u, v, c, m, typ, side))
+                cond_kind.append(kind)
+        self._base, self._lift, self._cond = base, lift, cond
+        self._base_kind, self._cond_kind = base_kind, cond_kind
+        self._dropped = set()
+        self._arrays()
 
-    def with_edges(self, edges) -> "Layered":
-        """The same graph with these edges (u, v, cost, kind) added in layer 0 (a gate pushed open: a paper ball cannot push one)."""
-        out = Layered.__new__(Layered)
-        out.g, out.N, out.fwd, out.back = self.g, self.N, list(self.fwd), list(self.back)
-        for u, v, c, k in edges:
-            out.fwd[u] = out.fwd[u] + [(v, c, k)]
-            out.back[v] = out.back[v] + [(u, c)]
-        return out
+    def _arrays(self):
+        n = self.n
+        base = [e for e, k in zip(self._base, self._base_kind) if (e[0], e[1], k) not in self._dropped]
+        self.bptr, self.bsrc, self.bcost, (self.bek, self.bmask) = _csr(n, base or [(0, 0, _INF, -1, 0)])
+        lift = self._lift or [(0, 0, _INF, -1)]
+        self.lptr, self.lsrc, self.lcost, (self.lk,) = _csr(n, lift)
+        cond = self._cond or [(0, 0, _INF, 0, 0, 0)]
+        self.cptr, self.csrc, self.ccost, (self.cmech, self.ctype, self.cside) = _csr(n, cond)
+
+    def drop(self, gu: int, gv: int, kind: str):
+        """Take an edge the plan took (gu -> gv, of that kind) out, wherever it is (a plain edge, or a mechanism's of that
+        kind): the coarse level's own edges lead past it."""
+        u, v = int(self.loc[gu]), int(self.loc[gv])
+        if u < 0 or v < 0:
+            return
+        self.fwd[u] = [e for e in self.fwd[u] if not (e[0] == v and e[2] == kind)]
+        self._dropped.add((u, v, kind))
+        keep = [i for i, e in enumerate(self._cond) if not (e[0] == u and e[1] == v and self._cond_kind[i] == kind)]
+        self._cond, self._cond_kind = [self._cond[i] for i in keep], [self._cond_kind[i] for i in keep]
+        self.cfwd[u] = [e for e in self.cfwd[u] if not (e[0] == v and e[2] == kind)]
+        self._arrays()
+
+    def drop_mech_edge(self, m: int, typ: int):
+        """Take a mechanism's edges of one type out (a step that was tried and did not change its state)."""
+        keep = [i for i, e in enumerate(self._cond) if not (e[3] == m and e[4] == typ)]
+        self._cond, self._cond_kind = [self._cond[i] for i in keep], [self._cond_kind[i] for i in keep]
+        for u in range(self.n):
+            self.cfwd[u] = [e for e in self.cfwd[u] if not (e[3] == m and e[4] == typ)]
+        self._arrays()
 
     def togo(self, goal: int) -> np.ndarray:
-        """How far each place (2N: both layers) is from the goal, which counts in either layer."""
-        togo = np.full(len(self.fwd), np.inf)
-        heap = []
-        for gl in (goal, self.N + goal):
-            togo[gl] = 0.0
-            heap.append((0.0, gl))
-        while heap:
-            d, u = heapq.heappop(heap)
-            if d > togo[u]:
-                continue
-            for v, c in self.back[u]:
-                if d + c < togo[v]:
-                    togo[v] = d + c
-                    heapq.heappush(heap, (d + c, v))
-        return togo
+        """(S, N): how far each place is from the goal in each state (inf outside the sector's region)."""
+        out = np.full((self.S, self.N), np.inf)
+        gl = int(self.loc[goal])
+        if gl < 0:
+            return out
+        t = _state_togo(self.n, self.M, self.bptr, self.bsrc, self.bcost, self.bek, self.bmask, self.tk, self.tcost, self.lptr, self.lsrc, self.lcost, self.lk,
+                        self.cptr, self.csrc, self.ccost, self.cmech, self.ctype, self.cside, gl)
+        t[t >= _INF / 2] = np.inf
+        out[:, self.glob] = t
+        return out
 
-    def plan(self, u: int, togo: np.ndarray):
-        """The way from place u (of either layer) to the goal: (places of both layers, kind of each edge)."""
-        nodes, kinds = [int(u)], []
-        while togo[nodes[-1]] > 0 and np.isfinite(togo[nodes[-1]]):
-            v, c, k = min(self.fwd[nodes[-1]], key=lambda e: e[1] + togo[e[0]])
-            nodes.append(int(v))
-            kinds.append(k)
-        return nodes, kinds
+    def step(self, s: int, u: int):
+        """Every way on from state s at local place u: [(state, local place, cost, edge kind)]."""
+        M = self.M
+        k, bits = s >> M, s & ((1 << M) - 1)
+        out = []
+        for v, c, kind, ek, mask in self.fwd[u]:
+            if (bits & mask) != mask:
+                continue
+            t = self.tk[v] if self.tk[v] >= 0 else ek
+            if t >= 0 and t != k:
+                out.append(((int(t) << M) | bits, v, c + self.tcost, kind))
+            else:
+                out.append((s, v, c, kind))
+        if k == PAPER:
+            for v, c, lk in self.lfwd[u]:
+                t = self.tk[v] if self.tk[v] >= 0 else lk
+                if t >= 0 and t != PAPER:              # it lands in (or ends in, on the way) a transformer's range of another kind
+                    out.append(((int(t) << M) | bits, v, c + self.tcost, "lift"))
+                else:
+                    out.append((s, v, c, "lift"))
+        for v, c, kind, m, typ, side in self.cfwd[u]:
+            bit = (bits >> m) & 1
+            if typ == GATE_THROUGH and bit == 1:
+                out.append((s, v, c, kind))
+            elif typ == GATE_OPERATE and bit == 0 and k == STONE:
+                out.append((s | (1 << m), v, c, "operate"))
+            elif typ == BOARD_PUSH and k != PAPER:
+                out.append((s | (1 << m), v, c, kind))
+            elif typ == BOARD_OVER and bit == 1:
+                out.append((s, v, c, kind))
+            elif typ == SEESAW and bit == side:
+                out.append(((s & ~(1 << m)) | ((1 - side) << m) if k == STONE else s, v, c, kind))
+        return out
+
+    def plan(self, s: int, gu: int, togo: np.ndarray, most: int = 5000):
+        """The way from global place gu in state s to the goal: (global places, the kind of each edge, the state at
+        each place)."""
+        u = int(self.loc[gu])
+        if u < 0:
+            return [int(gu)], [], [int(s)]
+        T = togo[:, self.glob]
+        nodes, kinds, states = [u], [], [int(s)]
+        while T[states[-1], nodes[-1]] > 0 and np.isfinite(T[states[-1], nodes[-1]]) and len(nodes) < most:
+            best = min(self.step(states[-1], nodes[-1]), key=lambda e: e[2] + T[e[0], e[1]], default=None)
+            if best is None or not np.isfinite(best[2] + T[best[0], best[1]]):
+                break
+            states.append(int(best[0]))
+            nodes.append(int(best[1]))
+            kinds.append(best[3])
+        return [int(self.glob[x]) for x in nodes], kinds, states

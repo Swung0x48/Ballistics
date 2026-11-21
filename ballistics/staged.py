@@ -29,7 +29,7 @@ from . import coarse, fine
 from . import physics as ph
 from .geometry import BALL_R
 from .kernel import DEAD, OK, PLACED, TRIGGER
-from .solve import world_for
+from .solve import world_for, push_towards, ride as ride_legs
 
 BREAK_KINDS = ("gap", "bridge", "step")
 ROLLS = ("roll", "rail", "rail end", "drop")
@@ -267,7 +267,8 @@ def _worth(world, search, seed, c, ball, before: int):
     is where the way leads (the ticks before it starts, its own, and the coarse level's estimate of what is left)."""
     n1 = _robust(world, search, seed, c.tape, scale=1, ball=ball, parts=c.parts)
     n3 = _robust(world, search, seed, c.tape, scale=3, ball=ball, parts=c.parts)
-    total = before + c.ticks + search.score(c.end, getattr(c, "end_ball", None)) * TICKS_PER_COST
+    end = getattr(c, "end_state", None)
+    total = before + c.ticks + search.score(c.end, getattr(c, "end_ball", None), end[3] if end is not None and len(end) > 3 else None) * TICKS_PER_COST
     return (n1, n3, -total)
 
 
@@ -354,42 +355,31 @@ def solve_sector(mesh, info, g, sector: int, tries: int = 300_000, seed: int = 0
     worlds = {m: world_for(mesh, info, m, sector) for m in ORDER}
     ball_now = BALLS[ball]
     strict = worlds["strict"]
-    from .solve import layered_for
-    rel = layered_for(g, info)                                    # the coarse graph in two layers: a wood or stone ball, a paper ball
+    # the coarse level of this sector over the ball's kind and its mechanisms' states (`solve.state_graph_for`):
+    # the plan says which kind the ball is and what state each mechanism is in at each place; the states are read
+    # back from the kernel's scene after every stretch
+    from .solve import state_graph_for
+    sg, state_of = state_graph_for(g, info, sector, strict, OPERATE_COST)
     N = len(g.pos)
     anchors = [info["start"]] + info["checkpoints"] + [info["airship"]]
     goal = g.nearest(anchors[sector], 25.0)
-    togo = rel.togo(goal)
-
-    def layer():
-        return 1 if ball_now.name == "paper" else 0
-
-    def tv():
-        """How far each place is from the goal, in the layer of the ball it is now."""
-        return togo[layer() * N:(layer() + 1) * N]
+    togo = sg.togo(goal)
+    if sg.mechs:
+        log("sector %d: the coarse level keeps the states of %s" % (sector, ", ".join("%s (%s)" % (m["name"], m["type"]) for m in sg.mechs)))
     reset = info["reset_points"][sector - 1]
     s0 = fine.rest_state(strict, reset[0], reset[2], reset[1] + 0.5)
     state = (s0.pos, s0.vel, s0.omega) if start is None else tuple(np.array(x, float) for x in start[:3])
-    # a closed gate blocks the upper road (`solve.gate_edges`): a plan may first go to it, push it open and then
-    # go on through it, if that is cheaper on the coarse level than the way without it
-    legs = []
-    here = nearest_node(g, tv(), state[0])
-    best_cost = float(tv()[here])
-    for name, d in sorted(g.info.get("gates", {}).items()):
-        if d["sector"] != sector or d["operate"] < 0 or not d["edges"] or layer() != 0:
-            continue                                              # (a paper ball cannot push a gate)
-        rel_open = rel.with_edges(d["edges"])
-        to_gate, after = rel.togo(d["operate"]), rel_open.togo(goal)
-        cost = float(to_gate[here]) + OPERATE_COST + float(after[d["operate"]])
-        log("sector %d: through gate %s: %.0f on the coarse level, against %.0f without it" % (sector, name, cost, best_cost))
-        if cost < best_cost:
-            best_cost, legs = cost, [dict(gate=name, d=d, rel=rel_open, togo=after, to_gate=to_gate)]
-    final_goal = goal
-    if legs:
-        goal, togo = legs[0]["d"]["operate"], legs[0]["to_gate"]       # first to the gate
     # this sector's loose balls: at rest where they lie, or as the start has them (a route going on within the sector)
     state = state + (_scene_of(strict, start) if start is not None else strict.scene(),)
     entry = np.array(state[0], float)                             # where the ball enters the sector
+
+    def cs():
+        """The coarse state the ball is in now: its kind and the mechanisms' states, read from the scene."""
+        return state_of(ball_now.name, state[3] if len(state) > 3 else None)
+
+    def tv():
+        """How far each place is from the goal, in the coarse state the ball is in now."""
+        return togo[cs()]
     loose =[(p["type"], np.array(p["position"], float)) for p in info["placements"] if p["type"].startswith(coarse.LOOSE)]
     coarse_back = [[] for _ in range(len(g.pos))]
     for u in range(len(g.pos)):
@@ -416,30 +406,58 @@ def solve_sector(mesh, info, g, sector: int, tries: int = 300_000, seed: int = 0
                 b["status"] = "bypassed"
 
     def replan(pos):
-        # from the place nearest in the layer of the ball it is; the plan goes on in the other layer past a
-        # transformer of the other kind: its places are the same places
-        nodes, kinds = rel.plan(layer() * N + nearest_node(g, tv(), pos), togo)
-        nodes = [n % N for n in nodes]
+        # in the coarse state the ball is in now, from the place nearest; the plan's states change where it
+        # transforms or a mechanism's state changes on the way
+        nodes, kinds, _states = sg.plan(cs(), nearest_node(g, tv(), pos), togo)
         register(nodes, kinds)
         return nodes, kinds
 
-    legs_open = list(legs)
+    lifts = g.info.get("lifts", {})
+    unridden = set()                                              # lifts ridden once that did not get there
 
-    def operate(state):
-        """At the gate: hold the push nearest to its x until it has slid as far as it goes (or OPERATE_TICKS), then
-        plan on with it open. Returns the state after, or None if the ball was lost."""
-        leg = legs.pop(0)
-        d = leg["d"]
-        a = int(np.argmax(fine.PUSHES @ d["axis"]))
+    def lift_ahead(nodes, kinds):
+        """The first lift on the plan, to be ridden: (its index, its edge), or None (none, or the first one was ridden
+        and did not get there: that one is left to the follower and the search, as any way)."""
+        for e, k in enumerate(kinds):
+            if k == "lift" and (nodes[e], nodes[e + 1]) in lifts:
+                return None if (nodes[e], nodes[e + 1]) in unridden else (e, lifts[(nodes[e], nodes[e + 1])])
+        return None
+
+    def at_fan(pos, L):
+        """Whether the ball is where a lift of this fan is entered from (within 5 of its axis, as its entries are)."""
+        o = L["fan"]
+        return math.hypot(pos[0] - o[0], pos[2] - o[2]) <= 5.0 and o[1] - 2.0 <= pos[1] <= o[1] + 17.0
+
+    def ride_lift(key, L, state):
+        """Ride a lift the way it was made: to the fan's axis, then its own legs, each held until its point is reached
+        (`solve.ride`), not chased by the follower. Returns (status, end state, which transformer or -1); the stretch
+        is on the route only if it got there."""
+        o = L["fan"]
+        legs = [(push_towards(o - state[0]), 90, o)] + list(L["legs"])
+        sc = _scene_of(strict, state)
+        tape, tr, st, (pos, vel, om), stats = ride_legs(strict, ball_now, state, legs, scene=sc, arrive_at=g.pos[key[1]])
+        got = st == TRIGGER or (st == OK and len(tr) and ((np.linalg.norm(tr[:, :3] - g.pos[key[1]], axis=1) <= 2.5) & (tr[:, 7] > 0)).any())
+        if not got:
+            return "missed", state, -1
+        end = (pos, vel, om, sc)
+        segs.append(dict(type="follow", mode=BASE, ball=ball_now.name, start=state, tape=tape, trace=tr, end=end, lift=key))
+        log("   rode the lift to %s, %.1f game s" % (np.round(g.pos[key[1]], 1), len(tr) / 132))
+        return "got", end, int(stats[9]) if st == TRIGGER else -1
+
+    def operate(m, state):
+        """At gate m's push place: hold the push nearest to its x for OPERATE_TICKS. Returns the state after, or None
+        if the ball was lost."""
+        mc = sg.mechs[m]
+        a = push_towards(mc["axis"])
         sc = _scene_of(strict, state)
         status, done, pos, vel, omega, _st, tr = strict.rollout(ball_now, ph.Params(), state[0], state[1], state[2], fine.PUSHES[a:a + 1], [OPERATE_TICKS],
                                                                  trace=True, scene=sc)
         if status != OK:
-            log("   pushing gate %s: the ball was lost" % leg["gate"])
+            log("   pushing gate %s: the ball was lost" % mc["name"])
             return None
         end = (pos, vel, omega, sc)
-        segs.append(dict(type="follow", mode=BASE, ball=ball_now.name, start=state, tape=[(a, done)], trace=tr, end=end, operates=leg["gate"]))
-        log("   pushed gate %s for %.1f game s; on through it" % (leg["gate"], done / 132))
+        segs.append(dict(type="follow", mode=BASE, ball=ball_now.name, start=state, tape=[(a, done)], trace=tr, end=end, operates=mc["name"]))
+        log("   pushed gate %s for %.1f game s" % (mc["name"], done / 132))
         return end
 
     nodes, kinds = replan(state[0])
@@ -450,14 +468,51 @@ def solve_sector(mesh, info, g, sector: int, tries: int = 300_000, seed: int = 0
     older: list = []                                              # the same for the stretches before that
     mode_now = BASE
     for _round in range(80):
-        if len(nodes) < 2 and legs and np.linalg.norm(state[0] - g.pos[goal]) <= 2.5:
-            nxt = operate(state)                                  # a crossing arrived at the gate
-            if nxt is None:
-                break
-            state, goal, togo, rel = nxt, final_goal, legs_open[-1]["togo"], legs_open[-1]["rel"]
-            nodes, kinds = replan(state[0])
         if len(nodes) < 2:
             break
+        # a step that changes a mechanism's state by itself (pushing a gate open) is not rolled along: the way ends
+        # at its place, the step is done there, and the plan goes on from the state it left
+        cut = kinds.index("operate") if "operate" in kinds else None
+        if cut is not None and (cut == 0 or np.linalg.norm(state[0] - g.pos[nodes[cut]]) <= 2.5):
+            m = next(i for i, mc in enumerate(sg.mechs) if mc.get("operate") == nodes[cut])
+            before = cs()
+            nxt = operate(m, state)
+            if nxt is None:
+                break
+            state = nxt
+            if cs() == before:
+                # it did not open: that step is not there for the coarse level any more
+                log("   gate %s did not open: no longer planned" % sg.mechs[m]["name"])
+                sg.drop_mech_edge(m, coarse.GATE_OPERATE)
+                togo = sg.togo(goal)
+            nodes, kinds = replan(state[0])
+            continue
+        # a lift is ridden by its own legs once the ball is at its fan; the follower's way ends there
+        la = lift_ahead(nodes, kinds)
+        if la is not None and (cut is None or la[0] < cut):
+            c, L = la
+            if c == 0 or at_fan(state[0], L):
+                key = (nodes[c], nodes[c + 1])
+                how, nxt, which = ride_lift(key, L, state)
+                if how == "missed":
+                    # ridden from where the ball is it did not get there: the follower and the search take it on, as
+                    # before lifts were ridden (they find their own way up, or it becomes a break)
+                    log("   the lift to %s did not get there ridden from here: left to the follower" % np.round(g.pos[key[1]], 1))
+                    unridden.add(key)
+                    continue
+                state = nxt
+                if which >= 0:                                    # it went into a transformer's range
+                    item = strict.trafos[which]
+                    new, tr1, end1, _s1, _st1 = trafo.stretch(strict, item, scene=_scene_of(strict, state))
+                    segs.append(dict(type="transform", mode=BASE, ball=new.name, was=ball_now.name, at=item["name"], which=which, start=state, tape=[],
+                                     trace=tr1, end=end1))
+                    log("   transformed %s -> %s by %s, %.2f game s" % (ball_now.name, new.name, item["name"], len(tr1) / 132))
+                    ball_now, state, mode_now, seeds, older = new, end1, BASE, [], []
+                nodes, kinds = replan(state[0])
+                continue
+            cut = c
+        if cut is not None:
+            nodes, kinds = nodes[:cut + 1], kinds[:cut]
         # the way the follower sees: the plan's places, and for a launch on it the run-up and the landing of the
         # kernel run that made the edge (its start place alone may be far from the ledge)
         way, node_of = [g.pos[nodes[0]]], [0]
@@ -486,11 +541,23 @@ def solve_sector(mesh, info, g, sector: int, tries: int = 300_000, seed: int = 0
         for e, k in enumerate(kinds):
             if k in BREAK_KINDS and e + 1 <= r["index"] and breaks[(nodes[e], nodes[e + 1])]["status"] == "pending":
                 breaks[(nodes[e], nodes[e + 1])]["status"] = "rolled"
-        if r["status"] == "goal" and legs:
-            nxt = operate(r["end"])                               # at the gate: push it open, then on
-            if nxt is None:
-                break
-            state, goal, togo, rel = nxt, final_goal, legs_open[-1]["togo"], legs_open[-1]["rel"]
+        if la is not None and r["status"] != "goal":
+            # it stopped at the lift's fan, or was there before it went wrong: ride it from there next round
+            if r["end"] is not None and at_fan(r["end"][0], la[1]):
+                state = r["end"]
+                nodes, kinds = replan(state[0])
+                continue
+            hist = r["history"][:-8] if len(r["history"]) > 12 else r["history"]
+            h = next((h for h in reversed(hist) if at_fan(h[2], la[1])), None)
+            if h is not None:
+                last = segs[-1]
+                last["tape"], last["trace"], last["end"] = last["tape"][:h[0] // CHUNK], last["trace"][:h[0]], (h[2], h[3], h[4], h[5])
+                seeds = [e for e in seeds if not (e[0] == len(segs) - 1 and e[1][0] > h[0])]
+                state = last["end"]
+                nodes, kinds = replan(state[0])
+                continue
+        if r["status"] == "goal" and cut is not None:
+            state = r["end"]                                      # at the place of a step: do it next round
             nodes, kinds = replan(state[0])
             continue
         if r["status"] == "goal":
@@ -538,17 +605,14 @@ def solve_sector(mesh, info, g, sector: int, tries: int = 300_000, seed: int = 0
             # the coarse level's own edges lead from here to beyond the break: the plan only took a shortcut link.
             # Drop that link and plan again
             u, v = b["key"]
-            lu = layer() * N + u                                  # (in the layer of the ball it is)
-            gone = [e for e in rel.fwd[lu] if e[0] % N == v and e[2] == b["kind"]]
-            rel.fwd[lu] = [e for e in rel.fwd[lu] if not (e[0] % N == v and e[2] == b["kind"])]
-            for w_, c_, _k in gone:
-                rel.back[w_] = [e for e in rel.back[w_] if e[0] != lu] + [(lu, c) for ww, c, kk in rel.fwd[lu] if ww == w_]
-            togo = rel.togo(goal)
+            sg.drop(u, v, b["kind"])
+            togo = sg.togo(goal)
             b["status"] = "bypassed"
             state = segs[-1]["end"] if segs[-1]["end"] is not None else state
             if segs[-1]["end"] is None:                           # the stretch failed: go back to the last state it was fine in
                 h = r["history"][-1] if len(r["history"]) < 20 else r["history"][-17]
                 segs[-1]["tape"], segs[-1]["trace"], segs[-1]["end"] = segs[-1]["tape"][:h[0] // CHUNK], segs[-1]["trace"][:h[0]], (h[2], h[3], h[4], h[5])
+                seeds = [e for e in seeds if not (e[0] == len(segs) - 1 and e[1][0] > h[0])]
                 state = segs[-1]["end"]
             nodes, kinds = replan(state[0])
             continue
@@ -568,7 +632,7 @@ def solve_sector(mesh, info, g, sector: int, tries: int = 300_000, seed: int = 0
         if older:
             pools.append(("the whole sector so far", thin(older, 120) + thin(usable, 80)))
         def attempt(mode, where, cand):
-            s = fine.Search(worlds[mode], targets, ball=ball_now, seed=seed, places=g.pos, togo=dict(other=togo[:N], paper=togo[N:]), transforms=True)
+            s = fine.Search(worlds[mode], targets, ball=ball_now, seed=seed, places=g.pos, togo=dict(by_state=togo, state_of=state_of), transforms=True)
             ids = {}
             for si, h in cand:
                 idx = s.add_start(ph.State(h[2], h[3], h[4]), scene=h[5] if mode == "strict" else None)
@@ -622,10 +686,10 @@ def solve_sector(mesh, info, g, sector: int, tries: int = 300_000, seed: int = 0
                              refined=dict(arrives=refined[0], arrives3=refined[1], ticks=int(c.ticks), changes=changes))
             log("      %s: %d ways found; the first arrives %d of 20 in %.1f game s, the one chosen %d of 20, after %d changes %d of 20 in %.1f game s" % (
                 b["no"], len(ways), first_worth[0], ways[0][2].ticks / 132, worth[0], changes, refined[0], c.ticks / 132))
-            for sg in segs[si + 1:]:                              # crossings made on a way that is now given up
-                if sg["type"] == "cross":
+            for given_up in segs[si + 1:]:                        # crossings made on a way that is now given up
+                if given_up["type"] == "cross":
                     for ob in breaks.values():
-                        if ob["no"] == sg["no"]:
+                        if ob["no"] == given_up["no"]:
                             ob["status"] = "abandoned"
             segs = segs[:si + 1]
             older = [e for e in older + seeds if e[0] < si or (e[0] == si and e[1][0] < h[0])]
@@ -652,16 +716,19 @@ def solve_sector(mesh, info, g, sector: int, tries: int = 300_000, seed: int = 0
         else:
             b["status"] = "unresolved"
             last = segs[-1]                                       # keep the stretch up to the last state it was fine in
+            cut_at = None
             if r["history"]:
                 h = r["history"][-1] if len(r["history"]) < 20 else r["history"][-17]
                 last["tape"], last["trace"], last["end"] = last["tape"][:h[0] // CHUNK], last["trace"][:h[0]], (h[2], h[3], h[4], h[5])
-            older = older + seeds
+                cut_at = h[0]
+            # (a later search may start from this stretch: only from what is left of it)
+            older = [e for e in older + seeds if cut_at is None or not (e[0] == len(segs) - 1 and e[1][0] > cut_at)]
             far = g.pos[nodes[kt]]
             segs.append(dict(type="assumed", no=b["no"], to=far.copy()))
             s1 = fine.rest_state(strict, far[0], far[2], far[1] + 1.0)
-            state, mode_now, seeds = (s1.pos, s1.vel, s1.omega, strict.scene()), BASE, []
-            nodes, kinds = nodes[kt:], kinds[kt:]
-    goal = final_goal                                             # (a plan that never got to its gate has not reached it)
+            kept = last.get("end")
+            state, mode_now, seeds = (s1.pos, s1.vel, s1.omega, _scene_of(strict, kept) if kept is not None else strict.scene()), BASE, []
+            nodes, kinds = replan(state[0])
     # a paper ball by a fan: whether it is pushed at a box's edge depends on its orientation, which the kernel does
     # not know (`fans.Rules.params`). Each stretch of the way taken that a paper ball rolls near a fan is run again
     # with the two bounds: it is sure only if it gets to the same end with both
