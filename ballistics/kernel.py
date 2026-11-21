@@ -234,6 +234,68 @@ def _corner(c, k):
 
 
 @njit(cache=True)
+def _box_over_ground(c, x, y, z, ox, oz, cell, nx, nz, start, items, A, B, C, lo_y, hi_y):
+    """Whether there is a surface straight under the middle of the box's underside (within 1.5 below it), with the
+    box's centre at (x, y, z): on a floor or a slope yes, with its middle out over an edge no."""
+    bx, by, bz = x - c[10] * c[15], y - c[10] * c[16], z - c[10] * c[17]
+    for k in range(7):
+        d = 0.25 * k
+        dist, _t = _distance(bx - d * c[15], by - d * c[16], bz - d * c[17], 1.0, ox, oz, cell, nx, nz, start, items, A, B, C, lo_y, hi_y)
+        if dist < 0.2:
+            return True
+    return False
+
+
+@njit(cache=True)
+def _face_axis(cs, cx):
+    """For the box cs against the box cx (bc rows): (k, side): the axis of cx along which cs lies off it most, counted
+    in their sizes, and on which side. Two boxes touch across that face of cx: one stands on the other across the
+    upright axis, one pushes the other across a level one."""
+    dx, dy, dz = cs[21] - cx[21], cs[22] - cx[22], cs[23] - cx[23]
+    best, kbest, side = -1.0, 0, 1.0
+    for i in range(3):
+        a0, a1, a2 = cx[12 + 3 * i], cx[13 + 3 * i], cx[14 + 3 * i]
+        along = dx * a0 + dy * a1 + dz * a2
+        reach = 0.0
+        for j in range(3):
+            reach += abs(cs[12 + 3 * j] * a0 + cs[13 + 3 * j] * a1 + cs[14 + 3 * j] * a2) * cs[9 + j]
+        ratio = abs(along) / (cx[9 + i] + reach)
+        if ratio > best:
+            best, kbest, side = ratio, i, (1.0 if along >= 0.0 else -1.0)
+    return kbest, side
+
+
+@njit(cache=True)
+def _corner_face(px, py, pz, cx, k, side):
+    """A corner at p against the face (k, side) of the box cx: (gap, normal x, y, z), the normal out of that face;
+    the gap is 1e9 when the corner is not over the face."""
+    dx, dy, dz = px - cx[21], py - cx[22], pz - cx[23]
+    out = 0.0
+    for i in range(3):
+        along = dx * cx[12 + 3 * i] + dy * cx[13 + 3 * i] + dz * cx[14 + 3 * i]
+        if i == k:
+            out = side * along - cx[9 + i] - CORNER
+        elif abs(along) > cx[9 + i] + CORNER:
+            return (1e9, 0.0, 0.0, 0.0)
+    return (out, side * cx[12 + 3 * k], side * cx[13 + 3 * k], side * cx[14 + 3 * k])
+
+
+@njit(cache=True)
+def _box_gap(c, x, y, z, ox, oz, cell, nx, nz, start, items, A, B, C, lo_y, hi_y):
+    """How far the nearest corner of the box c (a bc row) is from any surface, with its centre at (x, y, z)."""
+    worst = 1e9
+    for k in range(8):
+        s0 = c[9] if k & 1 else -c[9]
+        s1 = c[10] if k & 2 else -c[10]
+        s2 = c[11] if k & 4 else -c[11]
+        d, _t = _distance(x + s0 * c[12] + s1 * c[15] + s2 * c[18], y + s0 * c[13] + s1 * c[16] + s2 * c[19], z + s0 * c[14] + s1 * c[17] + s2 * c[20],
+                          CORNER + 1.0, ox, oz, cell, nx, nz, start, items, A, B, C, lo_y, hi_y)
+        if d - CORNER < worst:
+            worst = d - CORNER
+    return worst
+
+
+@njit(cache=True)
 def _multi_tick(pos, vel, omega, push, ball, par, fans, fanpar, props, scene, margin, y_min,
                 ox, oz, cell, nx, nz, start, items, A, B, C, lo_y, hi_y, N, tri_fr, tri_el, tri_placed, tri_rail,
                 stamp, tickbox, ci, cd, cq, cf, cn, cg, order,
@@ -243,8 +305,8 @@ def _multi_tick(pos, vel, omega, push, ball, par, fans, fanpar, props, scene, ma
     on mesh and body on body, are solved together, one after another, a few times over: a ball struck by a rolling
     ball is pressed onto the floor by the friction between the two, and the floor then drags on it.
     A loose body is a sphere, or a box that slides and does not turn (it touches by its eight corners).
-    props (K, 19): mass, friction, elasticity, linear damping, angular damping, inertia, shape (0 sphere, 1 box),
-    half extents, the box's three axes in world. scene (K, 11), in place: position, velocity, angular velocity,
+    props (K, 20): mass, friction, elasticity, linear damping, angular damping, inertia, shape (0 sphere, 1 box),
+    half extents, the box's three axes in world, 1 if it is on a rail (it only slides along its own y axis). scene (K, 11), in place: position, velocity, angular velocity,
     flag (0 frozen, 1 awake, 2 gone), ticks it has been still.
     out: [0] the player's tick began with a hit, [1] how many points the player touches, [2] one is an edge or
     corner, [3] the best normal y of its mesh contacts, [4] carried, [5] on a rail, [6] it touches a placed object."""
@@ -257,6 +319,7 @@ def _multi_tick(pos, vel, omega, push, ball, par, fans, fanpar, props, scene, ma
     bv[0, 0], bv[0, 1], bv[0, 2] = vel[0], vel[1], vel[2]
     bw[0, 0], bw[0, 1], bw[0, 2] = omega[0], omega[1], omega[2]
     bc[0, 0], bc[0, 1], bc[0, 2], bc[0, 3], bc[0, 4], bc[0, 5], bc[0, 6], bc[0, 7], bc[0, 8] = ball[0], ball[4], ball[5], ball[2], ball[3], ball[7], -1.0, 1.0, 0.0
+    bc[0, 24] = 0.0
     for k in range(K):
         if scene[k, 9] == 2.0:
             continue
@@ -267,6 +330,7 @@ def _multi_tick(pos, vel, omega, push, ball, par, fans, fanpar, props, scene, ma
         bc[nb, 6], bc[nb, 7] = float(k), scene[k, 9]                    # which loose body; awake (1) or frozen (0)
         for q in range(13):
             bc[nb, 8 + q] = props[k, 6 + q]                             # shape, half extents, axes
+        bc[nb, 24] = props[k, 19]                                       # 1: it only slides along its own y axis (a rail)
         nb += 1
     lift = _fans_pushing(pos[0], pos[1], pos[2], fans, fanpar) * fanpar[4] / ball[0] if len(fans) > 0 else 0.0
     out[0] = 0.0
@@ -292,6 +356,23 @@ def _multi_tick(pos, vel, omega, push, ball, par, fans, fanpar, props, scene, ma
                     qx, qy, qz = bp[b, 0] + lo * mx, bp[b, 1] + lo * my, bp[b, 2] + lo * mz
                     if b == 0:
                         out[0] = 1.0
+        elif sweep != 0.0:
+            # a box: none of its corners may pass through a surface within the tick (a falling block lands, as a ball does)
+            # (a corner is small: the move is looked at in pieces no longer than the corner, or it could step right through)
+            pieces = int(math.sqrt(mx * mx + my * my + mz * mz) / CORNER) + 1
+            if _box_gap(bc[b], bp[b, 0], bp[b, 1], bp[b, 2], ox, oz, cell, nx, nz, start, items, A, B, C, lo_y, hi_y) > floor:
+                for piece in range(1, pieces + 1):
+                    f1 = piece / pieces
+                    if _box_gap(bc[b], bp[b, 0] + f1 * mx, bp[b, 1] + f1 * my, bp[b, 2] + f1 * mz, ox, oz, cell, nx, nz, start, items, A, B, C, lo_y, hi_y) < floor:
+                        lo, hi = (piece - 1) / pieces, f1
+                        for _ in range(12):
+                            mid = 0.5 * (lo + hi)
+                            if _box_gap(bc[b], bp[b, 0] + mid * mx, bp[b, 1] + mid * my, bp[b, 2] + mid * mz, ox, oz, cell, nx, nz, start, items, A, B, C, lo_y, hi_y) > floor:
+                                lo = mid
+                            else:
+                                hi = mid
+                        qx, qy, qz = bp[b, 0] + lo * mx, bp[b, 1] + lo * my, bp[b, 2] + lo * mz
+                        break
         bp[b, 0], bp[b, 1], bp[b, 2] = qx, qy, qz
         k_lin, k_rot = 1.0 - bc[b, 3] * dt, 1.0 - bc[b, 4] * dt
         if b == 0:
@@ -302,8 +383,12 @@ def _multi_tick(pos, vel, omega, push, ball, par, fans, fanpar, props, scene, ma
         else:
             bv[b, 0], bv[b, 1], bv[b, 2] = bv[b, 0] * k_lin, bv[b, 1] * k_lin - grav * dt, bv[b, 2] * k_lin
         bw[b, 0], bw[b, 1], bw[b, 2] = bw[b, 0] * k_rot, bw[b, 1] * k_rot, bw[b, 2] * k_rot
+        if bc[b, 24] != 0.0:
+            along = bv[b, 0] * bc[b, 15] + bv[b, 1] * bc[b, 16] + bv[b, 2] * bc[b, 17]
+            bv[b, 0], bv[b, 1], bv[b, 2] = along * bc[b, 15], along * bc[b, 16], along * bc[b, 17]
     for b in range(nb):
         bc[b, 21], bc[b, 22], bc[b, 23] = bp[b, 0], bp[b, 1], bp[b, 2]   # where each is, for the box tests
+    held = bp[:nb].copy()                                 # where each is before anything pushes it out of anything: a slider goes back onto its rail
     # ---- the contacts: each body on the mesh, then each pair of bodies
     nc = 0
     touching, edge, best_ny, carried, on_rail, placed = 0, False, -1.0, False, False, False
@@ -337,8 +422,7 @@ def _multi_tick(pos, vel, omega, push, ball, par, fans, fanpar, props, scene, ma
         else:
             # a box stands on what is under its corners, as long as there is something under its middle (once its
             # middle is over an edge it goes down: it does not turn here, so it cannot tip over the edge)
-            under, _t = _distance(bp[b, 0] - bc[b, 10] * bc[b, 15], bp[b, 1] - bc[b, 10] * bc[b, 16], bp[b, 2] - bc[b, 10] * bc[b, 17], 1.5,
-                                  ox, oz, cell, nx, nz, start, items, A, B, C, lo_y, hi_y)
+            over = _box_over_ground(bc[b], bp[b, 0], bp[b, 1], bp[b, 2], ox, oz, cell, nx, nz, start, items, A, B, C, lo_y, hi_y)
             for kc in range(8):
                 qx, qy, qz = _corner(bc[b], kc)
                 m = _contacts(qx, qy, qz, CORNER, touch, ox, oz, cell, nx, nz, start, items, A, B, C, lo_y, hi_y, N, stamp, tickbox,
@@ -346,7 +430,7 @@ def _multi_tick(pos, vel, omega, push, ball, par, fans, fanpar, props, scene, ma
                 for i in range(m):
                     k = order[i]
                     t = ci[k]
-                    if cn[k, 1] > 0.5 and under > 0.6:
+                    if cn[k, 1] > 0.5 and not over:
                         continue
                     if nc >= len(m_a):
                         break
@@ -391,9 +475,10 @@ def _multi_tick(pos, vel, omega, push, ball, par, fans, fanpar, props, scene, ma
             else:                                         # box on box: each one's corners against the other
                 for turn in range(2):
                     s, x = (a, b) if turn == 0 else (b, a)
+                    face, side = _face_axis(bc[s], bc[x])
                     for kc in range(8):
                         qx, qy, qz = _corner(bc[s], kc)
-                        gap, n0, n1, n2 = _box_point(qx, qy, qz, bc[x], bc[x, 9:12], CORNER)
+                        gap, n0, n1, n2 = _corner_face(qx, qy, qz, bc[x], face, side)
                         if gap > touch or nc >= len(m_a):
                             continue
                         m_a[nc], m_b[nc] = s, x
@@ -422,7 +507,8 @@ def _multi_tick(pos, vel, omega, push, ball, par, fans, fanpar, props, scene, ma
     # what it does to their contacts with the floor shows from the next tick on. MEASURED: the struck ball leaves
     # the tick with the speed of the plain two-body rule (within 3%), and loses 6 to 16% of it in the tick after.
     for phase in range(2):
-        for _ in range((iters if nc > 1 else 1) if phase == 0 else 1):
+        # (a pile of boxes has many contacts that lean on each other: it takes more passes to carry the weight down)
+        for _ in range((iters * (4 if nc > 12 else 1) if nc > 1 else 1) if phase == 0 else 1):
             for i in range(nc):
                 a, b = m_a[i], m_b[i]
                 if bc[a, 7] == 0.0 or (b >= 0 and bc[b, 7] == 0.0):
@@ -438,7 +524,15 @@ def _multi_tick(pos, vel, omega, push, ball, par, fans, fanpar, props, scene, ma
                 vn = bv[a, 0] * n0 + bv[a, 1] * n1 + bv[a, 2] * n2
                 if b >= 0:
                     vn -= bv[b, 0] * n0 + bv[b, 1] * n1 + bv[b, 2] * n2
-                j = (m_target[i] - vn) / (ima + imb)
+                # a body on a rail gives way only along the rail: across it, it is as heavy as the rail
+                ka, kb = ima, imb
+                if bc[a, 24] != 0.0:
+                    ka = ima * (n0 * bc[a, 15] + n1 * bc[a, 16] + n2 * bc[a, 17]) ** 2
+                if b >= 0 and bc[b, 24] != 0.0:
+                    kb = imb * (n0 * bc[b, 15] + n1 * bc[b, 16] + n2 * bc[b, 17]) ** 2
+                if ka + kb < 1e-12:
+                    continue
+                j = (m_target[i] - vn) / (ka + kb)
                 new = max(0.0, m_nimp[i] + j)
                 j = new - m_nimp[i]
                 m_nimp[i] = new
@@ -485,6 +579,12 @@ def _multi_tick(pos, vel, omega, push, ball, par, fans, fanpar, props, scene, ma
                     bw[b, 0] += (a1 * j2 - a2 * j1) * iib
                     bw[b, 1] += (a2 * j0 - a0 * j2) * iib
                     bw[b, 2] += (a0 * j1 - a1 * j0) * iib
+                    if bc[b, 24] != 0.0:
+                        along = bv[b, 0] * bc[b, 15] + bv[b, 1] * bc[b, 16] + bv[b, 2] * bc[b, 17]
+                        bv[b, 0], bv[b, 1], bv[b, 2] = along * bc[b, 15], along * bc[b, 16], along * bc[b, 17]
+                if bc[a, 24] != 0.0:
+                    along = bv[a, 0] * bc[a, 15] + bv[a, 1] * bc[a, 16] + bv[a, 2] * bc[a, 17]
+                    bv[a, 0], bv[a, 1], bv[a, 2] = along * bc[a, 15], along * bc[a, 16], along * bc[a, 17]
     # ---- out of the surfaces and out of each other
     for b in range(nb):
         if bc[b, 7] == 0.0:
@@ -494,15 +594,14 @@ def _multi_tick(pos, vel, omega, push, ball, par, fans, fanpar, props, scene, ma
         else:
             for _ in range(2):
                 bc[b, 21], bc[b, 22], bc[b, 23] = bp[b, 0], bp[b, 1], bp[b, 2]
-                under, _t = _distance(bp[b, 0] - bc[b, 10] * bc[b, 15], bp[b, 1] - bc[b, 10] * bc[b, 16], bp[b, 2] - bc[b, 10] * bc[b, 17], 1.5,
-                                      ox, oz, cell, nx, nz, start, items, A, B, C, lo_y, hi_y)
+                over = _box_over_ground(bc[b], bp[b, 0], bp[b, 1], bp[b, 2], ox, oz, cell, nx, nz, start, items, A, B, C, lo_y, hi_y)
                 for kc in range(8):
                     qx, qy, qz = _corner(bc[b], kc)
                     m = _contacts(qx, qy, qz, CORNER, 0.2, ox, oz, cell, nx, nz, start, items, A, B, C, lo_y, hi_y, N, stamp, tickbox,
                                   ci, cd, cq, cf, cn, cg, order)
                     for i in range(m):
                         k = order[i]
-                        if cg[k] < margin - 1e-6 and not (cn[k, 1] > 0.5 and under > 0.6):
+                        if cg[k] < margin - 1e-6 and not (cn[k, 1] > 0.5 and not over):
                             sh = (margin - cg[k]) / 4.0                 # four corners share a face's push
                             bp[b, 0] += sh * cn[k, 0]
                             bp[b, 1] += sh * cn[k, 1]
@@ -536,9 +635,10 @@ def _multi_tick(pos, vel, omega, push, ball, par, fans, fanpar, props, scene, ma
                 gap, n0, n1, n2 = 1e9, 0.0, 0.0, 0.0
                 for turn in range(2):
                     s, x = (a, b) if turn == 0 else (b, a)
+                    face, side = _face_axis(bc[s], bc[x])
                     for kc in range(8):
                         qx, qy, qz = _corner(bc[s], kc)
-                        g, e0, e1, e2 = _box_point(qx, qy, qz, bc[x], bc[x, 9:12], CORNER)
+                        g, e0, e1, e2 = _corner_face(qx, qy, qz, bc[x], face, side)
                         if g < gap:
                             gap = g
                             n0, n1, n2 = (e0, e1, e2) if turn == 0 else (-e0, -e1, -e2)
@@ -553,6 +653,10 @@ def _multi_tick(pos, vel, omega, push, ball, par, fans, fanpar, props, scene, ma
             bp[b, 2] -= sh * wb * n2
             bc[a, 21], bc[a, 22], bc[a, 23] = bp[a, 0], bp[a, 1], bp[a, 2]
             bc[b, 21], bc[b, 22], bc[b, 23] = bp[b, 0], bp[b, 1], bp[b, 2]
+    for b in range(1, nb):
+        if bc[b, 24] != 0.0:
+            along = (bp[b, 0] - held[b, 0]) * bc[b, 15] + (bp[b, 1] - held[b, 1]) * bc[b, 16] + (bp[b, 2] - held[b, 2]) * bc[b, 17]
+            bp[b, 0], bp[b, 1], bp[b, 2] = held[b, 0] + along * bc[b, 15], held[b, 1] + along * bc[b, 16], held[b, 2] + along * bc[b, 17]
     # ---- back into the state
     for q in range(3):
         pos[q], vel[q], omega[q] = bp[0, q], bv[0, q], bw[0, q]
@@ -781,9 +885,10 @@ class World:
         # box's half extents and its three axes in world
         self.prop_consts = np.array([[p["mass"], p["friction"], p["elasticity"], p["lin_damp"], p["rot_damp"], p["inertia"],
                                       1.0 if p.get("shape") == "box" else 0.0, *p.get("half", (0.0, 0.0, 0.0)),
-                                      *np.asarray(p.get("axes", np.eye(3)), float).ravel()] for p in self.props], np.float64).reshape(-1, 19)
+                                      *np.asarray(p.get("axes", np.eye(3)), float).ravel(), 1.0 if p.get("slider") else 0.0]
+                                     for p in self.props], np.float64).reshape(-1, 20)
         nb = len(self.props) + 1
-        self.multi = (np.empty((nb, 3)), np.empty((nb, 3)), np.empty((nb, 3)), np.zeros((nb, 24)), np.empty(MCAP, np.int64), np.empty(MCAP, np.int64),
+        self.multi = (np.empty((nb, 3)), np.empty((nb, 3)), np.empty((nb, 3)), np.zeros((nb, 25)), np.empty(MCAP, np.int64), np.empty(MCAP, np.int64),
                       np.empty((MCAP, 3)), np.empty(MCAP), np.empty(MCAP), np.empty(MCAP), np.empty((MCAP, 3)), np.zeros(8))
         self._fanpar: dict = {}
         self.tri_fr = np.array([float(m.entities[o].get("friction", 0.7)) if m.entities else 0.7 for o in m.owner])

@@ -144,7 +144,7 @@ def test_the_box_is_the_catalogues():
     info = dict(death_boxes=[], placements=[dict(name="b", type="P_Box", sector=1, position=[0.0, 1.0, 0.0], x_axis=[0.0, 0.0, 1.0], y_axis=[0.0, 1.0, 0.0], z_axis=[-1.0, 0.0, 0.0])])
     w = world_for(floor(), info, "strict", 1)
     assert len(w.props) == 1 and w.props[0]["settled"] and abs(w.props[0]["rest"][1] - 0.56) < 0.05      # it stands on the floor
-    assert w.props[0]["axes"][0] == [0.0, 0.0, 1.0] and w.prop_consts.shape == (1, 19) and w.prop_consts[0, 6] == 1.0
+    assert w.props[0]["axes"][0] == [0.0, 0.0, 1.0] and w.prop_consts.shape == (1, 20) and w.prop_consts[0, 6] == 1.0
 
 
 def test_who_can_push_what():
@@ -184,3 +184,83 @@ def test_a_ball_can_stand_on_a_box_and_a_box_goes_over_an_edge():
         if st != OK or scene[0, 9] == 2.0:
             break
     assert scene[0, 9] == 2.0 or scene[0, 1] < -10.0                    # pushed over the edge at x = 12: it is gone, or falling
+
+
+def rock(x):
+    """A falling rock as the kernel takes it: a crate on the floor and, on it, a block on an upright rail."""
+    table = {b["name"]: b for b in things.load()["P_Modul_34"].bodies}
+    def body(name, half, y, slider):
+        b = table[name]
+        return dict(kind=name, name=name, shape="box", mass=float(b["mass"]["v"]), friction=float(b["friction"]["v"]), elasticity=float(b["elasticity"]["v"]),
+                    lin_damp=float(b["lin_damp"]["v"]), rot_damp=float(b["rot_damp"]["v"]), inertia=props.LOCKED, half=half, axes=np.eye(3).tolist(),
+                    slider=slider, rest=[x, y, 0.0])
+    return [body("P_Modul_34_Kiste", (2.05, 2.5, 2.05), 0.56, False), body("P_Modul_34_Schiebestein", (2.5, 2.5, 2.5), 5.8, True)]
+
+
+def strike_rock(ball, v0, ticks=450):
+    w = World.of(floor(), props=rock(4.4))
+    scene = w.scene()
+    scene[:, 9] = 1.0
+    w.idle(scene, 400)
+    start = scene[:, :3].copy()
+    pos, vel, om = np.array([0.0, 0.011, 0.0]), np.array([v0, 0.0, 0.0]), np.array([0.0, 0.0, -v0 / 2.0])
+    for _ in range(ticks):
+        st, _d, pos, vel, om, _s, _t = w.rollout(ball, ph.Params(), pos, vel, om, np.array([[1.0, 0.0, 0.0]]), [1], scene=scene)
+        assert st == OK
+    return scene[0, 0] - start[0, 0], start[1, 1] - scene[1, 1], np.abs(scene[1, [0, 2]] - start[1, [0, 2]]).max()
+
+
+def test_the_falling_rock():
+    # MEASURED on the rebuilt engine (the catalogue's P_Modul_34), keys held: a stone ball at 5.95 to 8.20 pushes the crate
+    # out and the block comes down (8 of 8), at 3.33 it does not; a wood ball moves the crate 1.03-1.06 at 8.44 and 1.58-1.73
+    # at 10.94, the block stays; a paper ball does not move it
+    crate, drop, side = strike_rock(ph.STONE, 7.0)
+    assert crate > 5.0 and 4.5 < drop < 5.5 and side < 1e-9             # the block is down on the floor, and never left its rail
+    crate, drop, side = strike_rock(ph.STONE, 3.33)
+    assert crate < 5.0 and drop < 0.1
+    crate, drop, side = strike_rock(ph.WOOD, 8.44)
+    assert 0.8 < crate < 1.3 and drop < 0.1
+    crate, drop, side = strike_rock(ph.WOOD, 10.94)
+    assert 1.3 < crate < 1.9 and drop < 0.1
+    crate, drop, side = strike_rock(ph.PAPER, 11.04)
+    assert crate < 0.2 and drop < 0.1
+
+
+def test_a_mechanisms_parts_are_read_from_their_shapes():
+    def slab(x0, x1, y0, y1, z0, z1):
+        c = [np.array((x, y, z), float) for x in (x0, x1) for y in (y0, y1) for z in (z0, z1)]
+        q = ((0, 1, 3, 2), (4, 6, 7, 5), (0, 4, 5, 1), (2, 3, 7, 6), (0, 2, 6, 4), (1, 5, 7, 3))
+        return [t for a, b, d, e in q for t in ((c[a], c[b], c[d]), (c[a], c[d], c[e]))]
+    parts = [(slab(-40, 40, -2.0, -2.0, -40, 40)[4:6], dict(name="floor", groups=["Phys_Floors"])),
+             (slab(7.95, 12.05, -1.9, 2.2, -2.5, 2.5), dict(name="P_Modul_34_Kiste", placed=True, type="P_Modul_34", placement="R1", sector=1)),
+             (slab(7.5, 12.5, 2.4, 7.4, -2.5, 2.5), dict(name="P_Modul_34_Schiebestein", placed=True, type="P_Modul_34", placement="R1", sector=1))]
+    A, B, C, owner, ents = [], [], [], [], []
+    for tris, e in parts:
+        ents.append(e)
+        for t in tris:
+            A.append(t[0]); B.append(t[1]); C.append(t[2]); owner.append(len(ents) - 1)
+    m = Mesh(np.array(A), np.array(B), np.array(C), np.array(owner), np.zeros(len(A), bool), np.zeros((0, 7)), ents, {})
+    info = dict(death_boxes=[], placements=[dict(name="R1", type="P_Modul_34", sector=1, position=[0.0, 0.0, 0.0], x_axis=[1.0, 0.0, 0.0], y_axis=[0.0, 1.0, 0.0], z_axis=[0.0, 0.0, 1.0])])
+    got = {b["kind"]: b for b in props.part_boxes(info, m)}
+    assert np.allclose(got["P_Modul_34_Kiste"]["half"], (2.05, 2.05, 2.5)) and got["P_Modul_34_Schiebestein"]["slider"] and not got["P_Modul_34_Kiste"]["slider"]
+    assert np.allclose(got["P_Modul_34_Schiebestein"]["placed"], (10.0, 4.9, 0.0))
+    w = world_for(m, info, "strict", 1)
+    assert [p["kind"] for p in w.props] == ["P_Modul_34_Kiste", "P_Modul_34_Schiebestein"] and all(p["settled"] for p in w.props)
+    assert not any(e.get("type") == "P_Modul_34" and (w.mesh.owner == i).any() for i, e in enumerate(w.mesh.entities))    # their shapes left the mesh
+    assert w.props[1]["rest"][1] < 4.9 and w.props[1]["rest"][1] > 4.0      # the block came down onto the crate
+
+
+def test_boxes_one_on_another_and_on_a_slope():
+    w = World.of(floor(), props=[box(0.0, y=0.9), box(0.0, y=6.2)])        # exactly one above the other, a little apart
+    scene = w.scene()
+    scene[:, 9] = 1.0
+    w.idle(scene, 600)
+    assert (scene[:, 9] == 0.0).all() and abs(scene[1, 1] - scene[0, 1] - 5.0) < 0.2     # the upper one stands on the lower one
+    A = np.array([[-40.0, -2.0 - 40 * 0.36, -40.0], [40.0, -2.0 + 40 * 0.36, 40.0]]); B = np.array([[40.0, -2.0 + 40 * 0.36, -40.0], [-40.0, -2.0 - 40 * 0.36, 40.0]])
+    C = np.array([[-40.0, -2.0 - 40 * 0.36, 40.0], [40.0, -2.0 + 40 * 0.36, -40.0]])
+    slope = Mesh(A, B, C, np.zeros(2, np.int64), np.zeros(2, bool), np.zeros((0, 7)), [dict(name="slope", groups=[], friction=0.7, elasticity=0.3)], {})
+    w = World.of(slope, props=[box(0.0, y=2.5)])                            # a slope of 20 degrees: the box rests on its lower edge
+    scene = w.scene()
+    scene[:, 9] = 1.0
+    w.idle(scene, 900)
+    assert scene[0, 9] == 0.0 and not scene[0, 3:6].any() and abs(scene[0, 0]) < 3.0     # at rest, not stuck with a growing speed, not slid away

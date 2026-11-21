@@ -34,7 +34,14 @@ SETTLE_TICKS = 1320                                        # at most this long t
 # What going through a loose ball costs the coarse level, as way at the follower's pace: ASSUMED, only to rank ways
 # (from what a wood ball keeps of its speed: 0.9 against a paper one, 0.4 against a wood one, next to nothing
 # against a stone one, which it can only shove along slowly). Whether and how it gets through is the kernel's to say.
-COARSE_COST = {"paper": 2.0, "wood": 5.0, "stone": 30.0, "box": 15.0}
+COARSE_COST = {"paper": 2.0, "wood": 5.0, "stone": 30.0, "box": 15.0, "P_Modul_34_Kiste": 40.0, "P_Modul_34_Schiebestein": 80.0}
+
+# Mechanisms made of boxes. Each part is a box of its own in the scene, at the place and of the size its shape has in
+# the exported mesh (the template's, put where the map puts it); `slider`: it only slides along its own y axis.
+#   P_Modul_34, the falling rock: a crate standing on the lower floor carries a block that hangs on an upright rail.
+#   Push the crate out from under it and the block comes down (READ: the script's rail; MEASURED on the rebuilt engine:
+#   who can push the crate out, see docs/mechanisms.md).
+PARTS = {"P_Modul_34": {"P_Modul_34_Kiste": dict(slider=False), "P_Modul_34_Schiebestein": dict(slider=True)}}
 
 
 def bodies() -> dict:
@@ -56,14 +63,45 @@ def bodies() -> dict:
     return out
 
 
-def of(info: dict, sector, mesh=None) -> list:
-    """The loose balls that are there while `sector` is the current one: [dict(name, kind, mass, ..., placed, rest)].
-    `rest` is where the ball lies once it has settled: with a mesh (the fixed geometry, without the loose balls'
-    own shapes) each is let fall from where it was put; without one it is where it was put. sector None: none."""
+def part_boxes(info: dict, shapes, sector=None) -> list:
+    """The box-shaped parts of the mechanisms in PARTS, read from a mesh that still has the placed shapes:
+    [dict(kind (the part's name), name, sector, placed (centre), half, axes, slider)], the sector's or all."""
+    out = []
+    if shapes is None:
+        return out
+    for p in info.get("placements", ()):
+        parts = PARTS.get(p["type"])
+        if not parts or (sector is not None and p.get("sector") != sector):
+            continue
+        axes = np.array([np.array(p[k], float) / np.linalg.norm(p[k]) for k in ("x_axis", "y_axis", "z_axis")])
+        for i, e in enumerate(shapes.entities):
+            if e.get("placement") != p["name"] or e.get("name") not in parts:
+                continue
+            sel = shapes.owner == i
+            if not sel.any():
+                continue
+            V = np.vstack([shapes.A[sel], shapes.B[sel], shapes.C[sel]]) @ axes.T        # in the mechanism's own axes
+            lo, hi = V.min(0), V.max(0)
+            out.append(dict(kind=e["name"], name="%s/%s" % (p["name"], e["name"]), sector=p.get("sector"), placed=[float(v) for v in ((lo + hi) / 2) @ axes],
+                            half=tuple(float(v) for v in (hi - lo) / 2), axes=axes.tolist(), slider=bool(parts[e["name"]]["slider"])))
+    return out
+
+
+def of(info: dict, sector, mesh=None, shapes=None) -> list:
+    """The loose bodies that are there while `sector` is the current one: the loose balls, the boxes and the box-shaped
+    parts of mechanisms: [dict(name, kind, mass, ..., placed, rest)]. `rest` is where the body lies once it has
+    settled: with a mesh (the fixed geometry, without the bodies' own shapes) each is let fall from where it was
+    put; without one it is where it was put. shapes: a mesh that still has the placed shapes, for the mechanisms'
+    parts. sector None: none."""
     if sector is None:
         return []
     table = bodies()
     out = []
+    cat = things.load()
+    for b in part_boxes(info, shapes, sector):
+        c = next(x for x in cat[b["kind"][:10]].bodies if x["name"] == b["kind"])           # "P_Modul_34"
+        out.append(dict(b, shape="box", mass=float(c["mass"]["v"]), friction=float(c["friction"]["v"]), elasticity=float(c["elasticity"]["v"]),
+                        lin_damp=float(c["lin_damp"]["v"]), rot_damp=float(c["rot_damp"]["v"]), inertia=LOCKED, rest=list(b["placed"])))
     for p in info.get("placements", ()):
         kind = KINDS.get(p["type"])
         if kind and p.get("sector") == sector:
