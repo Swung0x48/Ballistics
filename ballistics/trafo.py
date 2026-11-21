@@ -32,7 +32,7 @@ import numpy as np
 from . import things
 
 KINDS = {"P_Trafo_Wood": "wood", "P_Trafo_Stone": "stone", "P_Trafo_Paper": "paper"}
-SOLVED = ("wood", "stone")       # the kinds a route can go on as: the paper ball is not a sphere in the game and is not solved yet
+SOLVED = ("wood", "stone", "paper")       # the kinds a route can go on as (the paper ball as a sphere: a stand-in, see docs/mechanisms.md)
 
 
 @dataclass(frozen=True)

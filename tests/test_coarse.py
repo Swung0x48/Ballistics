@@ -69,11 +69,31 @@ def test_a_placed_object_blocks_and_a_trigger_is_kept_out_of():
     assert blocked.route(blocked.nearest((2, 2, 2.5)), blocked.nearest((28, 2, 2.5)))[0] is None
     free = coarse.build(mesh([(road, False)]))
     assert free.route(free.nearest((2, 2, 2.5)), free.nearest((28, 2, 2.5)))[0] is not None
-    # a paper transformer in the middle of a road as wide as its range: no way past (the paper ball is not solved)
-    kept = coarse.build(mesh([(road, False)]), avoid=coarse.keep_out([dict(type="P_Trafo_Paper", position=[15.0, 0.0, 2.5])]))
-    assert kept.route(kept.nearest((2, 2, 2.5)), kept.nearest((28, 2, 2.5)))[0] is None
-    # a stone transformer is not kept out of: the way leads through it (`solve.graph_for` makes it cost the transformation)
-    assert coarse.keep_out([dict(type="P_Trafo_Stone", position=[15.0, 0.0, 2.5])]) == []
+    # no transformer is kept out of: the way leads through it (`solve.layered_for` makes it cost the transformation,
+    # and a paper one takes the plan into the paper ball's layer)
+    for kind in ("P_Trafo_Stone", "P_Trafo_Paper"):
+        assert coarse.keep_out([dict(type=kind, position=[15.0, 0.0, 2.5])]) == []
+
+
+def test_the_coarse_level_in_two_layers_by_the_balls_kind():
+    """Through a paper transformer the plan goes on in the paper ball's layer; a lift is there only; a push board's
+    edge is not."""
+    road = quad(0, 40, 0, 5, 0.0)
+    g = coarse.build(mesh([(road, False)]))
+    rel = coarse.Relaxed(g)
+    N = len(g.pos)
+    a, b, t = g.nearest((2, 2, 2.5)), g.nearest((38, 2, 2.5)), g.nearest((20, 2, 2.5))
+    into_paper = {int(v): 7.0 for v in np.flatnonzero(np.linalg.norm(g.pos - g.pos[t], axis=1) < 4.3)}
+    lay = coarse.Layered(rel, g, into_paper, {}, lifts=[(b, a, 1.0)], drop=[])
+    togo = lay.togo(a)
+    nodes, kinds = lay.plan(b, togo)                              # from b back to a, as a wood ball: through the transformer
+    assert nodes[-1] in (a, N + a) and any(n >= N for n in nodes) and nodes[0] < N
+    first_paper = next(i for i, n in enumerate(nodes) if n >= N)
+    assert all(i >= first_paper for i, k in enumerate(kinds) if k == "lift")   # a lift only once it is a paper ball
+    nodes, kinds = lay.plan(N + b, togo)                          # as a paper ball: the lift goes straight there
+    assert kinds == ["lift"] and nodes[-1] == N + a
+    lay2 = coarse.Layered(rel, g, {}, {}, drop=[(u, v) for u in range(N) for v, _c, _k in g.adj[u]])
+    assert lay2.togo(a)[N + b] == np.inf or lay2.togo(a)[N + b] > togo[b]       # without its edges the paper layer has only the links
 
 
 def test_the_coarse_plan_alone_lists_its_links_and_draws_with_its_keys_outside_the_map(tmp_path):

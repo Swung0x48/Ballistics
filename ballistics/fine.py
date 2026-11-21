@@ -97,12 +97,16 @@ class Search:
         self.T = np.ascontiguousarray(targets, np.float64).reshape(-1, 3)
         self.reach = reach
         self.G = None
+        self._guide = {}                         # by the ball's kind ("paper", or "other"): (places, how far each is, grid)
         if places is not None:
-            ok = np.isfinite(togo)
-            self.G, self.togo = np.ascontiguousarray(places, np.float64)[ok], np.asarray(togo, np.float64)[ok]
-            self._ggrid: dict = {}
-            for i, p in enumerate(self.G):
-                self._ggrid.setdefault((int(p[0] // 6), int(p[2] // 6)), []).append(i)
+            for k, t in (togo.items() if isinstance(togo, dict) else (("other", togo),)):
+                ok = np.isfinite(t)
+                G, T = np.ascontiguousarray(places, np.float64)[ok], np.asarray(t, np.float64)[ok]
+                grid: dict = {}
+                for i, p in enumerate(G):
+                    grid.setdefault((int(p[0] // 6), int(p[2] // 6)), []).append(i)
+                self._guide[k] = (G, T, grid)
+            self.G, self.togo, self._ggrid = self._guide["other"] if "other" in self._guide else next(iter(self._guide.values()))
         self.rng = np.random.default_rng(seed)
         # every state ever kept (never changed afterwards: later states hang on them by `parent`)
         self.pos, self.vel, self.omega = [], [], []
@@ -128,15 +132,18 @@ class Search:
                 return d                           # nothing outside the cells looked at can be nearer
         return float(np.sqrt(((self.T - p) ** 2).sum(1)).min())
 
-    def score(self, p) -> float:
-        """What the search steers by: lower is nearer the goal."""
+    def score(self, p, kind: str | None = None) -> float:
+        """What the search steers by: lower is nearer the goal (by the coarse level's layer of the ball's kind)."""
         if self.G is None:
             return self.distance(p)
+        G, T, grid = self._guide.get("paper" if kind == "paper" else "other") or (self.G, self.togo, self._ggrid)
+        if not len(G):
+            return self.distance(p)
         i, j = int(p[0] // 6), int(p[2] // 6)
-        near = [k for di in (-1, 0, 1) for dj in (-1, 0, 1) for k in self._ggrid.get((i + di, j + dj), ())]
+        near = [k for di in (-1, 0, 1) for dj in (-1, 0, 1) for k in grid.get((i + di, j + dj), ())]
         if not near:
-            return float((3.0 * np.sqrt(((self.G - p) ** 2).sum(1)) + self.togo).min())
-        return float((3.0 * np.sqrt(((self.G[near] - p) ** 2).sum(1)) + self.togo[near]).min())
+            return float((3.0 * np.sqrt(((G - p) ** 2).sum(1)) + T).min())
+        return float((3.0 * np.sqrt(((G[near] - p) ** 2).sum(1)) + T[near]).min())
 
     def arrived(self, pos, vel, stats) -> bool:
         """Rolling on a target place: carried (by a rail, or by a face under it) at a target place's height and spot."""
@@ -165,10 +172,10 @@ class Search:
             a.append(v)
         if k is None:
             self.cell[key] = len(self.slot)
-            for a, v in ((self.slot, i), (self.h, self.score(pos)), (self.visits, 0), (self.ground, bool(stats[5] > 0))):
+            for a, v in ((self.slot, i), (self.h, self.score(pos, kind)), (self.visits, 0), (self.ground, bool(stats[5] > 0))):
                 a.append(v)
         else:
-            self.slot[k], self.h[k] = i, self.score(pos)
+            self.slot[k], self.h[k] = i, self.score(pos, kind)
         return i
 
     def add_start(self, s: ph.State, grounded: bool = True, scene=None) -> int:

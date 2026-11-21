@@ -102,7 +102,7 @@ class Graph:
 # trigger distance. Objects that do not hinder a wood ball are not listed (score and life balls, the wood transformer).
 # Loose balls (P_Ball_*) are not kept out of: a rolling ball knocks them aside. That is ASSUMED too, and a way that
 # passes one is reported as passing it.
-KEEP_OUT = {"P_Trafo_Paper": TRIGGER_R + 0.3}      # the paper ball is not solved: a route does not go into a paper transformer
+KEEP_OUT: dict = {}      # nothing placed is kept out of now (a paper transformer was, until the paper ball was solved)
 LOOSE = ("P_Ball_", "P_Box", "P_Modul_34", "P_Modul_01", "P_Modul_25")       # loose balls, boxes, the falling rock, the gate, the push board: rigid bodies of their own (`ballistics.props`), not fixed shapes
 
 
@@ -437,6 +437,80 @@ class Relaxed:
 
     def plan(self, u: int, togo: np.ndarray):
         """The way from place u to the goal: (places, kind of the edge leaving each but the last)."""
+        nodes, kinds = [int(u)], []
+        while togo[nodes[-1]] > 0 and np.isfinite(togo[nodes[-1]]):
+            v, c, k = min(self.fwd[nodes[-1]], key=lambda e: e[1] + togo[e[0]])
+            nodes.append(int(v))
+            kinds.append(k)
+        return nodes, kinds
+
+
+class Layered:
+    """The relaxed coarse graph in two layers, by the ball's kind: 0 a wood or stone ball, 1 a paper ball. A place u
+    is u in layer 0 and N + u in layer 1. The layers have the same edges, except:
+    * an edge into a paper transformer's range leads from layer 0 into layer 1, at the transformation's cost; one
+      into a wood or stone transformer's range leads from layer 1 into layer 0 (a stone one's cost is on the edge
+      already, `solve.graph_for`; a wood one's is added);
+    * layer 1 has the fans' lift edges (`solve.fan_lifts`): only a paper ball is blown up;
+    * in layer 1 the edges across push boards cost `dear` more: a paper ball cannot push one over (READ), it can only
+      roll across one that a wood or stone ball has pushed over before;
+      the coarse level does not know whether that was done, the kernel does.
+    The goal is reached in either layer."""
+
+    def __init__(self, rel: "Relaxed", g: Graph, into_paper: dict, into_other: dict, lifts=(), drop=(), dear: float = 200.0):
+        N = len(g.pos)
+        self.g, self.N = g, N
+        drop = set(drop)
+        fwd = [None] * (2 * N)
+        for u in range(N):
+            f0, f1 = [], []
+            for v, c, k in rel.fwd[u]:
+                if v in into_paper:
+                    f0.append((N + v, c + into_paper[v], k))
+                else:
+                    f0.append((v, c, k))
+                c1 = c + dear if (u, v) in drop else c
+                if v in into_other:
+                    f1.append((v, c1 + into_other[v], k))
+                else:
+                    f1.append((N + v, c1, k))
+            fwd[u], fwd[N + u] = f0, f1
+        for u, v, c in lifts:
+            fwd[N + u] = fwd[N + u] + [(N + v, c, "lift")]
+        self.fwd = fwd
+        self.back = [[] for _ in range(2 * N)]
+        for u in range(2 * N):
+            for v, c, _k in fwd[u]:
+                self.back[v].append((u, c))
+
+    def with_edges(self, edges) -> "Layered":
+        """The same graph with these edges (u, v, cost, kind) added in layer 0 (a gate pushed open: a paper ball cannot push one)."""
+        out = Layered.__new__(Layered)
+        out.g, out.N, out.fwd, out.back = self.g, self.N, list(self.fwd), list(self.back)
+        for u, v, c, k in edges:
+            out.fwd[u] = out.fwd[u] + [(v, c, k)]
+            out.back[v] = out.back[v] + [(u, c)]
+        return out
+
+    def togo(self, goal: int) -> np.ndarray:
+        """How far each place (2N: both layers) is from the goal, which counts in either layer."""
+        togo = np.full(len(self.fwd), np.inf)
+        heap = []
+        for gl in (goal, self.N + goal):
+            togo[gl] = 0.0
+            heap.append((0.0, gl))
+        while heap:
+            d, u = heapq.heappop(heap)
+            if d > togo[u]:
+                continue
+            for v, c in self.back[u]:
+                if d + c < togo[v]:
+                    togo[v] = d + c
+                    heapq.heappush(heap, (d + c, v))
+        return togo
+
+    def plan(self, u: int, togo: np.ndarray):
+        """The way from place u (of either layer) to the goal: (places of both layers, kind of each edge)."""
         nodes, kinds = [int(u)], []
         while togo[nodes[-1]] > 0 and np.isfinite(togo[nodes[-1]]):
             v, c, k = min(self.fwd[nodes[-1]], key=lambda e: e[1] + togo[e[0]])

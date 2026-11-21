@@ -252,6 +252,7 @@ def _robust(world, search, seed, tape, trials: int = 20, rng_seed: int = 1, scal
     return ok
 
 
+MAX_CROSSINGS = 3         # a break crossed this often, failing right after it each time, is left as a break
 OPERATE_COST = 20.0       # pushing a gate open, as way at the follower's pace: ASSUMED, only to rank plans
 OPERATE_TICKS = 198       # how long the push is held at the gate (1.5 game s: a stone ball pushes it open in 1.20 to 1.39, MEASURED)
 MORE_TRIES = 1.0          # after the first way across is found, the search goes on for as many tries again (at least MORE_AT_LEAST)
@@ -266,7 +267,7 @@ def _worth(world, search, seed, c, ball, before: int):
     is where the way leads (the ticks before it starts, its own, and the coarse level's estimate of what is left)."""
     n1 = _robust(world, search, seed, c.tape, scale=1, ball=ball, parts=c.parts)
     n3 = _robust(world, search, seed, c.tape, scale=3, ball=ball, parts=c.parts)
-    total = before + c.ticks + search.score(c.end) * TICKS_PER_COST
+    total = before + c.ticks + search.score(c.end, getattr(c, "end_ball", None)) * TICKS_PER_COST
     return (n1, n3, -total)
 
 
@@ -311,6 +312,36 @@ def _refine(world, search, seed, c, ball, before: int, rounds: int = REFINE_ROUN
     return best, worth, kept
 
 
+def _fan_bounds(world, segs, log) -> int:
+    """Run every stretch a paper ball takes near a fan again with the fans' least and most reach for a ball at a box's
+    edge; mark it seg["fan_bounds"] = {"least": arrives, "most": arrives} (arrives: not lost, and ending within 2.5 of
+    where it ended). Returns how many were checked."""
+    from .kernel import OK
+    from .solve import _lift_world
+    if not len(world.fans):
+        return 0
+    n = 0
+    bounds = {e: _lift_world(world, e) for e in ("least", "most")}
+    for sg in segs:
+        if sg.get("type") not in ("follow", "cross") or sg.get("ball") != "paper" or sg.get("end") is None or not len(sg.get("trace", ())):
+            continue
+        tr = np.asarray(sg["trace"])[:, :3]
+        hd = np.hypot(tr[:, None, 0] - world.fans[None, :, 0], tr[:, None, 2] - world.fans[None, :, 2])
+        if not (hd < 6.0).any():
+            continue
+        st0 = sg["start"]
+        res = {}
+        for e, w in bounds.items():
+            sc = np.array(st0[3], float) if len(st0) > 3 and st0[3] is not None and len(st0[3]) == len(w.props) else w.scene()
+            out = fine.replay(w, BALLS["paper"], ph.Params(), ph.State(np.array(st0[0], float), np.array(st0[1], float), np.array(st0[2], float)), sg["tape"], scene=sc)
+            res[e] = bool(out["status"] == OK and np.linalg.norm(out["pos"] - np.asarray(sg["end"][0], float)) <= 2.5)
+        sg["fan_bounds"] = res
+        n += 1
+        log("   a paper ball's stretch by a fan (%s, %.1f game s): with the least fan reach %s, with the most %s" % (
+            sg["type"], len(tr) / 132, "arrives" if res["least"] else "does NOT arrive", "arrives" if res["most"] else "does NOT arrive"))
+    return n
+
+
 def solve_sector(mesh, info, g, sector: int, tries: int = 300_000, seed: int = 0, log=print, start=None, ball: str = "wood") -> dict:
     """sector: 1-based. g: the coarse graph of `mesh` with the loose balls in it (solid).
     start: the state (pos, vel, omega) the ball enters the sector with, as in a normal game: the state it reached
@@ -323,23 +354,30 @@ def solve_sector(mesh, info, g, sector: int, tries: int = 300_000, seed: int = 0
     worlds = {m: world_for(mesh, info, m, sector) for m in ORDER}
     ball_now = BALLS[ball]
     strict = worlds["strict"]
-    rel = getattr(g, "_relaxed", None)
-    if rel is None:
-        rel = g._relaxed = coarse.Relaxed(g)
+    from .solve import layered_for
+    rel = layered_for(g, info)                                    # the coarse graph in two layers: a wood or stone ball, a paper ball
+    N = len(g.pos)
     anchors = [info["start"]] + info["checkpoints"] + [info["airship"]]
     goal = g.nearest(anchors[sector], 25.0)
     togo = rel.togo(goal)
+
+    def layer():
+        return 1 if ball_now.name == "paper" else 0
+
+    def tv():
+        """How far each place is from the goal, in the layer of the ball it is now."""
+        return togo[layer() * N:(layer() + 1) * N]
     reset = info["reset_points"][sector - 1]
     s0 = fine.rest_state(strict, reset[0], reset[2], reset[1] + 0.5)
     state = (s0.pos, s0.vel, s0.omega) if start is None else tuple(np.array(x, float) for x in start[:3])
     # a closed gate blocks the upper road (`solve.gate_edges`): a plan may first go to it, push it open and then
     # go on through it, if that is cheaper on the coarse level than the way without it
     legs = []
-    here = nearest_node(g, togo, state[0])
-    best_cost = float(togo[here])
+    here = nearest_node(g, tv(), state[0])
+    best_cost = float(tv()[here])
     for name, d in sorted(g.info.get("gates", {}).items()):
-        if d["sector"] != sector or d["operate"] < 0 or not d["edges"]:
-            continue
+        if d["sector"] != sector or d["operate"] < 0 or not d["edges"] or layer() != 0:
+            continue                                              # (a paper ball cannot push a gate)
         rel_open = rel.with_edges(d["edges"])
         to_gate, after = rel.togo(d["operate"]), rel_open.togo(goal)
         cost = float(to_gate[here]) + OPERATE_COST + float(after[d["operate"]])
@@ -378,7 +416,10 @@ def solve_sector(mesh, info, g, sector: int, tries: int = 300_000, seed: int = 0
                 b["status"] = "bypassed"
 
     def replan(pos):
-        nodes, kinds = rel.plan(nearest_node(g, togo, pos), togo)
+        # from the place nearest in the layer of the ball it is; the plan goes on in the other layer past a
+        # transformer of the other kind: its places are the same places
+        nodes, kinds = rel.plan(layer() * N + nearest_node(g, tv(), pos), togo)
+        nodes = [n % N for n in nodes]
         register(nodes, kinds)
         return nodes, kinds
 
@@ -421,8 +462,8 @@ def solve_sector(mesh, info, g, sector: int, tries: int = 300_000, seed: int = 0
         # kernel run that made the edge (its start place alone may be far from the ledge)
         way, node_of = [g.pos[nodes[0]]], [0]
         for e, k in enumerate(kinds):
-            if k == "launch":
-                for q in g.info["launches"][(nodes[e], nodes[e + 1])]["way"][1:]:
+            if k in ("launch", "lift"):
+                for q in g.info["launches" if k == "launch" else "lifts"][(nodes[e], nodes[e + 1])]["way"][1:]:
                     way.append(np.asarray(q, np.float64))
                     node_of.append(e)
             way.append(g.pos[nodes[e + 1]])
@@ -482,7 +523,7 @@ def solve_sector(mesh, info, g, sector: int, tries: int = 300_000, seed: int = 0
         b["why"] = "%s on a '%s' edge" % (r["reason"], kinds[k])
         # where a crossing may arrive: any place as near the goal as the far side, and any place the coarse level's
         # own edges lead from to such a place (a wall top that drops to the far side is as good as the far side)
-        beyond = togo <= togo[nodes[kt]] + 1e-9
+        beyond = tv() <= tv()[nodes[kt]] + 1e-9
         listed = isinstance(b["key"][0], (int, np.integer))       # a break of the plan, not a place where the follower failed on a rolling edge
         if listed:
             stack = list(np.flatnonzero(beyond))
@@ -497,8 +538,11 @@ def solve_sector(mesh, info, g, sector: int, tries: int = 300_000, seed: int = 0
             # the coarse level's own edges lead from here to beyond the break: the plan only took a shortcut link.
             # Drop that link and plan again
             u, v = b["key"]
-            rel.fwd[u] = [e for e in rel.fwd[u] if e[0] != v or e[2] != b["kind"]]
-            rel.back[v] = [e for e in rel.back[v] if e[0] != u] + [(u, c) for w, c, kk in rel.fwd[u] if w == v]
+            lu = layer() * N + u                                  # (in the layer of the ball it is)
+            gone = [e for e in rel.fwd[lu] if e[0] % N == v and e[2] == b["kind"]]
+            rel.fwd[lu] = [e for e in rel.fwd[lu] if not (e[0] % N == v and e[2] == b["kind"])]
+            for w_, c_, _k in gone:
+                rel.back[w_] = [e for e in rel.back[w_] if e[0] != lu] + [(lu, c) for ww, c, kk in rel.fwd[lu] if ww == w_]
             togo = rel.togo(goal)
             b["status"] = "bypassed"
             state = segs[-1]["end"] if segs[-1]["end"] is not None else state
@@ -524,7 +568,7 @@ def solve_sector(mesh, info, g, sector: int, tries: int = 300_000, seed: int = 0
         if older:
             pools.append(("the whole sector so far", thin(older, 120) + thin(usable, 80)))
         def attempt(mode, where, cand):
-            s = fine.Search(worlds[mode], targets, ball=ball_now, seed=seed, places=g.pos, togo=togo, transforms=True)
+            s = fine.Search(worlds[mode], targets, ball=ball_now, seed=seed, places=g.pos, togo=dict(other=togo[:N], paper=togo[N:]), transforms=True)
             ids = {}
             for si, h in cand:
                 idx = s.add_start(ph.State(h[2], h[3], h[4]), scene=h[5] if mode == "strict" else None)
@@ -540,12 +584,16 @@ def solve_sector(mesh, info, g, sector: int, tries: int = 300_000, seed: int = 0
                                                                            "crossed (%d ways)" % len(s.goals) if c.found else "not crossed", c.expansions, c.seconds))
             return (mode, s, c, ids) if c.found else None
 
-        # A break counts as crossed only in strict mode
+        # A break counts as crossed only in strict mode. One crossed again and again without the ball getting on past it
+        # (it fails right after it each time) is not crossed: it stays a break
+        b["times"] = b.get("times", 0) + 1
         found = None
-        for where, cand in pools:
+        for where, cand in (pools if b["times"] <= MAX_CROSSINGS else ()):
             found = attempt("strict", where, cand)
             if found:
                 break
+        if b["times"] > MAX_CROSSINGS:
+            log("   %s at %s: crossed %d times already and the ball got no further each time: left as a break" % (b["no"], np.round(b["near"], 1), MAX_CROSSINGS))
         if not found:
             # It stays a break. One more run with the loose balls taken out only says whether they are what stands
             # in the way: its trajectory is not used, and nothing after this break counts as reached
@@ -614,6 +662,10 @@ def solve_sector(mesh, info, g, sector: int, tries: int = 300_000, seed: int = 0
             state, mode_now, seeds = (s1.pos, s1.vel, s1.omega, strict.scene()), BASE, []
             nodes, kinds = nodes[kt:], kinds[kt:]
     goal = final_goal                                             # (a plan that never got to its gate has not reached it)
+    # a paper ball by a fan: whether it is pushed at a box's edge depends on its orientation, which the kernel does
+    # not know (`fans.Rules.params`). Each stretch of the way taken that a paper ball rolls near a fan is run again
+    # with the two bounds: it is sure only if it gets to the same end with both
+    fan_bounds_checked = _fan_bounds(strict, segs, log)
     # at the goal: the last stretch ends there, whether the follower rolled it or a searched crossing arrived on it
     reached = bool(segs and segs[-1]["type"] in ("follow", "cross") and segs[-1]["end"] is not None and np.linalg.norm(segs[-1]["end"][0] - g.pos[goal]) <= 2.5)
     unresolved = [breaks[k]["no"] for k in order if breaks[k]["status"] == "unresolved"]

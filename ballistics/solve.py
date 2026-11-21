@@ -173,6 +173,159 @@ def board_edges(g, info: dict, parts: list) -> dict:
     return out
 
 
+LIFT_WAITS = (0, 40, 80, 130)     # ticks a paper ball rises in the fan's column before it is pushed towards the way out
+LIFT_ENTRIES, LIFT_EXITS = 3, 40  # places tried per fan: where it is entered from, where it is left to
+LIFT_UNSURE = 1.5                 # the cost of a lift that only works with one of the two fan bounds is this many times its time
+
+
+def _lift_world(world, edge: str):
+    """The same world with the fans' other bound for a ball at a box's edge (`fans.Rules.params`)."""
+    import copy
+    w2 = copy.copy(world)
+    w2.fan_edge, w2._fanpar, w2._ballc = edge, {}, {}
+    return w2
+
+
+def _lift_try(world, start, legs, reach: float = 1.0):
+    """A paper ball from rest at `start`: each leg (push, ticks, until) is held for up to `ticks` ticks, in chunks of 8,
+    until the ball's centre is horizontally within `reach` of its `until` point (None: the whole time). Returns
+    (tape [(push, ticks)], trace, whether it was not lost)."""
+    from .kernel import OK
+    pos, vel, om = np.array(start, float), np.zeros(3), np.zeros(3)
+    tape, traces = [], []
+    for a, ticks, until in legs:
+        done = 0
+        while done < ticks:
+            if until is not None and math.hypot(pos[0] - until[0], pos[2] - until[2]) < reach:
+                break
+            st, d, pos, vel, om, s, tr = world.rollout(ph.PAPER, ph.Params(), pos, vel, om, fine.PUSHES[a:a + 1], [8], trace=True)
+            traces.append(tr)
+            if tape and tape[-1][0] == a:
+                tape[-1] = (a, tape[-1][1] + d)
+            else:
+                tape.append((a, d))
+            done += d
+            if st != OK:
+                return tape, np.concatenate(traces), False
+    return tape, (np.concatenate(traces) if traces else np.zeros((0, 9))), True
+
+
+def fan_lifts(g, mesh: Mesh, info: dict, log=print) -> dict:
+    """The fans' lift edges, for a paper ball only (`coarse.Layered`): from a place near a fan's axis up to a place
+    beside or above it, found by rolling the paper ball in the kernel with that sector's fans: it rolls to the axis,
+    rises in the column for a while (LIFT_WAITS), then is pushed towards the way out and let go there. An edge is
+    kept where that ends on the place, carried. It is tried again with the fans' two bounds for a ball at a box's
+    edge (`fans.Rules.params`): one that arrives with only one of them is unsure (it depends on the ball's
+    orientation) and costs more. {(u, v): dict(sector, tape, ticks, way, both, bounds, cost)}."""
+    from . import fans
+    from .launch import FOLLOW_SPEED
+    out = {}
+    P = g.pos
+    floor = g.kind == 0
+    sectors = sorted({p["sector"] for p in info["placements"] if p["type"] == fans.TYPE and p.get("sector")})
+    pushes = fine.PUSHES
+
+    def towards(d):
+        d = np.asarray(d, float)
+        d = d / max(np.linalg.norm(d), 1e-9)
+        return int(np.argmax(pushes[:, [0, 2]] @ d))
+
+    for s in sectors:
+        w = world_for(mesh, info, "free", s)
+        bounds = {e: _lift_world(w, e) for e in ("least", "most")}
+        for f in w.fans:
+            o = f[:3]
+            hd = np.hypot(P[:, 0] - o[0], P[:, 2] - o[2])
+            ent = np.flatnonzero(floor & (hd <= 5.0) & (P[:, 1] >= o[1] - 2.0) & (P[:, 1] <= o[1] + 17.0))
+            ent = ent[np.argsort(hd[ent])][:LIFT_ENTRIES]
+            # where it may be left to: MEASURED, the paper ball's rides in level 2's original records land 7 to 29 from
+            # the fan's axis (p10 to p90, at most 61) and -1 to 20 above its origin
+            ex = np.flatnonzero(floor & (hd >= 4.0) & (hd <= 32.0) & (P[:, 1] >= o[1] - 1.5) & (P[:, 1] <= o[1] + 25.0))
+            if not len(ent) or not len(ex):
+                continue
+            pick = [int(ex[0])]                            # exits spread over what is there (furthest point first)
+            dmin = np.linalg.norm(P[ex] - P[pick[0]], axis=1)
+            while len(pick) < min(LIFT_EXITS, len(ex)):
+                k = int(dmin.argmax())
+                if dmin[k] < 1.5:
+                    break
+                pick.append(int(ex[k]))
+                dmin = np.minimum(dmin, np.linalg.norm(P[ex] - P[ex[k]], axis=1))
+            for u in ent:
+                start = P[u] + np.array([0.0, 0.014, 0.0])
+                for v in pick:
+                    if P[v, 1] - P[u, 1] < 1.0 and math.hypot(P[v, 0] - P[u, 0], P[v, 2] - P[u, 2]) < 8.0:
+                        continue                               # (rolling covers that)
+                    best = None
+                    for wait in LIFT_WAITS:
+                        legs = []
+                        if hd[u] > 1.0:
+                            legs.append((towards(o[[0, 2]] - P[u, [0, 2]]), 90, o))
+                        legs.append((0, wait, None))
+                        legs.append((towards(P[v, [0, 2]] - o[[0, 2]]), 300, P[v]))
+                        legs.append((0, 120, None))
+                        tape, tr, alive = _lift_try(w, start, legs)
+                        if not len(tr):
+                            continue
+                        near = np.flatnonzero((np.linalg.norm(tr[:, :3] - P[v], axis=1) <= 2.5) & (tr[:, 7] > 0))
+                        if not len(near):
+                            continue
+                        ticks = int(near[0]) + 1
+                        if best is None or ticks < best["ticks"]:
+                            cut, n = [], 0
+                            for a, k in tape:                  # the tape up to the arrival
+                                if n >= ticks:
+                                    break
+                                cut.append((a, min(k, ticks - n)))
+                                n += k
+                            best = dict(tape=cut, ticks=ticks, trace=tr[:ticks])
+                    if best is None:
+                        continue
+                    ok = {}
+                    for e, wb in bounds.items():
+                        st, d, p2, _v, _o, _s2, tr2 = wb.rollout(ph.PAPER, ph.Params(), start, np.zeros(3), np.zeros(3),
+                                                                np.array([pushes[a] for a, _k in best["tape"]]), [k for _a, k in best["tape"]], trace=True)
+                        ok[e] = bool(len(tr2) and np.linalg.norm(tr2[-1, :3] - P[v]) <= 2.5)
+                    both = ok["least"] and ok["most"]
+                    way, last = [], None
+                    for q in best["trace"][:, :3]:
+                        if last is None or np.linalg.norm(q - last) >= 1.0:
+                            way.append(q)
+                            last = q
+                    way.append(P[v])
+                    cost = best["ticks"] / 66.0 * FOLLOW_SPEED * (1.0 if both else LIFT_UNSURE)
+                    key = (int(u), int(v))
+                    if key not in out or cost < out[key]["cost"]:
+                        out[key] = dict(sector=s, tape=best["tape"], ticks=best["ticks"], way=np.array(way, np.float32), both=both, bounds=ok, cost=cost)
+    log("fan lifts: %d edges for a paper ball (%d of them with both fan bounds)" % (len(out), sum(e["both"] for e in out.values())))
+    return out
+
+
+def layered_for(g, info: dict):
+    """The relaxed coarse graph in two layers by the ball's kind (`coarse.Layered`), made once per graph."""
+    lay = getattr(g, "_layered", None)
+    if lay is not None:
+        return lay
+    from . import trafo
+    from .launch import FOLLOW_SPEED
+    rel = getattr(g, "_relaxed", None)
+    if rel is None:
+        rel = g._relaxed = coarse.Relaxed(g)
+    R = trafo.rules()
+    cost = (R.body_after + 1) / 66.0 * FOLLOW_SPEED
+    into_paper, into_other = {}, {}
+    for t in trafo.of(info):
+        for v in np.flatnonzero(np.linalg.norm(g.pos - t["pos"], axis=1) < R.radius):
+            if t["kind"] == "paper":
+                into_paper[int(v)] = cost
+            else:
+                into_other[int(v)] = cost if t["kind"] == "wood" else 0.0     # (a stone one's cost is on the edge already)
+    lifts = [(u, v, e["cost"]) for (u, v), e in g.info.get("lifts", {}).items()]
+    drop = [(u, v) for d in g.info.get("boards", {}).values() for u, v, *_x in d["edges"]]
+    lay = g._layered = coarse.Layered(rel, g, into_paper, into_other, lifts, drop)
+    return lay
+
+
 def graph_for(mesh: Mesh, info: dict, cache: Path | None = None, log=print):
     """The coarse graph of a map: the domes are geometry, the loose balls are not obstacles but cost to go through,
     a stone transformer costs its transformation, a paper transformer is kept out of."""
@@ -185,7 +338,8 @@ def graph_for(mesh: Mesh, info: dict, cache: Path | None = None, log=print):
     marks = dict(fixed_bodies=fixed, transformers="wood and stone ones can be gone through, at the cost of the transformation",
                  loose_balls="bodies: gone through at a cost %s; parts of %s" % (sorted(props.COARSE_COST.items()), sorted(props.PARTS)),
                  gate_rule="a closed gate blocks the edges into it, the target plate only past the face it is pushed on; the edges it clears when pushed open %.2f are kept per gate" % GATE_OPEN,
-                 board_rule="a push board is crossed where it is pushed: road places in front of it lead across to the far side, cost %.1f more" % BOARD_COST)
+                 board_rule="a push board is crossed where it is pushed: road places in front of it lead across to the far side, cost %.1f more" % BOARD_COST,
+                 lift_rule="fan lifts for a paper ball (exits 4 to 32 out, -1.5 to 25 up): waits %s, %d entries and %d exits per fan, unsure x%.1f" % (LIFT_WAITS, LIFT_ENTRIES, LIFT_EXITS, LIFT_UNSURE))
     if cache is not None and cache.exists():
         g = pickle.load(open(cache, "rb"))
         n = g.info.get("mesh_triangles")                  # graphs cached before this was recorded have none
@@ -223,6 +377,7 @@ def graph_for(mesh: Mesh, info: dict, cache: Path | None = None, log=print):
             g.adj[u] = [(v, c + props.COARSE_COST[b["kind"]] if inside[v] else c, k) for v, c, k in g.adj[u]]
     g.info["gates"] = gate_edges(g, info, parts)
     g.info["boards"] = board_edges(g, info, parts)
+    g.info["lifts"] = fan_lifts(g, mesh, info, log=log)
     for name, d in g.info["boards"].items():
         log("push board %s (sector %s): %d edges across it" % (name, d["sector"], len(d["edges"])))
     for name, d in g.info["gates"].items():
