@@ -1,0 +1,535 @@
+{
+ "id": "P_Trafo",
+ "name_zh": "变球器（P_Trafo_Wood 木变、P_Trafo_Stone 石变、P_Trafo_Paper 纸变）",
+ "category": "trigger",
+ "types": [
+  "P_Trafo_Paper",
+  "P_Trafo_Stone",
+  "P_Trafo_Wood"
+ ],
+ "summary_zh": "变球器：纯距离触发，没有刚体，不挡球也不能站。每个行为帧取离球原点三维最近的一个变球器，距离小于 4.3 且与球异种才变球；最近的是同种时更远的异种不触发。木变只对石球、纸球起作用，石变、纸变同理。每次变球从检测到能操控 132 fps 下 333 个物理步（约 2.52 游戏秒），其间球没有刚体、按键无效，计时和分数照走（约 5 分）。新球在变球器局部 (0, 3, 0) 静止出生，进来的速度不保留，所以它也能接住下落或高速的球。倾斜的变球器上新球在斜坡上出生，有的单键也停不住。别的小节的、隐藏的变球器照样起作用。碎片碰不到玩家球，但撞得醒冻结的机关、推得动箱子。",
+ "uses": [
+  "transform_timing",
+  "trafo_other_sector",
+  "death_timing",
+  "sector_rebuild",
+  "score_timer",
+  "ball_limits",
+  "fan_law",
+  "freeze_wake",
+  "contact",
+  "units"
+ ],
+ "bodies": [
+  {
+   "name": "P_Trafo_Wood_MF / P_Trafo_Stone_MF / P_Trafo_Paper_MF",
+   "role_zh": "占位物体：它的原点是触发距离的测量点；没有刚体和碰撞形状，球穿过它的模型。同类变球器共用几个物体，按小节搬到各行。",
+   "hull": {
+    "kind": "none",
+    "meshes": [],
+    "size": null,
+    "radius": null,
+    "basis": "READ",
+    "src": "measurement"
+   },
+   "motion": {
+    "kind": "none",
+    "axis": null,
+    "anchor": null,
+    "limits": "",
+    "basis": "MEASURED",
+    "src": "measurement",
+    "engine": "rebuilt"
+   },
+   "mass": {
+    "v": null,
+    "basis": "DERIVED",
+    "how_zh": "没有刚体，所以没有质量。"
+   },
+   "friction": {
+    "v": null,
+    "basis": "DERIVED",
+    "how_zh": "由读到和测到的事实推出"
+   },
+   "elasticity": {
+    "v": null,
+    "basis": "DERIVED",
+    "how_zh": "由读到和测到的事实推出"
+   },
+   "lin_damp": {
+    "v": null,
+    "basis": "DERIVED",
+    "how_zh": "由读到和测到的事实推出"
+   },
+   "rot_damp": {
+    "v": null,
+    "basis": "DERIVED",
+    "how_zh": "由读到和测到的事实推出"
+   },
+   "group": {
+    "v": "",
+    "basis": "DERIVED",
+    "how_zh": "没有刚体，不属于任何碰撞组。"
+   },
+   "starts": {
+    "v": null,
+    "basis": "READ",
+    "src": "measurement"
+   }
+  }
+ ],
+ "forces": [
+  {
+   "name": "trafo_pull",
+   "kind": "scripted_position",
+   "law_zh": "球去刚体后，每个行为帧直接改旧球实体的位置，把它拉向变球器局部 (0, 3, 0)：增益 2×帧时长、阻尼 0.7，三轴分别算，不经过物理、不看质量、不改朝向，持续 1.35 游戏秒。132 fps 下不过冲，约 0.78 游戏秒到 0.01 以内，结束时离平衡点约 1e−4。",
+   "region_zh": "只作用于正在变球、已没有刚体的玩家球",
+   "basis": "DERIVED",
+   "how_zh": "读到的拉动参数代入重建的积木公式逐帧递推；平放石变上旧球停在原点上方 3 有实测"
+  }
+ ],
+ "numbers": {
+  "trigger_radius": {
+   "label_zh": "触发：球原点到变球器原点三维距离小于",
+   "v": 4.3,
+   "unit": "",
+   "basis": "READ",
+   "src": "dump"
+  },
+  "trigger_threshold_bracket": {
+   "label_zh": "实测阈值所在的区间",
+   "v": [
+    4.2999954,
+    4.3000031
+   ],
+   "unit": "",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  "hover_point": {
+   "label_zh": "悬停点（新球出生处）",
+   "v": [
+    0,
+    3,
+    0
+   ],
+   "unit": "变球器局部坐标",
+   "note_zh": "只量了平放的石变；倾斜的行是推出的",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  "pull_seconds": {
+   "label_zh": "拉动时长",
+   "v": 1.35,
+   "unit": "游戏秒",
+   "basis": "READ",
+   "src": "dump"
+  },
+  "steps_to_new_body": {
+   "label_zh": "检测到新球有刚体",
+   "v": 332,
+   "unit": "物理步（132 fps）",
+   "basis": "MEASURED",
+   "src": "answer",
+   "engine": "retail"
+  },
+  "steps_to_control": {
+   "label_zh": "检测到能操控",
+   "v": 333,
+   "unit": "物理步（132 fps）",
+   "note_zh": "零售 132 fps 7 次相同",
+   "basis": "MEASURED",
+   "src": "answer",
+   "engine": "retail"
+  },
+  "no_detect_until": {
+   "label_zh": "检测后到重新检测（132 fps 行为帧）",
+   "v": 335,
+   "unit": "行为帧（132 fps）",
+   "basis": "READ",
+   "src": "dump"
+  },
+  "score_cost": {
+   "label_zh": "一次变球扣的分",
+   "v": 5,
+   "unit": "分",
+   "basis": "DERIVED",
+   "how_zh": "2.52 游戏秒按每 0.5 游戏秒扣 1 分算，相位凑巧时 6 分"
+  },
+  "new_ball_drop_flat": {
+   "label_zh": "平放的变球器：新球落到路面的落差",
+   "v": [
+    1.033,
+    1.101
+   ],
+   "unit": "",
+   "basis": "DERIVED",
+   "how_zh": "从悬停点向下对碰撞网格求交，减去球半径"
+  },
+  "new_ball_drop_tilted": {
+   "label_zh": "倾斜的变球器：新球的落差",
+   "v": [
+    1.093,
+    1.68
+   ],
+   "unit": "",
+   "basis": "DERIVED",
+   "how_zh": "同平放的算法，按坡度修正球半径"
+  },
+  "graze_radius_flat": {
+   "label_zh": "平路上触发圆在路面内的半径（间隙约 0.1）",
+   "v": 3.86,
+   "unit": "",
+   "basis": "DERIVED",
+   "how_zh": "4.3 的球与球心高度的截面；各处间隙不同，3.63–4.01"
+  },
+  "max_lift": {
+   "label_zh": "接住时最多被抬高",
+   "v": 7.3,
+   "unit": "",
+   "basis": "DERIVED",
+   "how_zh": "从原点下方 4.3 到原点上方 3"
+  },
+  "pieces_rigid_seconds": {
+   "label_zh": "碎片从检测起是刚体的时长",
+   "v": 22.0,
+   "unit": "游戏秒",
+   "note_zh": "一次独立读数",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  "pieces_reach_max": {
+   "label_zh": "留在关卡上的碎片离炸点最远（石）",
+   "v": 24.07,
+   "unit": "",
+   "note_zh": "无人、机关不动时的射程，不是上限",
+   "basis": "MEASURED",
+   "src": "note",
+   "engine": "rebuilt"
+  }
+ },
+ "machine": {
+  "states": [
+   {
+    "name": "watching",
+    "meaning_zh": "球是普通刚体、可以操作；每个行为帧查一次离球原点最近的变球器的距离和种类。"
+   },
+   {
+    "name": "pulling",
+    "meaning_zh": "已触发：球没有刚体、不碰任何东西，移动按键无效，实体被直接拉向变球器局部 (0, 3, 0)，持续 1.35 游戏秒。"
+   },
+   {
+    "name": "held",
+    "meaning_zh": "拉动结束后的 1.0 游戏秒：球仍无刚体、不可操作，停在悬停点不动。"
+   },
+   {
+    "name": "pieces",
+    "meaning_zh": "在悬停点炸出旧球那一种的碎片，再等 0.15 游戏秒；球仍无刚体。"
+   },
+   {
+    "name": "new_ball",
+    "meaning_zh": "旧球隐藏，变球器那一种的新球放到旧球的位置和朝向（悬停点），建刚体、从静止开始，随后按键打开。"
+   }
+  ],
+  "initial": "watching",
+  "flags": [
+   {
+    "name": "pieces_alive",
+    "meaning_zh": "某一种碎片是刚体：碰不到任何玩家球、彼此不碰，但碰路面、机关、箱子、道具球。和主链并行，回到 watching 后还在。每种碎片各一个。"
+   }
+  ],
+  "transitions": [
+   {
+    "from": "watching",
+    "to": "watching",
+    "trigger": "always",
+    "condition_zh": "最近的变球器距离不小于 4.3，或最近的那个和球同种（它挡住更远的异种）。",
+    "effect_zh": "不变球，下一个行为帧再查。",
+    "time_zh": "每个行为帧一次",
+    "seconds": null,
+    "basis": "READ",
+    "src": "dump"
+   },
+   {
+    "from": "watching",
+    "to": "pulling",
+    "trigger": "proximity",
+    "condition_zh": "离球原点三维最近的变球器（按物体当前位置，隐藏的、别的小节的也算）原点距离小于 4.3，且与球异种。上下、侧面、空中进入都算；道具球不触发。",
+    "effect_zh": "检测帧 T 关掉移动按键；球还是刚体，带着惯性照常再走 2 个物理步（判死、拾取照常），T+2 去刚体、开始拉动。",
+    "time_zh": "132 fps 下 T 到 T+2 为 2 个物理步（约 0.015 游戏秒）；零售 132 fps 7 次相同",
+    "seconds": null,
+    "basis": "READ",
+    "src": "dump"
+   },
+   {
+    "from": "pulling",
+    "to": "held",
+    "trigger": "timer",
+    "condition_zh": "拉动开始后 1.35 游戏秒。",
+    "effect_zh": "拉动关掉。球已停在悬停点：不倾斜的变球器是原点正上方 3，倾斜的沿它自己的局部 +Y（推出的）。",
+    "time_zh": "1.35 游戏秒；132 fps 下 T+2 到 T+180",
+    "seconds": 1.35,
+    "basis": "READ",
+    "src": "dump"
+   },
+   {
+    "from": "held",
+    "to": "pieces",
+    "trigger": "timer",
+    "condition_zh": "再过 1.0 游戏秒。",
+    "effect_zh": "在悬停点炸出旧球那一种的碎片（只实测了木变石），pieces_alive 变真。碎片碰不到玩家球，撞得醒冻结的机关、推得动箱子。",
+    "time_zh": "1.0 游戏秒；132 fps 下 T+313 炸开",
+    "seconds": 1.0,
+    "basis": "READ",
+    "src": "dump"
+   },
+   {
+    "from": "pieces",
+    "to": "new_ball",
+    "trigger": "timer",
+    "condition_zh": "再过 0.15 游戏秒。",
+    "effect_zh": "换成变球器那一种球，位置在悬停点、朝向沿用旧球、线速度和角速度为 0；T+332 新刚体开始受重力，T+333 能按键。",
+    "time_zh": "0.15 游戏秒；零售 132 fps 7 次都是 T+332 新刚体、T+333 能操控",
+    "seconds": 0.15,
+    "basis": "READ",
+    "src": "dump"
+   },
+   {
+    "from": "new_ball",
+    "to": "watching",
+    "trigger": "script",
+    "condition_zh": "新球建好刚体、按键打开。",
+    "effect_zh": "回到每帧检测，没有冷却。新球离最近的仍是这个同种变球器，所以不会再触发。",
+    "time_zh": "3 个行为帧：132 fps 下 T+335 重新检测",
+    "seconds": null,
+    "basis": "READ",
+    "src": "dump"
+   },
+   {
+    "from": "*",
+    "to": "watching",
+    "trigger": "death",
+    "condition_zh": "球判死并重生。判死后 1 游戏秒里球仍是刚体，照常可能被变球；检测在死亡和重生等待中也照常进行。",
+    "effect_zh": "球种不变，按当前球种重生（实测一次）；变球器本身不动。原版 13 关没有重生点在变球器 4.3 以内（最近 27.49）。",
+    "time_zh": "",
+    "seconds": null,
+    "basis": "READ",
+    "src": "dump"
+   },
+   {
+    "from": "*",
+    "to": "*",
+    "trigger": "timer",
+    "condition_zh": "pieces_alive 为真，从那次检测起 20 游戏秒的计时到点，或球死亡，或 20 秒内同一种碎片又被炸出。",
+    "effect_zh": "碎片 2 游戏秒渐隐后同时去刚体，pieces_alive 变假。死亡不取消计时，到点再收一次，无害。",
+    "time_zh": "检测后约 22.0 游戏秒（炸开后约 19.6）；132 fps 约 T+2902，边界差 1 帧",
+    "seconds": null,
+    "basis": "DERIVED",
+    "how_zh": "按读到的计时和渐隐时长推出，和一次实测的去刚体时刻相差 1 帧以内"
+   }
+  ],
+  "reset": {
+   "on_death_zh": "变球器没有要复位的状态；死亡只重建当前小节，变球器行先隐藏再放回本行。球种保持（石球死后重生仍是石球，只测一次）。死亡时碎片被收掉。",
+   "on_sector_change_zh": "过盘点时旧小节的变球器只隐藏、留在原位，照样变球。每个物体停在最近一次布置它的那一行：回头路或提前进后面小节时，要按物体当前所在的行判断，两种情形都实测相合。",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  }
+ },
+ "by_ball": {
+  "wood": {
+   "verdict": "depends",
+   "can_zh": "木变对木球不起作用，直接穿过。进入最近的石变或纸变原点 4.3 以内就变成那一种。变成木球时在悬停点静止出生：第 6 关第 4 小节 Wood_07、Wood_08 和第 4 关第 2 小节 Wood_01a 下的坡比实测上限还陡，单键停不住；第 4 关第 2 小节 Wood_02（39.2°）、第 5 小节 Wood_01（37.1°）没有定。",
+   "basis": "READ",
+   "src": "dump"
+  },
+  "stone": {
+   "verdict": "depends",
+   "can_zh": "石变对石球不起作用，石球推不动也压不坏它。进入木变或纸变范围就变成那一种。变成石球时从静止起步。17 个倾斜石变行（第 2 关第 2 小节 4 个、第 4 关 6 个、第 12 关第 3 小节 5 个、第 8 小节 2 个）下的坡比石球的守坡上限（实测在 16.0°–17.0° 之间）陡，新石球单键按住也停不住。",
+   "basis": "READ",
+   "src": "dump"
+  },
+  "paper": {
+   "verdict": "depends",
+   "can_zh": "纸变对纸球不起作用。进入木变或石变范围就变成那一种；测量点是纸球的原点。变成纸球时朝向沿用旧球。纸变行下面的坡最陡 43.5°：40° 以下都能停住；第 4 关 Paper_03a（40.0°）、第 6 关 Paper_02、Paper_06（43.5°）按规则能停，没有实测。纸变的新球位置没有单独量。",
+   "basis": "READ",
+   "src": "dump"
+  }
+ },
+ "route_effects": [
+  {
+   "kind": "changes_ball",
+   "effect_zh": "决定球种：球原点进入最近的异种变球器原点 4.3 以内就变成那一种；球种决定后面哪些路能走（例如第 1 关木变旁的坡石球上不去，标准走法先变石球再变回木球）。",
+   "basis": "READ",
+   "src": "dump"
+  },
+  {
+   "kind": "none",
+   "effect_zh": "出生球种：第 1–12 关是木球，第 13 关是石球。",
+   "basis": "DERIVED",
+   "how_zh": "读每关开局建球的表格：第 1–12 关取木球，第 13 关取石球"
+  },
+  {
+   "kind": "timing",
+   "effect_zh": "每次变球的时间成本：132 fps 下从检测到能操控 333 个物理步（约 2.52 游戏秒），零售 7 次相同；计时照走，分数照扣约 5 分。路线要把它计入每次变球。",
+   "basis": "MEASURED",
+   "src": "record",
+   "engine": "retail"
+  },
+  {
+   "kind": "none",
+   "effect_zh": "变球途中球没有刚体，和任何东西都不碰：机关推不到它、压不死它，路面穿过它。",
+   "basis": "MEASURED",
+   "src": "record",
+   "engine": "retail"
+  },
+  {
+   "kind": "timing",
+   "effect_zh": "变球途中能否按 Esc 暂停未定（只有玩家经验）。即使能暂停，变球的计时跟着停，省不掉 2.5 秒。",
+   "basis": "ASSUMED"
+  },
+  {
+   "kind": "carries",
+   "effect_zh": "对准：新球水平正对变球器原点，在原点上方 3 静止出生、落下约 1.1，可借平放的变球器对准下面的单轨（原点要正好在中线上方）；倾斜的变球器落点偏离原点竖线。",
+   "basis": "DERIVED",
+   "how_zh": "悬停点的位置加各处原点到路面的间隙和球半径算出落差；平放石变上的出生位置有实测"
+  },
+  {
+   "kind": "carries",
+   "effect_zh": "接住并刹停：原点 4.3 球内任何方向进来，2.52 游戏秒后都在悬停点静止出生，速度、角速度、高度都不保留，最多被抬高约 7.3。可救下落的球、刹住高速球；代价是时间和换球种。从下方、高速进入没有实测。",
+   "basis": "DERIVED",
+   "how_zh": "触发是三维球、拉动直接改位置、新刚体速度为零三条合起来；平放石变上从上方和侧面低速进来有实测"
+  },
+  {
+   "kind": "none",
+   "effect_zh": "不挡路、不能站：变球器没有刚体，同种球直接滚过它的位置，落在下面的路面上。",
+   "basis": "READ",
+   "src": "measurement"
+  },
+  {
+   "kind": "hazard",
+   "effect_zh": "隐藏的变球器仍起作用：已过去的小节、或载入后停在别处的共用物体，不显示也照样变球。回头路或提前进后面小节时，要按每个物体当前所在的行判断。",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  {
+   "kind": "hazard",
+   "effect_zh": "擦边不变球：平路上不倾斜的变球器，触发圆在路面内的半径约 3.86（间隙不同时 3.63–4.01），贴着这个圆外走就不变（第 1 关“鬼躲石变”）。倾斜处要按路面法向算。",
+   "basis": "DERIVED",
+   "how_zh": "4.3 的触发球在球心高度上的截面：√(4.3² − (2 − 间隙)²)，间隙取各处实际值"
+  },
+  {
+   "kind": "hazard",
+   "effect_zh": "只看最近一个：两个异种变球器挨着时，从哪一侧进就变成哪一种，变完不会被另一个吸回去（第 5 关第 3 小节实测 6 次）。第 12 关第 8 小节两对没有实测。",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  {
+   "kind": "none",
+   "effect_zh": "一帧穿过触发范围不会发生：132 fps 下球每帧最多走约 1.01（石球下落终速），远小于触发圆约 7.7 的弦长。",
+   "basis": "DERIVED",
+   "how_zh": "各球极速和下落终速除以每秒 66 个物理步，与触发圆的弦长比较"
+  },
+  {
+   "kind": "hazard",
+   "effect_zh": "倾斜的变球器（40 个，1.0°–44°）上新球在斜坡上出生并顺坡滚；17 个石变行、3 个木变行单键按住也停不住，路线要从坡下接着走。另有 5 个平放的变球器下面是 8.4–8.9° 的坡。落点和滚向都是推出的。",
+   "basis": "DERIVED",
+   "how_zh": "悬停点下路面的坡度按摆放和碰撞网格算，再和各球的单键守坡上限比"
+  },
+  {
+   "kind": "pickup",
+   "effect_zh": "第 4 关第 2 小节四个倾斜变球器的悬停点离一个分数球或生命球只有 2.22–2.30：借它们变球就顺带拿到（道具还在时）；变球途中还是变完才拿到没有实测。对 HS 有用，SR 不受影响。",
+   "basis": "DERIVED",
+   "how_zh": "悬停点到道具的距离按摆放算，和道具的拾取距离比；拾取跟随的点在变球途中的位置有实测"
+  },
+  {
+   "kind": "hazard",
+   "effect_zh": "第 12 关第 4 小节 5 个变球器站在两个风扇推力柱的四角：球心贴着推力柱朝变球器的一角（离风扇轴约 2.8–4.3）时会在被推的同时变球。之后推力会不会成倍没有实测，按读到的规则多半不会；当作风险。",
+   "basis": "DERIVED",
+   "how_zh": "变球器原点换到风扇的局部坐标，求同时满足风扇盒测试和 4.3 的离轴距离"
+  },
+  {
+   "kind": "hazard",
+   "effect_zh": "第 12 关第 8 小节 Wood_07a 的悬停点在屋脊上：新木球不按键会滚向一侧的石变，走出约 3.3 就被变成石球（再花 2.52 游戏秒）。要保住木球，一能操控就按键离开屋脊。没有实测。",
+   "basis": "DERIVED",
+   "how_zh": "第 12 关的碰撞网格上从悬停点向下求坡度，加“只看最近一个、小于 4.3”的规则"
+  }
+ ],
+ "model": [
+  {
+   "feature": "trigger",
+   "need_zh": "每步取离球原点最近的变球器（按每个物体当前所在的行），三维距离小于 4.3 且异种才触发。现有代码用偏移的球或竖直圆柱、半径 4.6，也不管最近的同种挡住异种，要改。",
+   "minimal_zh": "一组（位置，种类）点；每个小节状态下取每个物体当前所在的行；判定球原点到最近一点的距离小于 4.3 且种类不同。木变对木球不触发，但会挡住更远的异种。变球器的旋转不影响触发。"
+  },
+  {
+   "feature": "state_only",
+   "need_zh": "球种作为路线状态：变球是一次离散跳转，132 fps 下 333 个物理步，新球种、位置、速度都确定。",
+   "minimal_zh": "触发后替换状态：球种 = 变球器种类，位置 = 原点 + 3 × 该行局部 y 轴，速度和角速度 = 0，朝向沿用，时间加 333 个物理步；不模拟拉动；T+335 起才重新检测。倾斜行上从斜坡起步，不能当平地。"
+  },
+  {
+   "feature": "none",
+   "need_zh": "变球器没有碰撞形状，不进网格。",
+   "minimal_zh": "不建刚体或网格。"
+  },
+  {
+   "feature": "none",
+   "need_zh": "碎片不进模型：碰不到玩家球，只可能间接影响路线。",
+   "minimal_zh": "不建碎片刚体。路线若靠附近一个冻结的机关、箱子或道具球的位置，变球后约 22 游戏秒内记一笔“碎片可能撞醒或推动它”的风险（碎片离炸点最远约 24）。"
+  }
+ ],
+ "unknowns": [
+  {
+   "kind": "measure",
+   "question_zh": "第 12 关第 8 小节 Wood_07a 上的新木球不按键滚向哪一侧、按住键能不能停在屋脊上。",
+   "matters_zh": "能不能在这里借变球器换球种，会不会再被变成石球、多花 2.52 游戏秒。",
+   "how_zh": "在引擎里让第 8 小节激活，把石球放到 Wood_07a 原点上方 3，变成木球后不按键读轨迹；再试一次按住键。"
+  },
+  {
+   "kind": "tool",
+   "question_zh": "重生点 4.3 内最近的是异种变球器时，变球和重生怎样交织（推出的是新球早约 0.48 游戏秒能操控）。",
+   "matters_zh": "只影响自制图，原版 13 关没有这样的重生点。",
+   "how_zh": "先给工具加一个改重生点矩阵的选项，再死一次逐帧读按键开关和三种球的刚体。"
+  },
+  {
+   "kind": "measure",
+   "question_zh": "倾斜变球器上新球的出生位置和随后的滚向；纸变、木变上新球的位置和朝向。",
+   "matters_zh": "从倾斜变球器出发的路线都从这个状态起步。",
+   "how_zh": "第 6 关第 4 小节，球放到 Paper_02 和 Wood_08 上方，读新球第一帧的位置、朝向、速度和之后的轨迹。"
+  },
+  {
+   "kind": "measure",
+   "question_zh": "变球途中球没有刚体的约 1.7 游戏秒里，分数球和生命球的拾取照不照常起作用。",
+   "matters_zh": "第 4 关第 2 小节那四处拿分的时刻；只影响 HS。",
+   "how_zh": "第 4 关第 2 小节把木球放到 Stone_01 上方，逐帧读生命数，看加一在新刚体之前还是之后。"
+  },
+  {
+   "kind": "measure",
+   "question_zh": "变球途中按 Esc 能不能暂停；继续时会不会提前打开按键。",
+   "matters_zh": "变球时长不变；关系到 HS 分数表和按键时机。",
+   "how_zh": "滚进一个变球器，检测后不久按一次 Esc，看有没有暂停事件，新刚体和按键打开的时刻有没有推迟。"
+  },
+  {
+   "kind": "measure",
+   "question_zh": "碎片是旧球那一种只实测了木变石，其余五种组合按同一段脚本推。",
+   "matters_zh": "碎片的块数、质量、冲量按种类不同，决定撞醒机关、推动箱子的可能。",
+   "how_zh": "依次走完五种组合，每次变球后看出现的是哪一种碎片、几块。"
+  },
+  {
+   "kind": "measure",
+   "question_zh": "第 12 关第 4 小节在风扇推力柱里被变球后，这种球下次物理化时推力会不会成倍。",
+   "matters_zh": "借风扇变球后再进风扇会不会被推得更高或一直被推。",
+   "how_zh": "在推力柱朝纸变的一角变成纸球，再变回木球，到另一个风扇上方读每帧的竖直速度增量，和远离推力柱的对照比。"
+  },
+  {
+   "kind": "measure",
+   "question_zh": "第 4 关 Wood_02（39.2°）、Wood_01（37.1°）上新木球，第 4 关 Paper_03a、第 6 关 Paper_02、Paper_06 上新纸球单键能否停住。",
+   "matters_zh": "这几处变完球能原地停住再走，还是一定先往坡下滚。",
+   "how_zh": "在这几处悬停点下的落定处放对应的球，从落定起按住上坡键，看是否往下走、冻结；每处两次。"
+  }
+ ]
+}

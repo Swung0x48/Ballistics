@@ -1,0 +1,731 @@
+{
+ "id": "collision_rules",
+ "name_zh": "碰撞规则（碰撞组、路面、钢轨、Stopper、锚体 FixCube、材质）",
+ "category": "rule",
+ "types": [],
+ "summary_zh": "谁和谁碰撞、碰上后怎样。碰撞组相同且非空的两个刚体互不碰撞，空组和谁都碰；碰撞关着的刚体（锚体 FixCube、沙袋的绳、飞船的绳和气球）都不碰。玩家球、变球碎片、Stopper、01 的凹槽同在 Ball 组：球穿过 Stopper 和凹槽，碎片碰不到玩家球。Floor 组的机关穿过路面和钢轨，被 Stopper 挡住；箱子、道具球、推板等空组的刚体和一切相碰。冻结的刚体照样挡球，被撞当帧醒。路面、钢轨摩擦 0.7、弹性 0.3，一直存在；机关和道具只在当前小节有刚体。摩擦是两系数之积，撞固定面反弹 max(√(e1·e2), 0.199988)：木 0.245、石 0.200、纸接触点 0.3464、球心很散。几何上去掉 Stopper、凹槽、FixCube 和第 3 关的假柱子。",
+ "uses": [
+  "contact",
+  "freeze_wake",
+  "joints",
+  "rigid_body_mass",
+  "sector_rebuild",
+  "death_timing",
+  "units"
+ ],
+ "bodies": [
+  {
+   "name": "Phys_Floors（组里的每个物体，例如 A01_Floor_01）",
+   "role_zh": "路面：石质、木质路面、木板、侧墙等，固定凹面体，摩擦 0.7、弹性 0.3，载入时建好、所有小节都在。",
+   "hull": {
+    "kind": "mesh",
+    "meshes": [],
+    "size": null,
+    "radius": null,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "motion": {
+    "kind": "fixed",
+    "axis": null,
+    "anchor": null,
+    "limits": "",
+    "basis": "MEASURED",
+    "src": "measurement",
+    "engine": "rebuilt"
+   },
+   "mass": {
+    "v": 1.0,
+    "basis": "READ",
+    "src": "table"
+   },
+   "friction": {
+    "v": 0.7,
+    "basis": "READ",
+    "src": "table"
+   },
+   "elasticity": {
+    "v": 0.3,
+    "basis": "READ",
+    "src": "table"
+   },
+   "lin_damp": {
+    "v": 0.1,
+    "unit": "1/物理秒",
+    "basis": "READ",
+    "src": "dump"
+   },
+   "rot_damp": {
+    "v": 0.1,
+    "unit": "1/物理秒",
+    "basis": "READ",
+    "src": "dump"
+   },
+   "group": {
+    "v": "Floor",
+    "basis": "READ",
+    "src": "table"
+   },
+   "starts": {
+    "v": "fixed",
+    "basis": "READ",
+    "src": "dump"
+   }
+  },
+  {
+   "name": "Phys_FloorRails（组里的每个物体，例如 A03_Rail_03）",
+   "role_zh": "钢轨：双轨、单轨、侧轨、护栏等，截面是八边形的管子，参数和路面相同。",
+   "hull": {
+    "kind": "mesh",
+    "meshes": [],
+    "size": null,
+    "radius": null,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "motion": {
+    "kind": "fixed",
+    "axis": null,
+    "anchor": null,
+    "limits": "",
+    "basis": "MEASURED",
+    "src": "measurement",
+    "engine": "rebuilt"
+   },
+   "mass": {
+    "v": 1.0,
+    "basis": "READ",
+    "src": "table"
+   },
+   "friction": {
+    "v": 0.7,
+    "basis": "READ",
+    "src": "table"
+   },
+   "elasticity": {
+    "v": 0.3,
+    "basis": "READ",
+    "src": "table"
+   },
+   "lin_damp": {
+    "v": 0.1,
+    "unit": "1/物理秒",
+    "basis": "READ",
+    "src": "dump"
+   },
+   "rot_damp": {
+    "v": 0.1,
+    "unit": "1/物理秒",
+    "basis": "READ",
+    "src": "dump"
+   },
+   "group": {
+    "v": "Floor",
+    "basis": "READ",
+    "src": "table"
+   },
+   "starts": {
+    "v": "fixed",
+    "basis": "READ",
+    "src": "dump"
+   }
+  },
+  {
+   "name": "Phys_FloorStopper（组里的每个物体，例如 A01_Floor_Stopper）",
+   "role_zh": "Stopper：路边比路面顶低 0.5 的斜边板，接住推板、T 型板，托住跷跷板和双向挡板；玩家球穿过它。",
+   "hull": {
+    "kind": "mesh",
+    "meshes": [],
+    "size": [
+     5.0,
+     0.5,
+     1.0
+    ],
+    "radius": null,
+    "basis": "READ",
+    "src": "note"
+   },
+   "motion": {
+    "kind": "fixed",
+    "axis": null,
+    "anchor": null,
+    "limits": "",
+    "basis": "MEASURED",
+    "src": "record",
+    "engine": "retail"
+   },
+   "mass": {
+    "v": 1.0,
+    "basis": "READ",
+    "src": "table"
+   },
+   "friction": {
+    "v": 0.7,
+    "basis": "READ",
+    "src": "table"
+   },
+   "elasticity": {
+    "v": 0.3,
+    "basis": "READ",
+    "src": "table"
+   },
+   "lin_damp": {
+    "v": 0.1,
+    "unit": "1/物理秒",
+    "basis": "READ",
+    "src": "dump"
+   },
+   "rot_damp": {
+    "v": 0.1,
+    "unit": "1/物理秒",
+    "basis": "READ",
+    "src": "dump"
+   },
+   "group": {
+    "v": "Ball",
+    "basis": "READ",
+    "src": "table"
+   },
+   "starts": {
+    "v": "fixed",
+    "basis": "READ",
+    "src": "dump"
+   }
+  },
+  {
+   "name": "FixCube",
+   "role_zh": "锚体：世界原点的固定方块，几乎所有机关关节的另一端；碰撞关着，和什么都不碰。",
+   "hull": {
+    "kind": "box",
+    "meshes": [],
+    "size": [
+     4.0,
+     4.0,
+     4.0
+    ],
+    "radius": null,
+    "basis": "WIKI",
+    "src": "wiki"
+   },
+   "motion": {
+    "kind": "fixed",
+    "axis": null,
+    "anchor": null,
+    "limits": "",
+    "basis": "READ",
+    "src": "dump"
+   },
+   "mass": {
+    "v": 1.0,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "friction": {
+    "v": 0.7,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "elasticity": {
+    "v": 0.4,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "lin_damp": {
+    "v": 0.1,
+    "unit": "1/物理秒",
+    "basis": "READ",
+    "src": "dump"
+   },
+   "rot_damp": {
+    "v": 0.1,
+    "unit": "1/物理秒",
+    "basis": "READ",
+    "src": "dump"
+   },
+   "group": {
+    "v": "",
+    "basis": "READ",
+    "src": "dump"
+   },
+   "starts": {
+    "v": "fixed",
+    "basis": "READ",
+    "src": "dump"
+   }
+  }
+ ],
+ "forces": [
+  {
+   "name": "collision_filter",
+   "kind": "pair_rule",
+   "law_zh": "两个刚体都开着碰撞、且碰撞组不是同一个非空字符串时才碰撞；空组和谁都碰，组名区分大小写，被过滤的一对从头就不建接触。在用的组：Ball（玩家球、碎片、Stopper、01 的凹槽）、Floor（路面、钢轨、大多数机关）、Modul29（软木桥木板），其余为空。读自重建源码，原版记录走到的部分与之逐位相同。",
+   "region_zh": "任意两个刚体之间",
+   "basis": "READ",
+   "src": "source"
+  },
+  {
+   "name": "contact_friction",
+   "kind": "pair_rule",
+   "law_zh": "接触摩擦是两刚体摩擦系数之积，静摩擦等于动摩擦，没有滚动阻力；一次撞击的切向冲量最多是 μ 乘法向冲量。对路面、钢轨：木 0.56（原版一例实测）、石和纸 0.35（按规则）；对 Dome 0.16 / 0.1 / 0.1；对升降机墙门 0.32 / 0.2 / 0.2。",
+   "region_zh": "两个相碰刚体的接触点",
+   "basis": "MEASURED",
+   "src": "record",
+   "engine": "retail"
+  },
+  {
+   "name": "contact_restitution",
+   "kind": "pair_rule",
+   "law_zh": "撞击把法向分离速度推到接近速度的 √(e1·e2) 倍；撞固定面时撞击循环有过冲，反弹是 max(√(e1·e2), 0.199988)，接触点打滑时降回 √(e1·e2)。两边都能动时这条下限没量过；球撞道具球按一维规则、不加下限。双轨、墙角里的连锁撞击按次数抬高反弹，没有实测。",
+   "region_zh": "两个相碰刚体的撞击",
+   "basis": "DERIVED",
+   "how_zh": "引擎源码的撞击规则，用原版的木球落地和重建引擎、原版上的石球落地核对；连锁撞击只按源码"
+  },
+  {
+   "name": "contact_normal_solver",
+   "kind": "pair_rule",
+   "law_zh": "一个刚体同时贴着几个面时，几个接触点的法向冲量联立求解，目标间隙 0.020；撞击一次一个点，再连带同系统的其他点。撞击发生在间隙 0.010，接触点保留到 0.045。原版第 1 关 264 fps 录像里有接触的帧约 4.5% 是两个以上接触点，多在钢轨上。",
+   "region_zh": "双轨、路沿加路面、墙角这类多接触点",
+   "basis": "READ",
+   "src": "source"
+  }
+ ],
+ "numbers": {
+  "friction_wood_floor": {
+   "label_zh": "木球对路面、钢轨的接触摩擦",
+   "v": 0.56,
+   "unit": "",
+   "note_zh": "原版接触记录一例；石、纸按规则都是 0.35，没有实测",
+   "basis": "MEASURED",
+   "src": "record",
+   "engine": "retail"
+  },
+  "restitution_wood_floor": {
+   "label_zh": "木球落到路面、钢轨的反弹（中位）",
+   "v": 0.2449,
+   "unit": "法向速度比",
+   "note_zh": "原版 177 次里 157 次在 0.24–0.25",
+   "basis": "MEASURED",
+   "src": "record",
+   "engine": "original"
+  },
+  "restitution_stone_no_slip": {
+   "label_zh": "石球落到路面、钢轨的反弹（接触点不滑）",
+   "v": 0.2,
+   "unit": "法向速度比",
+   "note_zh": "带打滑降到 0.185–0.173；不滑的值在原版上是由四个点推出的",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  "restitution_paper_contact": {
+   "label_zh": "纸球接触点对路面、钢轨的反弹",
+   "v": 0.3464,
+   "unit": "法向速度比",
+   "note_zh": "原版 109 次单点撞击，只有一条记录",
+   "basis": "MEASURED",
+   "src": "record",
+   "engine": "original"
+  },
+  "paper_centre_ratio": {
+   "label_zh": "纸球球心的法向反弹比（p10–p90）",
+   "v": [
+    0.03,
+    2.41
+   ],
+   "unit": "",
+   "note_zh": "中位 0.56；随姿态和转速大变",
+   "basis": "MEASURED",
+   "src": "record",
+   "engine": "original"
+  },
+  "restitution_floor_fixed": {
+   "label_zh": "撞固定面反弹的下限",
+   "v": 0.199988,
+   "unit": "法向速度比",
+   "basis": "DERIVED",
+   "how_zh": "撞击循环每推 10%、第 6 推才停的过冲，按引擎源码算，石球实测到 6 位"
+  },
+  "no_bounce_approach": {
+   "label_zh": "接近速度不超过这个数落地不弹",
+   "v": {
+    "wood": 1.29,
+    "stone": 1.57
+   },
+   "unit": "每物理秒",
+   "basis": "DERIVED",
+   "how_zh": "逐物理步的接触模型扫分离速度，换成接近速度；模型对上 106 个落地里的 94 个"
+  },
+  "bounce_once_approach": {
+   "label_zh": "接近速度低于这个区间只弹一次就贴地",
+   "v": {
+    "wood": [
+     4.3,
+     5.6
+    ],
+    "stone": [
+     5.2,
+     6.8
+    ]
+   },
+   "unit": "每物理秒",
+   "note_zh": "竖直落在平的固定路面上",
+   "basis": "DERIVED",
+   "how_zh": "同一个逐物理步模型；区间两端看撞在一步里的哪个时刻"
+  },
+  "dome_restitution": {
+   "label_zh": "对 Dome 的反弹（木、石、纸）",
+   "v": {
+    "wood": 0.4,
+    "stone": 0.283,
+    "paper": 0.566
+   },
+   "unit": "法向速度比",
+   "basis": "DERIVED",
+   "how_zh": "两边弹性之积开方；木、石各 18 次实测相合，纸只按规则"
+  },
+  "contact_gaps": {
+   "label_zh": "撞击间隙、贴地目标间隙、接触点保留到",
+   "v": {
+    "impact": 0.01,
+    "rest_target": 0.02,
+    "kept_to": 0.045
+   },
+   "unit": "",
+   "basis": "DERIVED",
+   "how_zh": "引擎源码里碰撞容差只设一次 0.01，代入三条容差公式；实测的间隙与之一致"
+  },
+  "chained_restitution_wood": {
+   "label_zh": "木球对路面第 n 次连锁撞击的速度比（n = 0、1、2）",
+   "v": [
+    0.245,
+    0.611,
+    0.728
+   ],
+   "unit": "法向速度比",
+   "note_zh": "没有实测；n ≥ 1 只在双轨、墙角出现",
+   "basis": "DERIVED",
+   "how_zh": "引擎源码的保留比例公式代入木球和路面的弹性"
+  },
+  "sector_build_frames": {
+   "label_zh": "调用小节管理器后第几个行为帧建刚体",
+   "v": {
+    "props": 5,
+    "mechanisms": 6
+   },
+   "unit": "行为帧",
+   "note_zh": "道具、箱子、Dome 和带脚本的机关；132 fps 下等于物理步",
+   "basis": "DERIVED",
+   "how_zh": "小节管理器的调用次序和连线延迟推出"
+  },
+  "max_depth_below_deathzone": {
+   "label_zh": "最深线比本关最低死亡区底面再低",
+   "v": 200,
+   "unit": "",
+   "note_zh": "第 1 关 −329.4、第 9 关 −432.7",
+   "basis": "READ",
+   "src": "dump"
+  }
+ },
+ "machine": {
+  "states": [
+   {
+    "name": "not_loaded",
+    "meaning_zh": "关卡还没建好：路面、钢轨、Stopper 都还没有刚体。开局前就结束，对路线没有影响。"
+   },
+   {
+    "name": "built",
+    "meaning_zh": "关卡已载入：路面、钢轨、Stopper 和 FixCube 是固定刚体，所有小节一直存在；木质、石质路面物理上相同。"
+   },
+   {
+    "name": "body_sector_off",
+    "meaning_zh": "这一个和后两个是按小节建刚体的东西（机关部件、箱子、道具球、Dome）各自的状态。所在小节不是当前小节：没有刚体，什么都碰不到。"
+   },
+   {
+    "name": "body_active",
+    "meaning_zh": "所在小节是当前小节：有刚体，按碰撞组和别的刚体相碰。多数以冻结开始；板类机关另有醒后和推倒后的姿态，归各机关的条目。"
+   },
+   {
+    "name": "body_removed",
+    "meaning_zh": "箱子、道具球（还有升降机醒后的墙门）掉到本关最深线以下、被去掉了刚体：在小节重建前不存在。"
+   }
+  ],
+  "initial": "not_loaded",
+  "flags": [
+   {
+    "name": "frozen",
+    "meaning_zh": "冻结着：在原位、不受重力，但照样参与碰撞、挡球；被正在模拟、碰撞组相容的刚体撞到当帧醒，静止后再冻结。两个都不在模拟的刚体之间不建接触，碰不醒彼此。"
+   }
+  ],
+  "transitions": [
+   {
+    "from": "not_loaded",
+    "to": "built",
+    "trigger": "level_start",
+    "condition_zh": "载入关卡时路面循环运行，早于开局。",
+    "effect_zh": "路面、钢轨、Stopper 三个组逐个物理化成固定凹面体，摩擦、弹性、碰撞组取表里的值，全部在同一个行为帧；FixCube 物理化成固定、碰撞关着的刚体。",
+    "time_zh": "开局前就完成；载入期间物理几乎不走，不折成游戏秒",
+    "seconds": null,
+    "basis": "READ",
+    "src": "dump"
+   },
+   {
+    "from": "body_sector_off",
+    "to": "body_active",
+    "trigger": "sector_enter",
+    "condition_zh": "小节管理器把它所在的小节设为当前小节：开局、过盘点，或在这一小节死亡后重建。",
+    "effect_zh": "在摆放位置建刚体（机关连同关节），多数冻结开始，碰撞组和参数每次相同。调用后到建好之间有一段没有刚体的空窗。",
+    "time_zh": "调用小节管理器后：道具、箱子、Dome 第 5 个行为帧，带脚本的机关第 6 个；132 fps 下 0.038 / 0.045 游戏秒",
+    "seconds": null,
+    "basis": "DERIVED",
+    "how_zh": "小节管理器的调用次序和连线延迟推出，第 1、7 关不按键跑过核对"
+   },
+   {
+    "from": "body_active",
+    "to": "body_sector_off",
+    "trigger": "sector_leave",
+    "condition_zh": "过盘点离开它所在的小节；在这一小节死亡时也是先拆再建。",
+    "effect_zh": "去掉刚体：带关节的机关放回初始状态，箱子、道具球、Dome 隐藏并停在被拆时的位置。跑到别的小节的球碰不到它们。",
+    "time_zh": "调用小节管理器后：道具第 1 个、机关第 2 个行为帧（132 fps 下等于物理步）",
+    "seconds": null,
+    "basis": "DERIVED",
+    "how_zh": "小节拆建的时序规则，死亡时调用时刻是判死后 1 游戏秒"
+   },
+   {
+    "from": "body_active",
+    "to": "body_removed",
+    "trigger": "script",
+    "condition_zh": "箱子或道具球的原点低于本关最深线（最低死亡区底面再减 200），并且轮到它受查：每个行为帧只查组里的一个成员。",
+    "effect_zh": "去掉刚体、隐藏、移到世界原点；这一小节里不能再借力或挡路。",
+    "time_zh": "越过后最多晚“成员数 + 1”个行为帧；4 只箱子实测晚 0.12–0.21 游戏秒",
+    "seconds": null,
+    "basis": "DERIVED",
+    "how_zh": "深度检查的脚本和阈值，加 4 只箱子掉落的实测"
+   },
+   {
+    "from": "body_removed",
+    "to": "body_active",
+    "trigger": "death",
+    "condition_zh": "在这一小节死亡或重开。过盘点再回来不会重建。",
+    "effect_zh": "小节重建，掉下去的道具回到摆放位置重新有刚体。这一条是按拆建分支读的，没有单独跑过。",
+    "time_zh": "132 fps 下判死后约第 139 帧",
+    "seconds": null,
+    "basis": "DERIVED",
+    "how_zh": "小节拆建的时序；“掉下去的道具死亡后回来”按拆建分支读出"
+   },
+   {
+    "from": "*",
+    "to": "*",
+    "trigger": "contact",
+    "condition_zh": "frozen 为真，被正在模拟、碰撞组相容的刚体撞到：玩家球、道具球、箱子、碎片或别的机关。同组非空的一对根本不建接触，撞不醒。",
+    "effect_zh": "撞击那一帧醒（frozen 变假），再按自己的质量受这次撞击，不是固定墙。静止的道具靠着它不会把它弄醒。",
+    "time_zh": "撞击当帧（13 次实测都是）",
+    "seconds": 0,
+    "basis": "MEASURED",
+    "src": "measurement",
+    "engine": "rebuilt"
+   }
+  ],
+  "reset": {
+   "on_death_zh": "死亡不碰路面、钢轨、Stopper、FixCube，只拆建当前小节：机关、箱子、道具球、Dome 回到摆放位置重新物理化，碰撞组和参数同第一次。推到死局的机关只有死亡能复位。",
+   "on_sector_change_zh": "过盘点不改静态路面。上一小节的机关、道具、Dome 失去刚体，新小节的在摆放位置建出；跑到别的小节的球只碰得到静态路面（含属于路面组的机关底座和看不见的碰撞体）。",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  }
+ },
+ "by_ball": {
+  "wood": {
+   "verdict": "depends",
+   "can_zh": "Ball 组：穿过 Stopper、01 的凹槽和变球碎片，碰不到 FixCube 等碰撞关着的刚体。对路面、钢轨摩擦 0.56、反弹 0.245，原版和重建引擎都实测过。接近 ≤ 1.29 每物理秒落地不弹，≤ 约 4.3–5.6 弹一次就贴地；在 Dome 上弹回四成、停不住。推得动一只箱子。",
+   "basis": "READ",
+   "src": "table"
+  },
+  "stone": {
+   "verdict": "depends",
+   "can_zh": "Ball 组，能碰什么和木球一样。对路面、钢轨摩擦 0.35，接触点不滑时反弹 0.200（重建引擎实测）、带打滑降到 0.185–0.173，三种球里弹得最低。接近 ≤ 1.57 不弹，≤ 约 5.2–6.8 弹一次就贴地。质量 10，撞箱子、道具球时动量多留在自己身上：两只并排的箱子贴着起步就推下边缘。",
+   "basis": "READ",
+   "src": "table"
+  },
+  "paper": {
+   "verdict": "depends",
+   "can_zh": "Ball 组，能碰什么和木球一样。对路面、钢轨摩擦 0.35；接触点反弹 0.3464（原版 109 次），但纸球是多面体、在转，球心弹回比 0.03–2.41 倍、中位 0.56，弹多高要按姿态算。能停在 Dome 顶上（2 次）。推不动箱子。弹跳是真实路线里在用的动作。",
+   "basis": "READ",
+   "src": "table"
+  }
+ },
+ "route_effects": [
+  {
+   "kind": "none",
+   "effect_zh": "Stopper 和 01 的凹槽对玩家球不存在：球从里面穿过，不能当路面、墙或落脚点；只有它们托着的地方球会掉下去。Stopper 有原版记录，凹槽只按碰撞组读出。几何里要去掉：导出器已去掉 Stopper，凹槽还在网格里。",
+   "basis": "MEASURED",
+   "src": "record",
+   "engine": "retail"
+  },
+  {
+   "kind": "opens",
+   "effect_zh": "推板、T 型板（空组）推倒后搭在 Stopper 上，球走的是倒下的板：推板约 +90°、T 型板约 +95°；醒后推板多数（29 / 35 处）后仰 −16.48°、T 型板 −6.24°。第 12 关第 3 小节那块 T 型板落在钢轨上，能不能过没量。推错的板只有死亡复位。",
+   "basis": "DERIVED",
+   "how_zh": "绕铰链转的凸包对 Stopper 和路面扫出碰上角，静态几何；只有少数几处有引擎实测相合"
+  },
+  {
+   "kind": "hazard",
+   "effect_zh": "跷跷板（Floor 组）穿过路面、钢轨，只被 Stopper 挡住：醒来往重心一侧倒，两头都在离水平约 19.6° 碰上 Stopper，路线上是一块在两个斜姿态之间翻的板。原版 17 处两头都有 Stopper，不会翻过去。",
+   "basis": "DERIVED",
+   "how_zh": "每处两头的碰上角按几何算，只在第 8 关第 1 小节有引擎实测"
+  },
+  {
+   "kind": "hazard",
+   "effect_zh": "Floor 组的机关（秋千、单摆、双向挡板、沙袋、跷跷板、箱式浮板、01 的滑块、飞船的筐和木板）穿过路面和钢轨，扫过的范围可以伸到路面下面；只有 Stopper、玩家球和空组的刚体挡得住它们。",
+   "basis": "DERIVED",
+   "how_zh": "碰撞组的规则加各机关脚本里写的组"
+  },
+  {
+   "kind": "blocks",
+   "effect_zh": "空组的东西（箱子、道具球、推板、T 型板、落石、升降机的墙门）和一切相碰：被单摆、沙袋推动，被 Stopper 接住，彼此推挤。借它们挡路、借力的走法要把这些配对都算上。",
+   "basis": "DERIVED",
+   "how_zh": "空组和谁都碰的规则，加各物理化参数里的空组"
+  },
+  {
+   "kind": "none",
+   "effect_zh": "游戏里不存在的障碍：FixCube 碰撞关着，导出网格却当成 4×4×4 的实心方块，第 4 关出生点下面露出路面 0.55–0.75，粗层计划因此踩在方块顶上（球心 4.0，应约 3.35），第 10 关最多露出 0.25。第 3 关第 5 小节的风扇占位物在网格里是根 5×21×5 的柱子，游戏里不是刚体，可以穿过。",
+   "basis": "DERIVED",
+   "how_zh": "碰撞关着读自引擎源码；露出多少按原点附近路面取样；柱子按一帧的刚体列表"
+  },
+  {
+   "kind": "none",
+   "effect_zh": "所有路面和钢轨摩擦 0.7、弹性 0.3，木质、石质路面和钢轨物理上没有区别。只有 Dome 不同（摩擦 0.2、弹性 0.8）：容易打滑、弹得高，而且只在它的小节激活时存在。",
+   "basis": "READ",
+   "src": "table"
+  },
+  {
+   "kind": "none",
+   "effect_zh": "木、石落在路面、钢轨上可按“落下就贴地、横向速度被摩擦改变”近似：接近 v ≤ 1.29 / 1.57（木 / 石）不弹，≤ 约 4.3–5.6 / 5.2–6.8 弹一次就贴地，更高照常弹起；弹高木 (0.245v)²/40、石 (0.2v)²/40。一次小弹跳 ≤ 0.15 游戏秒只在 v 约 12 以下成立。纸球、Dome、推板上不能这样近似。",
+   "basis": "DERIVED",
+   "how_zh": "实测的反弹系数和低速三段，弹高、弹起时间按抛体公式算，不计阻尼"
+  },
+  {
+   "kind": "none",
+   "effect_zh": "球跑到别的小节时只碰得到静态路面（含属于路面组的机关底座）：那里的机关、箱子、道具球和 Dome 都没有刚体，抢先进入后面小节的路线不会被它们挡，也借不到它们。",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  {
+   "kind": "none",
+   "effect_zh": "被推出地图的箱子、道具球不会自己回来：低于本关最深线（第 1 关 −329.4、第 9 关 −432.7）后被去掉刚体，这一小节里不能再借力或挡路，只有死亡重建才回来；越过后最多晚“成员数 + 1”个行为帧才去掉，期间还会多落几步。",
+   "basis": "READ",
+   "src": "dump"
+  },
+  {
+   "kind": "blocks",
+   "effect_zh": "看不见但实的碰撞体：第 4 关 3 个（第 2 小节一个分数球旁、第 4 小节风扇和软木桥附近）和第 13 关第 2 小节推板下面的 StopperDummy 都在路面组，挡球也托球，不能像 Stopper 那样穿过。导出网格里已有它们。",
+   "basis": "DERIVED",
+   "how_zh": "按导出网格里的实体和组名，加碰撞组的规则"
+  },
+  {
+   "kind": "none",
+   "effect_zh": "侧轨、单轨、双轨、螺旋、波浪板、U 型板这类固定路面元素，碰撞上只是路面组的三角面，没有自己的参数；它们对球种的要求（如侧轨只有木、纸球能过）全来自几何加球的参数，要用物理核或引擎跑出来，不是规则。",
+   "basis": "DERIVED",
+   "how_zh": "这些元素在地图里只属路面组，路面循环对组里每个物体用同一组参数"
+  },
+  {
+   "kind": "launches",
+   "effect_zh": "纸球的弹跳和飞行是在用的动作：第 5 关一条高分记录里两段纸球约九成物理步不接触，飞过弯道、撞路沿弹起、跨过缺口。路线假说可以列“纸球在这里弹起”，接触点按 0.3464、球心按 0.03–2.41 倍给容错，落点时间窗 0.17–0.55 游戏秒。只有这一条记录。",
+   "basis": "DERIVED",
+   "how_zh": "项目主人确认有这种用法，加一条高分录像在原版引擎上的逐帧分类"
+  }
+ ],
+ "model": [
+  {
+   "feature": "rigid_body",
+   "need_zh": "每个刚体带碰撞组和碰撞开关，接触前先过滤；冻结的刚体照样挡球、被撞就醒，两个都不在模拟的刚体之间不建接触。物理核现在只有静态网格、不冻结。",
+   "minimal_zh": "对玩家球只要一张“碰不碰”的部件表：留 01 的滑块和填充块、03 的地板门墙、08、17、19、25、37 的板、26 的沙袋、29、30、34、41、箱子、道具球、Dome、飞船的筐和木板；去掉风扇的转子和作用盒、FixCube、Stopper、凹槽。"
+  },
+  {
+   "feature": "shape_only",
+   "need_zh": "导出网格多了游戏里不存在的障碍：FixCube、01 的凹槽、沙袋的绳和吊架、风扇的转子和作用盒、08 的架子、19 的轴、25 和 37 的铰链、第 3 关的风扇占位柱。现在当挡路处理，是保守的错误。",
+   "minimal_zh": "导出时不放 FixCube（导出函数已有这个开关）；摆放物只取真正和玩家球碰撞的部件，用碰撞凸包不用可见网格；静态网格里去掉第 3 关的那根柱子。"
+  },
+  {
+   "feature": "shape_only",
+   "need_zh": "飞船的筐（6 个凸包）和 8 块木板是 Floor 组、玩家球碰得到，通关要球心进到筐底附近；导出器没收它们，现在路线进不了筐。",
+   "minimal_zh": "按飞船模板把筐和木板放到飞船的位置，Floor 组、摩擦 0.7、弹性 0.4，地图补上朝向；飞船的滑动箱、绳和气球碰撞关着，不放。推断只在最后一个小节激活后才有。"
+  },
+  {
+   "feature": "rigid_body",
+   "need_zh": "接触按对算：摩擦相乘、撞固定面反弹 max(√(e1·e2), 0.2)；去掉物理核“接近低于 1 不反弹”的假设，加低速三段、按事件时刻的撞击、多接触点联立和连锁撞击。",
+   "minimal_zh": "每个面或刚体带 μ、e（路面、钢轨 0.7 / 0.3，Dome 0.2 / 0.8，箱子 0.7 / 0.3，推板 0.7 / 1.0）。先改石球落地 0.200、低速三段和撞击循环本身（输入法向接近速度和接触点切向速度），再做联立求解、余量和纸球多面体。"
+  },
+  {
+   "feature": "shape_only",
+   "need_zh": "机关在物理核里动起来时要靠 Stopper 接住推板、T 型板，托住跷跷板和双向挡板；Stopper 的网格和每块板的碰上角已经算好。",
+   "minimal_zh": "第一级不用网格：板放在“碰上角 − 间隙 / r”的静止姿态，间隙取 0.020，十一个实测姿态都在碰上角以内 0.05–0.92°。要模拟板转动时，把 Stopper 三角形当只给非 Ball 组刚体用的固定面。"
+  },
+  {
+   "feature": "state_only",
+   "need_zh": "只有当前小节的机关、箱子、道具球和 Dome 有刚体；静态路面所有小节都在；掉出最深线的道具到小节重建前不存在。",
+   "minimal_zh": "路线状态带当前小节，按小节开关摆放物的碰撞体；另带“已掉落的道具”集合，死亡或重开时清空。"
+  },
+  {
+   "feature": "rigid_body",
+   "need_zh": "会动的凸包（秋千、沙袋、跷跷板、升降机地板、木板、箱子、道具球）贴着球或冲着球动时要算表面速度；两个动态刚体按虚质量分冲量，撞击那一刻关节不起作用。",
+   "minimal_zh": "第一级：碰撞凸包带各自的 μ、e，按小节和机关状态换姿态，表面速度为零；第二级给秋千、沙袋按时间给姿态和表面速度；最后才是动态刚体。"
+  }
+ ],
+ "unknowns": [
+  {
+   "kind": "measure",
+   "question_zh": "双轨、墙角里连锁撞击实际弹回多少；引擎的联立求解和物理核的逐点迭代在双轨、路沿上差多少。",
+   "matters_zh": "落到窄钢轨上停不停得住、在墙角和双轨里弹多高、会不会卡住。",
+   "how_zh": "第 1 关双轨上方 0.2、0.5、1.0 竖直放下木、石球各 3 次，再沿双轨和路沿按单键滚 10 游戏秒，逐物理步记录，和物理核同起点推出的轨迹比。"
+  },
+  {
+   "kind": "measure",
+   "question_zh": "接近 0.90 以下的落地，和接触点带打滑的斜落：前者只是逐步模型推算，后者只有第 13 关坡上 5 次核对。",
+   "matters_zh": "滚下平台边、坡上飞出的落地最常见：石球 0.200 和 0.173 弹高差约三分之一。",
+   "how_zh": "石球先变球，以 2–6 滚下平台边落到下层，逆读法向反弹和打滑比；另从路面上方 0.012–0.019 第一次放下，读第一次触地。"
+  },
+  {
+   "kind": "measure",
+   "question_zh": "球撞能动的物体（箱子、升降机墙门、推板和 T 型板）时 0.2 下限是否成立、反弹多少；铰链撞后怎样纠正板的速度。",
+   "matters_zh": "借箱子减速、推墙门、撞板后球留下多少速度，纸球被弹回多远。",
+   "how_zh": "原版脚本下撞前一帧松键：木球正撞升降机墙块、石球正撞箱子各 3 次，纸、木、石球撞推板，逐帧读两边法向速度和板的角速度。"
+  },
+  {
+   "kind": "dump",
+   "question_zh": "其余各关的物理化参数表（路面、凸包、道具球、玩家球）是否都和已读的一样。",
+   "matters_zh": "已读的几关全相同，没有反例；机关脚本写的碰撞组 13 关已核对一致。",
+   "how_zh": "每关载入后导出这几张表，和已读的逐行比。"
+  },
+  {
+   "kind": "measure",
+   "question_zh": "原版脚本下两个动态刚体正撞：木球撞道具纸球的录像读数对不上规则；第 4 关道具木球只得规则的 0.75–0.85；撞击方撞后比规则快。",
+   "matters_zh": "撞开道具球、借它减速的路线；现在只给 0.75–1.03 倍的容错。",
+   "how_zh": "平地上木球以 6–8 正撞道具纸球、道具木球各两次，撞前一帧松键，读两球撞前撞后的速度；石、纸球作撞击方各一次。"
+  },
+  {
+   "kind": "measure",
+   "question_zh": "第 4 关出生球是不是停在路面上（球心约 3.35），不在 FixCube 顶上（4.0）。",
+   "matters_zh": "确认出生点附近那块假障碍该去掉；碰撞关着有读数，没直接看过球穿过它。",
+   "how_zh": "第 4 关不按键等出生球静止，读球心高度，同时读刚体列表里 FixCube 那一行。"
+  },
+  {
+   "kind": "measure",
+   "question_zh": "第 6 关的钢轨 A_05_Rail_02 只在声音组、不在任何路面组，在游戏里是不是实体。",
+   "matters_zh": "看得见的钢轨若不是实体，球会从它上面掉下去。",
+   "how_zh": "第 6 关载入后读刚体列表，看有没有它。"
+  },
+  {
+   "kind": "measure",
+   "question_zh": "第 13 关的 Stopper 挡不挡单摆和沙袋：几何上单摆杆转 6.49° / 10.89°、沙袋横摆 8.7–13.7° 才碰到。",
+   "matters_zh": "单摆、沙袋能扫到的范围和推球的时间窗。",
+   "how_zh": "第 13 关第 4 小节推单摆的杆读角度，第 3 小节不按键记沙袋的位姿，看是否在碰上角停住。"
+  },
+  {
+   "kind": "measure",
+   "question_zh": "第 12 关第 3 小节那块 T 型板推倒后是否真的横搭在钢轨上停住、球能不能从板上过去。",
+   "matters_zh": "这一处 T 型板接通的通过处能不能用。",
+   "how_zh": "推倒那块板，逐帧读板的姿态，再让球沿接通的路过去。"
+  }
+ ]
+}

@@ -1,0 +1,459 @@
+{
+ "id": "P_Modul_41",
+ "name_zh": "箱式浮板",
+ "category": "mechanism",
+ "types": [
+  "P_Modul_41"
+ ],
+ "summary_zh": "成列的箱式浮板：第 7–11 关共 43 个，一列 2–8 个，箱顶宽 5.0，相邻箱顶之间约 1.0 的缝。每个箱子是质量 1 的刚体，挂在不限角度、不会断的铰链上，质心在轴下 0.593，摆放姿态是稳定平衡；球压在偏离轴的一侧它就转，缝下面除三处外是空的，掉进去就是死亡。操作处即通过处。按住键直冲：纸球可靠地过完 8 个（每个约 0.27 游戏秒）；木球到第一个箱子 8.4–10.2 每物理秒最好，3 个以内的列每次都过，越长越险；石球在测过的入射 4.0–8.7 下 2 个以上的列过不去。压转的箱子靠重力摆回要约 20–35 游戏秒（推算），只有死亡能立刻复位；离开小节后它不存在。",
+ "uses": [
+  "sector_rebuild",
+  "death_timing",
+  "freeze_wake",
+  "joints",
+  "contact",
+  "rigid_body_mass"
+ ],
+ "bodies": [
+  {
+   "name": "P_Modul_41",
+   "role_zh": "箱体，唯一的刚体，挂在固定的锚上绕横向的轴转；各处副本由对象池按小节复用。",
+   "hull": {
+    "kind": "convex_hulls",
+    "meshes": [
+     "P_Modul_41_Col1_Mesh",
+     "P_Modul_41_Col2_Mesh"
+    ],
+    "size": [
+     5.0,
+     1.71,
+     10.15
+    ],
+    "radius": null,
+    "basis": "READ",
+    "src": "template"
+   },
+   "motion": {
+    "kind": "hinge",
+    "axis": [
+     0.0,
+     0.0,
+     1.0
+    ],
+    "anchor": [
+     0.0,
+     0.5932,
+     0.0
+    ],
+    "limits": "存了 -45 到 45，但 Limitations=FALSE，限位不生效，可以整圈自由转",
+    "basis": "READ",
+    "src": "dump"
+   },
+   "mass": {
+    "v": 1.0,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "friction": {
+    "v": 0.7,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "elasticity": {
+    "v": 0.4,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "lin_damp": {
+    "v": 0.1,
+    "unit": "1/物理秒（每个物理步 v ← (1 − d/66)·v；…",
+    "basis": "READ",
+    "src": "dump"
+   },
+   "rot_damp": {
+    "v": 0.1,
+    "unit": "1/s（物理时间；同线性阻尼）",
+    "basis": "READ",
+    "src": "dump"
+   },
+   "group": {
+    "v": "Floor",
+    "basis": "READ",
+    "src": "dump"
+   },
+   "starts": {
+    "v": "awake",
+    "basis": "READ",
+    "src": "dump"
+   }
+  }
+ ],
+ "forces": [],
+ "numbers": {
+  "pitch": {
+   "label_zh": "相邻箱子的中心间距",
+   "v": 6.0022,
+   "unit": "",
+   "basis": "READ",
+   "src": "table"
+  },
+  "gap": {
+   "label_zh": "相邻箱顶之间的缝（箱子水平时）",
+   "v": 1.0,
+   "unit": "",
+   "basis": "DERIVED",
+   "how_zh": "中心间距减箱顶宽"
+  },
+  "com_below_axis": {
+   "label_zh": "质心在铰链轴下方",
+   "v": 0.593,
+   "unit": "",
+   "basis": "DERIVED",
+   "how_zh": "读到的铰链框架加引擎的质心规则"
+  },
+  "freeze_after_build": {
+   "label_zh": "不被碰时醒后到冻结",
+   "v": 0.32,
+   "unit": "游戏秒",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  "swing_period": {
+   "label_zh": "小摆幅周期",
+   "v": [
+    1.24,
+    1.27
+   ],
+   "unit": "游戏秒",
+   "basis": "DERIVED",
+   "how_zh": "球离开后箱子转角过零的间隔"
+  },
+  "amplitude_ratio": {
+   "label_zh": "每个周期振幅剩下的比例",
+   "v": [
+    0.87,
+    0.88
+   ],
+   "unit": "",
+   "basis": "DERIVED",
+   "how_zh": "同号相邻峰值之比"
+  },
+  "settle_seconds_estimate": {
+   "label_zh": "从 90° 摆回到冻结（推算）",
+   "v": [
+    22,
+    35
+   ],
+   "unit": "游戏秒",
+   "basis": "DERIVED",
+   "how_zh": "按每周期振幅比外推到冻结判据，没有实测"
+  },
+  "paper_seconds_per_box": {
+   "label_zh": "纸球过一个箱子",
+   "v": [
+    0.26,
+    0.28
+   ],
+   "unit": "游戏秒",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  "wood_seconds_per_box": {
+   "label_zh": "木球过一个箱子（过完 8 个那一次）",
+   "v": 0.34,
+   "unit": "游戏秒",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  "wood_best_entry": {
+   "label_zh": "木球到第一个箱子的速度，过得最多的区间",
+   "v": [
+    8.4,
+    10.2
+   ],
+   "unit": "每物理秒",
+   "note_zh": "这一区间 6 次过了 4–8 个",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  "wood_boxes_by_entry": {
+   "label_zh": "木球到第一个箱子的速度 → 过的个数",
+   "v": {
+    "6.0": 1,
+    "8.4–10.2": [
+     4,
+     8
+    ],
+    "11.5": [
+     3,
+     4
+    ]
+   },
+   "unit": "每物理秒 → 个",
+   "note_zh": "8 个一列、按住键直冲，共 14 次",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  "stone_entry_tested": {
+   "label_zh": "石球测过的入射速度（最多过 1 个）",
+   "v": [
+    4.0,
+    8.7
+   ],
+   "unit": "每物理秒",
+   "note_zh": "更高的入射没有测",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  "box_mass": {
+   "label_zh": "箱子的质量",
+   "v": 1,
+   "unit": "",
+   "basis": "READ",
+   "src": "dump"
+  }
+ },
+ "machine": {
+  "states": [
+   {
+    "name": "sector_off",
+    "meaning_zh": "所在小节不是当前小节：没有刚体和铰链，箱子被放回世界原点附近。这一列的位置是个洞，过不去。"
+   },
+   {
+    "name": "upright",
+    "meaning_zh": "小节已激活，箱子在摆放姿态（箱顶水平）或已摆回静止，可以从上面过。"
+   },
+   {
+    "name": "swinging",
+    "meaning_zh": "被压转过、还在绕铰链摆或整圈转：箱顶不水平，缝和高差都变大；同一小节里再来的球会碰上它。"
+   }
+  ],
+  "initial": "sector_off",
+  "flags": [
+   {
+    "name": "frozen",
+    "meaning_zh": "箱子冻结着：不受重力，照样参与碰撞。建好时醒着，不被碰 0.32 游戏秒后冻结；运动的球到达时被撞醒，201 个箱子次全部如此。和形态无关。"
+   }
+  ],
+  "transitions": [
+   {
+    "from": "sector_off",
+    "to": "upright",
+    "trigger": "sector_enter",
+    "condition_zh": "小节管理器激活它所在的小节：过上一个盘点，或死亡后重建当前小节。",
+    "effect_zh": "新建刚体和铰链，姿态回到摆放姿态，速度为零，醒着（frozen 为假）。",
+    "time_zh": "调用小节管理器后第 6 个行为帧",
+    "seconds": null,
+    "basis": "READ",
+    "src": "dump"
+   },
+   {
+    "from": "*",
+    "to": "upright",
+    "trigger": "level_start",
+    "condition_zh": "关卡开始或重开，只对第 1 小节的箱子（第 7 关、第 10 关第 1 小节）。",
+    "effect_zh": "第 1 小节先拆后建，箱子在摆放姿态新建、静止、醒着；别的小节的箱子保持不存在。",
+    "time_zh": "调用小节管理器后第 6 个行为帧；开局这几帧各跑几个物理步没有定",
+    "seconds": null,
+    "basis": "DERIVED",
+    "how_zh": "小节拆建的通则加本机关脚本的建立、拆除两条分支"
+   },
+   {
+    "from": "*",
+    "to": "sector_off",
+    "trigger": "level_start",
+    "condition_zh": "重开关卡或游戏结束时，当前小节不是第 1 小节的箱子。",
+    "effect_zh": "关铰链、去刚体、放回初始状态；随后只重建第 1 小节。",
+    "time_zh": "调用小节管理器后第 2 个行为帧拆",
+    "seconds": null,
+    "basis": "DERIVED",
+    "how_zh": "小节拆建的通则加本机关脚本的拆除分支，没有对它单独实测"
+   },
+   {
+    "from": "upright",
+    "to": "swinging",
+    "trigger": "contact",
+    "condition_zh": "球、道具球或箱子压在偏离转轴的一侧。石球几乎一上箱子就压转，纸球只压转 13–22°。",
+    "effect_zh": "普通刚体动力学，绕铰链转，没有限位，可以转过任意角度、整圈转，始终挂在铰链上；没有脚本参与。",
+    "time_zh": "连续",
+    "seconds": null,
+    "basis": "DERIVED",
+    "how_zh": "原版脚本里没有限位、驱动和计时，铰链不给力矩，转动只由接触和重力决定"
+   },
+   {
+    "from": "*",
+    "to": "*",
+    "trigger": "contact",
+    "condition_zh": "frozen 为真，运动着的球、道具球或箱子到达它。",
+    "effect_zh": "撞击那一步先醒再解冲量（frozen 变假）；撞击那一刻按自由刚体受力，铰链下一步才纠正。",
+    "time_zh": "撞击当步",
+    "seconds": 0,
+    "basis": "DERIVED",
+    "how_zh": "引擎撞醒的规则加本机关 42 次运行里 201 个箱子次的观察"
+   },
+   {
+    "from": "*",
+    "to": "*",
+    "trigger": "timer",
+    "condition_zh": "frozen 为假，箱子完全停住，或摆幅小到长期判据以内。",
+    "effect_zh": "冻结（frozen 变真），速度清零，不再受重力和阻尼。",
+    "time_zh": "不被碰的箱子醒后 0.32 游戏秒；规则值停住后 0.23–0.44 游戏秒",
+    "seconds": null,
+    "basis": "MEASURED",
+    "src": "measurement",
+    "engine": "rebuilt"
+   },
+   {
+    "from": "swinging",
+    "to": "upright",
+    "trigger": "timer",
+    "condition_zh": "没有东西再压它，靠重力摆回正面朝上：小摆幅周期 1.24–1.27 游戏秒，每个周期振幅剩 0.87–0.88。",
+    "effect_zh": "摆幅衰减到判据以内后静止、冻结。压过约 178° 的先整圈转 1.4–4.4 圈；球离开 8–12 游戏秒后都还在摆。",
+    "time_zh": "从 90° 起约 22–35 游戏秒再加最多 2 游戏秒（推算，没有测到那么久）",
+    "seconds": null,
+    "basis": "DERIVED",
+    "how_zh": "周期和衰减按实测，衰减到冻结判据的时长按每周期振幅比外推"
+   },
+   {
+    "from": "*",
+    "to": "upright",
+    "trigger": "death",
+    "condition_zh": "球在箱子所在的当前小节判死。",
+    "effect_zh": "当前小节拆掉再建：箱子回到摆放姿态、静止，被压翻或还在摆的箱子因此复原。重生的球到场时它早已冻结。",
+    "time_zh": "132 fps 下判死后 134 帧起拆建，再隔 2 个行为帧拆、6 个建；判死到能操控 4.08 游戏秒",
+    "seconds": null,
+    "basis": "DERIVED",
+    "how_zh": "小节拆建的通则加本机关脚本的两条分支；这个机关自己没有跑过死亡"
+   },
+   {
+    "from": "*",
+    "to": "sector_off",
+    "trigger": "sector_leave",
+    "condition_zh": "过下一个盘点，小节管理器停用它所在的小节。",
+    "effect_zh": "关铰链、去刚体、放回初始状态；之后退回去也碰不到它，翻转状态不会带到下一个小节。",
+    "time_zh": "调用小节管理器后第 2 个行为帧",
+    "seconds": null,
+    "basis": "READ",
+    "src": "dump"
+   }
+  ],
+  "reset": {
+   "on_death_zh": "当前小节拆掉再建，箱子回到摆放姿态、静止。这是让压转的箱子立刻复原的唯一办法，代价一条命、回到重生点和 4.08 游戏秒。重开关卡时只重建第 1 小节。",
+   "on_sector_change_zh": "离开小节后箱子没有刚体，退回去碰不到；对象池让同一个物体在别的小节重新建出，不带上一小节的翻转状态。",
+   "basis": "DERIVED",
+   "how_zh": "小节拆建的通则加本机关脚本的拆除、建立分支，对它只实测了停用后的位置"
+  }
+ },
+ "by_ball": {
+  "wood": {
+   "verdict": "depends",
+   "can_zh": "看列长和入射：按住键直冲，到第一个箱子 6.0 每物理秒只过 1 个，8.4–10.2 过 4–8 个，11.5 过 3–4 个；14 次只有 1 次过完 8 个。按入射 8.4–11.5 的 10 次：3 个以内的列每次都过，4 个约八成、6 个约四成、8 个一成。每个约 0.34 游戏秒。掉都是在箱子前后边上掉进缝里。",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  "stone": {
+   "verdict": "blocked",
+   "can_zh": "2 个以上的列在测过的入射 4.0–8.7 下按住键直冲过不去：4.0、5.9 连第一个都过不去（箱子被压转 50–130°，球被翻回或和箱子一起冻结在约 45°），6.8–8.7 过 1 个就掉。8.7 以上、技巧走法、单独的箱子都没有测。",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  "paper": {
+   "verdict": "passes",
+   "can_zh": "可靠：14 次全部过完 8 个，到第一个箱子 5.7–11.3 都一样，箱子只转 13–22°；8 个箱心到箱心 1.79–1.99 游戏秒，每个约 0.26–0.28 游戏秒。起点横向挪 0.3、漂移到 0.6 都不改变结局。",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  }
+ },
+ "route_effects": [
+  {
+   "kind": "hazard",
+   "effect_zh": "成列按球种：纸球直冲全过（14 / 14），容错大；木球到第一个箱子 8.4–10.2 最好，3 个以内的列每次都过、更长的列成功率随列长下降；石球入射 4.0–8.7 时 2 个以上的列过不去。失败就是掉进缝里死亡。只测了第 10 关 8 个一列、按住键直冲。",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  {
+   "kind": "requires_ball",
+   "effect_zh": "长列（第 7 关第 1 小节 6、第 8 关第 2 小节 7、第 10 关第 1 小节 8、第 11 关第 4 小节 6）按纸球规划最可靠；木球只把 3 个以内的列作路线假说。",
+   "basis": "DERIVED",
+   "how_zh": "各处列长配上 8 个一列的个数分布"
+  },
+  {
+   "kind": "hazard",
+   "effect_zh": "掉下多在箱子前后边上（离箱心 2.4–3.0、横向偏 1 以内）掉进缝里；缝下面基本落空，只有三处下面有低层的面：第 8 关第 2 小节一处路面（深约 15.8）、第 9 关第 5 小节一处路面（深约 10.2，旁边有纸球变球器）、第 11 关第 4 小节一根钢轨（深约 9.7）。能不能从那里接回路线没有算。",
+   "basis": "DERIVED",
+   "how_zh": "碰撞组规则加每个箱底竖直向下对地图三角形求交"
+  },
+  {
+   "kind": "hazard",
+   "effect_zh": "几何：中心间距 6.0022，箱顶宽 5.0，缝约 1.0（第 8 关转了 180° 的两个两侧约 1.10 / 0.90），小于球的直径，但箱子一转缝和高差都变大。轴是横向的，球横向偏不会让箱子翻，球心离中线约 ±2.5 以内才在箱顶上，再往外从侧面掉下。",
+   "basis": "DERIVED",
+   "how_zh": "摆放位置、箱顶尺寸和轴的方向按几何算"
+  },
+  {
+   "kind": "timing",
+   "effect_zh": "被压转的箱子只靠重力摆回，约 20–35 游戏秒才停稳（推算），这段时间同一小节里再来的球会碰上还在摆的箱子。只有在本小节死亡（或重开回到第 1 小节）才立刻复原。",
+   "basis": "DERIVED",
+   "how_zh": "实测的周期和衰减外推，加小节拆建的通则"
+  },
+  {
+   "kind": "hazard",
+   "effect_zh": "操作处即通过处：压箱子和从箱子上过是同一件事；一列实际上只有一次机会，失败就死亡（三处下面有面的除外），死后从摆放姿态重新来过。",
+   "basis": "DERIVED",
+   "how_zh": "操作和通过在同一处这一类的通则，加只有死亡能复位"
+  },
+  {
+   "kind": "blocks",
+   "effect_zh": "只在自己的小节存在：提前或回头走到别的小节的箱子位置，那里是个洞。",
+   "basis": "DERIVED",
+   "how_zh": "小节只激活当前一个，离开的小节的机关不再出现"
+  }
+ ],
+ "model": [
+  {
+   "feature": "hinge",
+   "need_zh": "每个箱子是质量 1 的刚体，绕横向的铰链单自由度转动，无限位、无驱动；绕轴惯量 1.861，质心在轴下 0.593；和路面、钢轨、相邻箱子不碰撞。物理核现在没有动态刚体和关节。",
+   "minimal_zh": "做成物理摆（周期 1.24 游戏秒、每周期振幅剩约 0.88），由球的接触力矩驱动。做出来以前直接查实测：纸球过任意列、每个约 0.27 游戏秒；木球按入射和列长给成功率；石球 2 个以上的列按过不去；失败按死亡。"
+  },
+  {
+   "feature": "state_only",
+   "need_zh": "小节激活时在摆放姿态新建，离开时消失，死亡或重开回到它的小节时复原。",
+   "minimal_zh": "只在当前小节存在；每次建出都从摆放姿态、静止开始。"
+  }
+ ],
+ "unknowns": [
+  {
+   "kind": "measure",
+   "question_zh": "被压到 90°–180° 的箱子放开后多久冻结、停在哪个角度，会不会在非平衡姿态入睡。",
+   "matters_zh": "决定同一小节里绕回来时箱子是不是已经回正。",
+   "how_zh": "投放一列，用石球把前两个箱子压到 110° 以上，跑约 3500 个 66 Hz 工具帧，读各箱子冻结的帧和转角。"
+  },
+  {
+   "kind": "measure",
+   "question_zh": "按住键直冲以外的走法（横向偏、松键、斜按）、更高的入射（石球 10–17、木球 12–16）、别的列和单独的箱子能过几个。",
+   "matters_zh": "木球的成功率和石球过不去都可能被技巧改变；单独的箱子决定石球在第 9 关第 2 小节能不能过。",
+   "how_zh": "原版脚本下在箱顶上松键、斜按；起点横向挪 1、2，换到第 8、9 关的列；加长助跑测高入射；每个配置两次。"
+  },
+  {
+   "kind": "host2002",
+   "question_zh": "要原版环境：132 fps、2002 DLL 上同样的直冲能过几个。",
+   "matters_zh": "路线按 132 fps 评估，木球的成功率是统计，差一点就会变。",
+   "how_zh": "本项目没有那个环境；先按重建引擎的实测给成功率，路线假说在评估工具里按 132 fps 检验。"
+  },
+  {
+   "kind": "read",
+   "question_zh": "球自己冻结在冻结的箱子旁边、再醒来时，箱子同一步醒不醒。",
+   "matters_zh": "只影响球在箱子边上停住再走的少见情形。",
+   "how_zh": "读重建源码里唤醒时生长摩擦系统、合并模拟单元的那一段；或者让木球慢慢顶住第一个箱子冻结再松键，逐帧读箱子的状态。"
+  }
+ ]
+}

@@ -38,7 +38,46 @@ def main(argv=None):
     r.add_argument("--results", type=Path, default=Path("data"), help="folder with the solver's results (<name>-staged-s<N>.pkl)")
     r.add_argument("--level", type=int, required=True, help="the level number the file is named after")
     r.add_argument("--out", type=Path, required=True, help="folder to write L<nn>.npz into")
+    t = sub.add_parser("things", help="the catalogue of balls, loose objects, mechanisms, triggers, pickups and level rules: list it, print one entry, or check it")
+    t.add_argument("name", nargs="?", help="an entry id (P_Modul_25, ball_paper), a placed type name (P_Trafo_Stone) or a rule id (death_timing); without it: the list")
+    t.add_argument("--check", action="store_true", help="check every file of the catalogue and say what is wrong")
     a = ap.parse_args(argv)
+    if a.command == "things":
+        import sys
+
+        from . import things
+
+        out = sys.stdout
+        if hasattr(out, "reconfigure"):
+            out.reconfigure(encoding="utf-8")                # the entries are Chinese text; a console code page would garble them
+        if a.check:
+            bad = things.check()
+            for f, problems in bad.items():
+                for p in problems:
+                    print("%s: %s" % (f, p))
+            print("%d files with problems" % len(bad) if bad else "the catalogue is well formed")
+            return 1 if bad else 0
+        cat = things.load()
+        if not a.name:
+            print("| id | 名称 | 类别 | 摆放类型 | 状态 | 木 / 石 / 纸 | 读 / 测 / 推 / 假定 / 未知 |")
+            print("|---|---|---|---|---|---|---|")
+            for th in cat.values():
+                c = th.count()
+                print("| %s | %s | %s | %s | %d | %s | %d / %d / %d / %d / %d |" % (
+                    th.id, th.name_zh, th.category, "、".join(th.types) or "—", len(th.states),
+                    " / ".join(th.by_ball[k]["verdict"] for k in things.BALLS), c["READ"] + c["WIKI"], c["MEASURED"], c["DERIVED"], c["ASSUMED"], c["UNKNOWN"]))
+            print()
+            print("共用规则：" + "、".join("%s（%s）" % (r["id"], r["name_zh"]) for r in cat.rules.values()))
+            return
+        th = cat.get(a.name) or cat.of_type(a.name)
+        if th is not None:
+            print(things.render(th, cat.rules))
+        elif a.name in cat.rules:
+            print(things.render_rule(cat.rules[a.name]))
+        else:
+            print("no entry, placed type or rule named %r; entries: %s; rules: %s" % (a.name, ", ".join(cat), ", ".join(cat.rules)))
+            return 1
+        return
     if a.command == "coarse":
         import json
 
@@ -192,4 +231,4 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

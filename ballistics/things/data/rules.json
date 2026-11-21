@@ -1,0 +1,1580 @@
+{
+ "rules": [
+  {
+   "id": "units",
+   "name_zh": "时间、帧和速度的单位",
+   "owner": "level_flow",
+   "statement_zh": "一个物理步固定 1/66 物理秒；游戏中时间因子是 2，1 游戏秒 = 2 物理秒 = 132 个物理步；暂停时因子 0，载入和菜单期间 0.001。路线按 132 fps 评估：每个行为帧 1 个物理步，帧时长单精度 1000/132 ms。换算：N 个 132 fps 帧 = N/132 游戏秒；N 个 66 Hz 工具帧 = 2N 个物理步 = N/66 游戏秒。零售跟画面帧：264 fps 每 2 帧 1 步，240 fps 不整除。时长写游戏秒，速度写每物理秒，连线延迟和轮询间隔写行为帧。脚本的计时器按未平滑的帧时长单精度累加，算上进入那一帧第 n 次执行时到点，首尾相接每段 n−1 帧；132 fps 下 500、1500、2000 ms 卡在边界上，可能差 1 帧。重力 (0, −20, 0)，每物理步竖直速度减 0.303。",
+   "numbers": {
+    "steps_per_physics_second": {
+     "label_zh": "每物理秒的物理步数",
+     "v": 66,
+     "unit": "步",
+     "basis": "READ",
+     "src": "source"
+    },
+    "time_factor": {
+     "label_zh": "游戏中的时间因子（物理秒 ÷ 游戏秒）",
+     "v": 2,
+     "unit": "",
+     "basis": "READ",
+     "src": "dump"
+    },
+    "steps_per_game_second": {
+     "label_zh": "每游戏秒的物理步数",
+     "v": 132,
+     "unit": "步",
+     "basis": "DERIVED",
+     "how_zh": "每物理秒 66 步乘时间因子 2"
+    },
+    "evaluation_fps": {
+     "label_zh": "评估用的帧率（每帧 1 个物理步）",
+     "v": 132,
+     "unit": "fps",
+     "basis": "READ",
+     "src": "answer"
+    },
+    "loading_factor": {
+     "label_zh": "载入和菜单期间的时间因子",
+     "v": 0.001,
+     "unit": "",
+     "basis": "MEASURED",
+     "src": "record",
+     "engine": "retail"
+    },
+    "gravity_per_step": {
+     "label_zh": "每物理步重力带来的竖直速度变化",
+     "v": -0.303,
+     "unit": "每物理秒",
+     "basis": "READ",
+     "src": "dump",
+     "note_zh": "重力 (0, −20, 0) 除以 66"
+    },
+    "timer_frames_132": {
+     "label_zh": "132 fps 下计时器到点的帧数（毫秒: 帧）",
+     "v": {
+      "500": 67,
+      "1000": 133,
+      "1500": 198,
+      "2000": 264,
+      "3000": 397
+     },
+     "unit": "132 fps 帧",
+     "basis": "DERIVED",
+     "how_zh": "帧时长 1000/132 ms 单精度累加，算上进入那一帧，累计超过设定值的那一次；双精度累加 1000、1500、2000 ms 会差 1 帧",
+     "note_zh": "1000 ms 有零售实测，1500 ms 有原版记录，其余没有单独测"
+    },
+    "timer_1000ms_retail": {
+     "label_zh": "132 fps 下 1000 ms 计时器到点的帧",
+     "v": 133,
+     "unit": "132 fps 帧",
+     "basis": "MEASURED",
+     "src": "answer",
+     "engine": "retail",
+     "note_zh": "只和单精度累加相合；其中有没有 1 帧连线延迟没有核实"
+    },
+    "timer_1500ms_original": {
+     "label_zh": "132 fps 下 1500 ms 计时器的换向间隔",
+     "v": 198,
+     "unit": "132 fps 帧",
+     "basis": "MEASURED",
+     "src": "record",
+     "engine": "original",
+     "note_zh": "重建引擎 66 Hz 工具帧下是 100 帧（含 1 帧连线）"
+    }
+   }
+  },
+  {
+   "id": "death_timing",
+   "name_zh": "死亡和重生的时序",
+   "owner": "level_flow",
+   "statement_zh": "判死用球的本地网格盒（随球转）对死亡区的有向盒（含缩放），看上一帧末的位置；N 个死亡区时每个每 N+1 个行为帧比一次，所以判死比进入判死高度晚 0 到 N 帧。竖直的木、石球球心在死亡区顶面上方小于 2 就判死，纸球约 2.031；转着的球按随球转的盒，木最高 3.46。判死帧记作 F：之后名义 1.0 游戏秒球仍是刚体、在动、不能操控；1 s 到点那一帧 U 去刚体、扣命、拆建当前小节；U+7 放到重生点；再过名义 3.0 游戏秒新刚体在重生点出现，球种不变。132 fps：U = F+134，新刚体 F+537，能操控 F+539（4.08 游戏秒）；SR 计时一次死亡不计 538 个物理步。这 1 s 里变球、过盘点、拾取照常，但 U 之前吃到的生命被扣命覆盖。命数为 0 时 F+3 直接结束。重生后第一次按键当帧有推力，一直按着的键重生后接着推。",
+   "numbers": {
+    "upright_height": {
+     "label_zh": "竖直的木球判死时球心在死亡区顶面上方小于",
+     "v": 2,
+     "unit": "",
+     "basis": "MEASURED",
+     "src": "measurement",
+     "engine": "rebuilt",
+     "note_zh": "13 个配置 2 ± 0.0005；零售记录里实际判死时在 2.2–3.0"
+    },
+    "max_height_wood": {
+     "label_zh": "转着的木球判死高度的上限",
+     "v": 3.46,
+     "unit": "",
+     "basis": "DERIVED",
+     "how_zh": "球的网格盒半边 2，转到对角朝下时伸出 2√3"
+    },
+    "upright_height_paper": {
+     "label_zh": "竖直的纸球判死高度",
+     "v": 2.031,
+     "unit": "",
+     "basis": "DERIVED",
+     "how_zh": "按纸球网格盒向下的半边算，没有实测；上限 3.525"
+    },
+    "body_removed": {
+     "label_zh": "失去刚体、扣命、拆建当前小节的帧 U",
+     "v": 134,
+     "unit": "F 之后的 132 fps 帧",
+     "basis": "MEASURED",
+     "src": "answer",
+     "engine": "retail",
+     "note_zh": "重建引擎 66 Hz 工具帧下是 F+68"
+    },
+    "to_respawn_point": {
+     "label_zh": "放到重生点",
+     "v": 7,
+     "unit": "U 之后的行为帧",
+     "basis": "READ",
+     "src": "dump"
+    },
+    "new_body": {
+     "label_zh": "新刚体出现",
+     "v": 537,
+     "unit": "F 之后的 132 fps 帧",
+     "basis": "MEASURED",
+     "src": "answer",
+     "engine": "retail",
+     "note_zh": "48 次重生全部相同"
+    },
+    "control": {
+     "label_zh": "能再操控",
+     "v": 539,
+     "unit": "F 之后的 132 fps 帧",
+     "basis": "MEASURED",
+     "src": "answer",
+     "engine": "retail"
+    },
+    "control_game_seconds": {
+     "label_zh": "判死到能再操控",
+     "v": 4.08,
+     "unit": "游戏秒",
+     "basis": "DERIVED",
+     "how_zh": "539 ÷ 132"
+    },
+    "sr_not_counted": {
+     "label_zh": "一次死亡 SR 计时不计的物理步",
+     "v": 538,
+     "unit": "物理步",
+     "basis": "DERIVED",
+     "how_zh": "停表事件生效的 F+1 起不计，恢复事件生效的 F+539 计入"
+    },
+    "game_over": {
+     "label_zh": "命数为 0 时结束的帧",
+     "v": 3,
+     "unit": "F 之后的帧",
+     "basis": "MEASURED",
+     "src": "answer",
+     "engine": "retail"
+    }
+   }
+  },
+  {
+   "id": "transform_timing",
+   "name_zh": "变球的时序",
+   "owner": "P_Trafo",
+   "statement_zh": "变球管理器每个行为帧量球原点到最近一个变球器原点的三维距离（竖直也算，看上一帧末的位置），小于 4.3 而且球种不同才变；只看最近的一个，隐藏的也算，变出的新球不会被另一个吸回。检测帧记作 T：T 停用操控，T+2 旧球去刚体、被拉到变球器上方 3 停住；之后依次等 1.35 s、1.0 s，炸出旧球那一种的碎片，再等 0.15 s 换球。新球在变球器原点沿局部 +Y 3 处出生，静止、角速度 0、朝向沿用旧球；倾斜的变球器（40 个，1°–44°）悬停点离原点竖线最多 2.084，没有实测。132 fps：新刚体 T+332，能操控 T+333（2.52 游戏秒）；SR 计时照走，计入这 333 步。碎片碰不到任何玩家球，但撞得醒冻结的机关、推得动箱子，检测后约 22.0 游戏秒全部消失。变球途中能不能吃道具还不知道。",
+   "numbers": {
+    "radius": {
+     "label_zh": "触发距离（球原点到变球器原点，三维，严格小于）",
+     "v": 4.3,
+     "unit": "",
+     "basis": "MEASURED",
+     "src": "measurement",
+     "engine": "rebuilt",
+     "note_zh": "阈值夹在 4.2999954 和 4.3000031 之间"
+    },
+    "old_body_removed": {
+     "label_zh": "旧球失去刚体",
+     "v": 2,
+     "unit": "T 之后的 132 fps 帧",
+     "basis": "MEASURED",
+     "src": "answer",
+     "engine": "retail"
+    },
+    "new_body": {
+     "label_zh": "新刚体出现",
+     "v": 332,
+     "unit": "T 之后的 132 fps 帧",
+     "basis": "MEASURED",
+     "src": "answer",
+     "engine": "retail",
+     "note_zh": "7 次相同；66 Hz 工具帧下是 T+167"
+    },
+    "control": {
+     "label_zh": "能再操控",
+     "v": 333,
+     "unit": "T 之后的 132 fps 帧",
+     "basis": "MEASURED",
+     "src": "answer",
+     "engine": "retail"
+    },
+    "control_game_seconds": {
+     "label_zh": "检测到能再操控",
+     "v": 2.52,
+     "unit": "游戏秒",
+     "basis": "DERIVED",
+     "how_zh": "333 ÷ 132"
+    },
+    "hover_height": {
+     "label_zh": "新球在变球器原点上方的距离",
+     "v": 3,
+     "unit": "",
+     "basis": "MEASURED",
+     "src": "measurement",
+     "engine": "rebuilt",
+     "note_zh": "在不倾斜的变球器上量的；沿局部 +Y 是按源码的拉动公式推的"
+    },
+    "pull": {
+     "label_zh": "把旧球拉向悬停点的力和阻尼",
+     "v": {
+      "force": 2,
+      "damping": 0.7
+     },
+     "unit": "",
+     "basis": "READ",
+     "src": "dump"
+    },
+    "tilted_offset_max": {
+     "label_zh": "倾斜变球器的悬停点离原点竖线的最大水平距离",
+     "v": 2.084,
+     "unit": "",
+     "basis": "DERIVED",
+     "how_zh": "按摆放矩阵把局部 +Y 上的 3 投到水平面，取 40 个倾斜变球器的最大值"
+    },
+    "pieces": {
+     "label_zh": "碎片块数（旧球那一种）",
+     "v": {
+      "wood": 16,
+      "stone": 17,
+      "paper": 18
+     },
+     "unit": "块",
+     "basis": "DERIVED",
+     "how_zh": "按三种碎片的物理化参数表数块"
+    },
+    "pieces_removed": {
+     "label_zh": "碎片全部去刚体",
+     "v": 22.0,
+     "unit": "T 之后的游戏秒",
+     "basis": "MEASURED",
+     "src": "measurement",
+     "engine": "rebuilt",
+     "note_zh": "一次读数"
+    }
+   }
+  },
+  {
+   "id": "trafo_other_sector",
+   "name_zh": "别的小节的变球器在不在",
+   "owner": "P_Trafo",
+   "statement_zh": "变球器从不建刚体，只靠位置起作用：激活一行时被挪到那一行的位置并显示，拆小节时只隐藏、不挪。所以一个变球器物体停在最近一次布置它的那一行，停在哪里哪里就能变球，隐藏的也算。载入时按表序激活全部行，载入后停在它所用各行中小节最大的一行；第 k 行用第 k mod Amount 个池物体。推论：回到前面的小节，那里的变球器还在，当且仅当它的池物体没被之后激活的小节挪走；提前进入后面的小节 S，S 的变球器已在原位，当且仅当它的池物体在第 1 小节到当前小节都没用过、而且 S 是它用到的最大小节。第 2、3 关的实测和这条一致。没有重生点在变球器的触发距离以内。",
+   "numbers": {
+    "activation_type": {
+     "label_zh": "变球器行的激活类型（摆到位置并显示）",
+     "v": 1,
+     "unit": "",
+     "basis": "READ",
+     "src": "dump"
+    },
+    "reset_type": {
+     "label_zh": "变球器行的复位类型（只隐藏）",
+     "v": 0,
+     "unit": "",
+     "basis": "READ",
+     "src": "dump"
+    },
+    "placements_matched": {
+     "label_zh": "和小节表逐行对上的摆放物",
+     "v": 1003,
+     "unit": "个",
+     "basis": "READ",
+     "src": "table"
+    },
+    "trigger_radius": {
+     "label_zh": "停着的变球器的触发距离（三维）",
+     "v": 4.3,
+     "unit": "",
+     "basis": "MEASURED",
+     "src": "measurement",
+     "engine": "rebuilt"
+    }
+   }
+  },
+  {
+   "id": "proximity_wake",
+   "name_zh": "邻近检测和唤醒",
+   "owner": "level_flow",
+   "statement_zh": "机关的刚体以冻结开始：冻结时不受重力和推力，但照样参与碰撞。邻近检测只由玩家球触发，按普通距离、严格小于，看上一帧末的位置；唤醒用的阈值只看水平的 X、Z，事件只触发一次。圆心是脚本里的检测对象：多数是摆放点，活式木栅栏和落石是活动部件的静止位置。检查不是每帧做：上次的距离近时隔 10 个行为帧、远时隔 60 个，之间按平方距离插值、向零取整；倒计数跨拆建保留、检测关着时不走。132 fps 下接近不超过每物理秒约 66 时，唤醒最多晚 10 个行为帧（0.076 游戏秒）。冻结的刚体被正在模拟的刚体（玩家球、碎片、道具球）撞到时在接触那一帧醒。还不知道：其余 8 种机关的圆心只核对了两个方向；拆建后倒计数保留还是复位成近处的间隔。",
+   "numbers": {
+    "radius_boards": {
+     "label_zh": "推板、T 型板、双向挡板、跷跷板、活式木栅栏、落石的唤醒距离",
+     "v": 50,
+     "unit": "",
+     "basis": "MEASURED",
+     "src": "record",
+     "engine": "original",
+     "note_zh": "重建引擎上 R−0.01 醒、R+0.01 不醒，正好 50 不醒"
+    },
+    "radius_lift": {
+     "label_zh": "升降机的唤醒距离",
+     "v": 35,
+     "unit": "",
+     "basis": "MEASURED",
+     "src": "measurement",
+     "engine": "rebuilt"
+    },
+    "radius_bridge": {
+     "label_zh": "软木桥的唤醒距离",
+     "v": 80,
+     "unit": "",
+     "basis": "MEASURED",
+     "src": "measurement",
+     "engine": "rebuilt"
+    },
+    "radius_fan_outer": {
+     "label_zh": "风扇外层检测的距离",
+     "v": 80,
+     "unit": "",
+     "basis": "MEASURED",
+     "src": "measurement",
+     "engine": "rebuilt"
+    },
+    "interval_near": {
+     "label_zh": "近处（距离 52）的检查间隔",
+     "v": 10,
+     "unit": "行为帧",
+     "basis": "MEASURED",
+     "src": "measurement",
+     "engine": "rebuilt"
+    },
+    "interval_far": {
+     "label_zh": "远处（距离 105）的检查间隔",
+     "v": 60,
+     "unit": "行为帧",
+     "basis": "MEASURED",
+     "src": "measurement",
+     "engine": "rebuilt"
+    },
+    "interval_samples": {
+     "label_zh": "距离对检查间隔（距离: 行为帧）",
+     "v": {
+      "52": 10,
+      "60": 14,
+      "65": 18,
+      "70": 23,
+      "77.5": 31,
+      "88": 43,
+      "95": 53,
+      "105": 60
+     },
+     "unit": "行为帧",
+     "basis": "MEASURED",
+     "src": "measurement",
+     "engine": "rebuilt"
+    },
+    "lag_132": {
+     "label_zh": "132 fps 下唤醒最多晚的时间",
+     "v": 0.076,
+     "unit": "游戏秒",
+     "basis": "DERIVED",
+     "how_zh": "近处每 10 个行为帧查一次，132 fps 下是 0.076 游戏秒；接近快于每物理秒约 66 时两次检查之间会越过余量"
+    }
+   }
+  },
+  {
+   "id": "sector_rebuild",
+   "name_zh": "小节的拆建和只有死亡能复位机关",
+   "owner": "level_flow",
+   "statement_zh": "同一时刻只有当前小节是活的：别的小节的箱子、道具球、Dome 没有刚体并隐藏，带关节的机关没有刚体、被恢复到存下的初始状态，风扇留在原处不出力；路面和钢轨一直在。所以不在当前小节的机关不在它的位置上：靠它补上的缺口是敞着的，靠它挡住的路口是通的。过盘点拆当前、建下一小节；死亡和重开只拆建当前小节。调用帧记作 C（死亡时 C = U，过盘点时 C = 盘点检测帧 +1）：道具 C+1 拆、C+5 建，机关 C+2 拆、C+6 建刚体、关节和推力，关节建在那一刻的姿态上。拆建不清脚本的计数和倒计数。死亡复位箱子、道具纸球、生命球，吃掉的分数球不回来。只有死亡能复位机关：机关进了死局，唯一出路是死亡复位当前小节，代价一条命和 4.08 游戏秒。操作处和通过处：活式木栅栏、落石、T 型板的操作处不在通过处，球要绕过去再经过，推倒 T 型板的球从推的一侧过不去；推板等操作处即通过处。先操作、后到得了通过处才成路线，不能默认推开机关的球从它身上过。",
+   "numbers": {
+    "props_torn_down": {
+     "label_zh": "道具、箱子拆掉",
+     "v": 1,
+     "unit": "C 之后的行为帧",
+     "basis": "MEASURED",
+     "src": "measurement",
+     "engine": "rebuilt",
+     "note_zh": "在死亡拆建时量的（C = U）；按连线数，帧率无关"
+    },
+    "props_built": {
+     "label_zh": "道具、箱子建好",
+     "v": 5,
+     "unit": "C 之后的行为帧",
+     "basis": "MEASURED",
+     "src": "measurement",
+     "engine": "rebuilt"
+    },
+    "mechanisms_torn_down": {
+     "label_zh": "带脚本的机关拆掉",
+     "v": 2,
+     "unit": "C 之后的行为帧",
+     "basis": "MEASURED",
+     "src": "measurement",
+     "engine": "rebuilt"
+    },
+    "mechanisms_built": {
+     "label_zh": "带脚本的机关建刚体、关节、推力",
+     "v": 6,
+     "unit": "C 之后的行为帧",
+     "basis": "MEASURED",
+     "src": "measurement",
+     "engine": "rebuilt"
+    },
+    "checkpoint_call": {
+     "label_zh": "过盘点时调用小节管理器的帧",
+     "v": 1,
+     "unit": "盘点检测帧之后的行为帧",
+     "basis": "DERIVED",
+     "how_zh": "盘点事件链里等消息的积木下一帧才收到；没有实测"
+    },
+    "checkpoint_mechanisms": {
+     "label_zh": "过盘点后下一小节的机关建好",
+     "v": 7,
+     "unit": "盘点检测帧之后的行为帧",
+     "basis": "DERIVED",
+     "how_zh": "调用帧加 6；132 fps 下可能差 1 帧，没有实测"
+    },
+    "next_checkpoint_armed": {
+     "label_zh": "下一个盘点的脚本激活",
+     "v": 12,
+     "unit": "触发之后的行为帧",
+     "basis": "DERIVED",
+     "how_zh": "按盘点事件链的连线延迟数，再用重建引擎上的几次过盘点核对；132 fps 下没量"
+    },
+    "deadlock_cost": {
+     "label_zh": "用死亡复位机关的时间代价",
+     "v": 4.08,
+     "unit": "游戏秒",
+     "basis": "DERIVED",
+     "how_zh": "项目主人的回答：机关的死局只能靠死亡复位；时长取判死到能操控的 539 个 132 fps 帧"
+    }
+   }
+  },
+  {
+   "id": "finish",
+   "name_zh": "终点和通关",
+   "owner": "level_flow",
+   "statement_zh": "最后一个小节建好时打开水平 70 的检测；进入 70 唤醒飞船、打开三维 1 的检测；球心离筐此刻的原点三维小于 1 时通关，前提是 70 已唤醒飞船。不看球种，三种球都能通关（第 12、13 关的飞碟在通关之后）。直接落进筐的球要等 21–30 个 66 Hz 工具帧。通关后只断开筐端的一根铰链，飞船带着球飞走。S 为发出通关的帧：S+1 停用操控，S+3 停表；零售 SR 计时在通关后还计 3 帧。分数表停的帧比这条规则晚 2 帧，原因没定，按零售 SR 的 3 帧。再等 10 游戏秒（第 12 关起 23 秒）结束关卡。出生球种：第 1–12 关木球，第 13 关石球。出生点、飞船、盘点、重生点都只绕竖直轴转 90° 的倍数，盘点和重生点按编号排就是过关顺序。",
+   "numbers": {
+    "outer_radius": {
+     "label_zh": "唤醒飞船的水平检测距离",
+     "v": 70,
+     "unit": "",
+     "basis": "READ",
+     "src": "dump"
+    },
+    "trigger_radius": {
+     "label_zh": "球心到筐原点的通关距离（三维，严格小于）",
+     "v": 1,
+     "unit": "",
+     "basis": "DERIVED",
+     "how_zh": "第 10 关木球 32 次放球：0.9936 通关、1.0039 不通关，单位立方体内、单位球外的 19 次都不通关"
+    },
+    "basket_wait": {
+     "label_zh": "直接落进筐的球等到通关",
+     "v": [
+      21,
+      30
+     ],
+     "unit": "66 Hz 工具帧",
+     "basis": "MEASURED",
+     "src": "measurement",
+     "engine": "rebuilt"
+    },
+    "nav_off": {
+     "label_zh": "停用操控",
+     "v": 1,
+     "unit": "S 之后的行为帧",
+     "basis": "READ",
+     "src": "dump"
+    },
+    "counter_off": {
+     "label_zh": "停表",
+     "v": 3,
+     "unit": "S 之后的行为帧",
+     "basis": "MEASURED",
+     "src": "record",
+     "engine": "retail"
+    },
+    "sr_extra_frames": {
+     "label_zh": "通关后 SR 计时再计的帧",
+     "v": 3,
+     "unit": "132 fps 帧（物理步）",
+     "basis": "MEASURED",
+     "src": "answer",
+     "engine": "retail"
+    },
+    "end_delay": {
+     "label_zh": "通关到结束关卡",
+     "v": 10,
+     "unit": "游戏秒",
+     "basis": "READ",
+     "src": "dump"
+    },
+    "end_delay_late": {
+     "label_zh": "第 12 关起通关到结束关卡",
+     "v": 23,
+     "unit": "游戏秒",
+     "basis": "READ",
+     "src": "dump"
+    }
+   }
+  },
+  {
+   "id": "fan_law",
+   "name_zh": "风扇的推力和开关",
+   "owner": "P_Modul_18",
+   "statement_zh": "推力开着时每个物理步给球世界 +Y 冲量 0.1，作用在球心，不随高度变、不乘步长：每步速度加 0.1/质量（纸 0.5、木 0.0526、石 0.01）。从静止吹起要多于 3.03 × 质量个风扇：纸 1、木 6、石 31。开关：每次进外层水平 80 打开内层 7 并关一次推力；进内层 7 那次只锁球，之后每次检查做一次盒测试（球的网格盒对方块的有向盒，方块在风扇局部 x、z ±1，高 1.14 到 17.14），真开假关；第 n 帧看上一帧末的位姿，推力从本帧第一步起。出 80 只关检测、不关推力，球一帧内离开 7 的圆柱时推力带到外面一直推。物理核不计转动时：球心到方块盒的水平距离小于 2.85 就推（小于 1.961 必推，大于 3.525 必不推）。纸球悬停：几乎不转的按 19.1–19.9，翻滚着进来的按 19.14–20.6 给容错。风扇不唤醒冻结的球。2002 的盒测试是精确检验还是简写还不知道。",
+   "numbers": {
+    "impulse": {
+     "label_zh": "每物理步的竖直冲量",
+     "v": 0.1,
+     "unit": "冲量",
+     "basis": "READ",
+     "src": "source"
+    },
+    "dv_paper": {
+     "label_zh": "纸球每物理步的竖直速度增量",
+     "v": 0.5,
+     "unit": "每物理秒",
+     "basis": "MEASURED",
+     "src": "record",
+     "engine": "original",
+     "note_zh": "原版记录 618 对物理步只合先阻尼、再冲量、再重力"
+    },
+    "dv_wood": {
+     "label_zh": "木球每物理步的竖直速度增量",
+     "v": 0.0526,
+     "unit": "每物理秒",
+     "basis": "MEASURED",
+     "src": "record",
+     "engine": "original",
+     "note_zh": "两个风扇同推是每步 +1.0（纸球）"
+    },
+    "dv_stone": {
+     "label_zh": "石球每物理步的竖直速度增量",
+     "v": 0.01,
+     "unit": "每物理秒",
+     "basis": "MEASURED",
+     "src": "measurement",
+     "engine": "rebuilt"
+    },
+    "fans_to_lift": {
+     "label_zh": "从静止吹起要的风扇数",
+     "v": {
+      "paper": 1,
+      "wood": 6,
+      "stone": 31
+     },
+     "unit": "个",
+     "basis": "DERIVED",
+     "how_zh": "n 个风扇的冲量 0.1n 要大于每步重力 0.303 × 质量"
+    },
+    "outer_radius": {
+     "label_zh": "外层检测的水平距离",
+     "v": 80,
+     "unit": "",
+     "basis": "MEASURED",
+     "src": "measurement",
+     "engine": "rebuilt"
+    },
+    "inner_radius": {
+     "label_zh": "内层检测的水平距离",
+     "v": 7,
+     "unit": "",
+     "basis": "READ",
+     "src": "dump"
+    },
+    "box": {
+     "label_zh": "方块盒（风扇局部）",
+     "v": {
+      "half_x_z": 1,
+      "bottom": 1.14,
+      "top": 17.14
+     },
+     "unit": "",
+     "basis": "READ",
+     "src": "template"
+    },
+    "horizontal_gate": {
+     "label_zh": "不计转动时推的水平门槛（球心到方块盒）",
+     "v": 2.85,
+     "unit": "",
+     "basis": "MEASURED",
+     "src": "record",
+     "engine": "original",
+     "note_zh": "原版记录上 96.1% 相符；重建引擎上最合的值 2.84"
+    },
+    "gate_bounds": {
+     "label_zh": "必推和必不推的水平距离",
+     "v": [
+      1.961,
+      3.525
+     ],
+     "unit": "",
+     "basis": "DERIVED",
+     "how_zh": "纸球网格盒的内切和外接半径；木、石的盒是 ±2，上限 3.46"
+    },
+    "hover_paper": {
+     "label_zh": "几乎不转的纸球悬停高度（风扇原点上方）",
+     "v": [
+      19.1,
+      19.9
+     ],
+     "unit": "",
+     "basis": "DERIVED",
+     "how_zh": "132 fps 下按一维递推，推力关掉的顶线取 19.4–19.7"
+    },
+    "hover_tumbling": {
+     "label_zh": "翻滚着进来的纸球悬停的上沿",
+     "v": [
+      19.14,
+      20.6
+     ],
+     "unit": "",
+     "basis": "MEASURED",
+     "src": "measurement",
+     "engine": "rebuilt",
+     "note_zh": "上沿随球的倾斜变；66 Hz 工具帧下读的"
+    }
+   }
+  },
+  {
+   "id": "player_ball_lifecycle",
+   "name_zh": "玩家球的生命周期",
+   "owner": "level_flow",
+   "statement_zh": "关卡一级：loading → spawning（无刚体、不能操控）→ rolling；rolling → transforming → rolling；rolling → dying（仍是刚体、不能操控）→ spawning 或 game_over，dying 中照样能变球；rolling ⇄ paused；rolling → finished。被引擎冻结不是新状态。单个球种：不是玩家球的那种叫 inactive，变成它时经 transforming 到 rolling。开局：载入后 3000 ms 计时（132 fps 第 397 帧，约 3.0 游戏秒）到点建新刚体，记作 D，D+2 能操控，SR 计时从 D+2 起计；第 13 关出生石球。死亡 F → 能操控 F+539；变球 T → T+333。暂停：按 Esc 那一帧物理照跑、有推力；下一帧停推力和物理；继续后第 1 个物理帧即使按着键也没推力，所以 132 fps 下每次暂停少推 1 个物理步。判死后按 Esc 无效。",
+   "numbers": {
+    "time_factor": {
+     "label_zh": "开局设的时间因子",
+     "v": 2,
+     "unit": "",
+     "basis": "READ",
+     "src": "dump"
+    },
+    "start_delay": {
+     "label_zh": "开局计时到点（建新刚体）",
+     "v": 397,
+     "unit": "132 fps 帧",
+     "basis": "DERIVED",
+     "how_zh": "3000 ms 计时按单精度帧时长累加，132 fps 下第 397 次到点；双精度累加也是 397"
+    },
+    "control_after_new_body": {
+     "label_zh": "新刚体到能操控",
+     "v": 2,
+     "unit": "行为帧",
+     "basis": "READ",
+     "src": "dump"
+    },
+    "death_control": {
+     "label_zh": "判死到能操控",
+     "v": 539,
+     "unit": "132 fps 帧",
+     "basis": "MEASURED",
+     "src": "answer",
+     "engine": "retail"
+    },
+    "trafo_control": {
+     "label_zh": "变球检测到能操控",
+     "v": 333,
+     "unit": "132 fps 帧",
+     "basis": "MEASURED",
+     "src": "answer",
+     "engine": "retail"
+    },
+    "pause_lost_steps": {
+     "label_zh": "每次暂停少推的物理步",
+     "v": 1,
+     "unit": "物理步",
+     "basis": "MEASURED",
+     "src": "answer",
+     "engine": "retail"
+    },
+    "stone_start_level": {
+     "label_zh": "出生石球的关",
+     "v": 13,
+     "unit": "关",
+     "basis": "READ",
+     "src": "dump"
+    }
+   }
+  },
+  {
+   "id": "contact",
+   "name_zh": "接触：摩擦、反弹和碰撞组",
+   "owner": "collision_rules",
+   "statement_zh": "摩擦取两边摩擦的乘积，静摩擦等于动摩擦，没有滚动阻力。撞固定物体：法向分离速度 = 接近速度 × max(√(e1·e2), 0.199988)，下限来自撞击循环每次推 10% 弹性冲量的过冲，接触点打滑时降到约 0.173，物理核应直接实现撞击循环。木对路面、钢轨 0.245；石球原版落地 0.1762–0.1795、斜落 0.1726–0.1732；纸球接触点法向比 0.3464，但纸球是转动的多面体，球心比很散（中位 0.56），弹多高按姿态算或给容错。两个动态刚体之间不用下限。低速落地时分离很小，下一步被接触推挡住，等于不弹。撞击在间隙 0.010，接触目标 0.020，保留到 0.045。碰撞组：两个组名都非空且前 8 个字节相同就不碰；三种玩家球、Stopper、碎片同组，所以玩家球穿过 Stopper；Floor 组的机关部件穿过路面和钢轨、碰 Stopper；组为空的和谁都碰。板的静止姿态 = 几何碰上角 − 间隙 / r。",
+   "numbers": {
+    "restitution_floor_min": {
+     "label_zh": "撞固定物体的反弹下限",
+     "v": 0.199988,
+     "unit": "",
+     "basis": "DERIVED",
+     "how_zh": "撞击循环垂直撞上时第 6 推才停：6 × 0.2 × 1e5/(1e5+1) − 1"
+    },
+    "restitution_wood_floor": {
+     "label_zh": "木球对路面、钢轨的反弹",
+     "v": 0.2449,
+     "unit": "",
+     "basis": "MEASURED",
+     "src": "record",
+     "engine": "original",
+     "note_zh": "零售录像 65 次 0.245；重建引擎 43 次 0.244949"
+    },
+    "restitution_stone_floor": {
+     "label_zh": "石球对路面落地的反弹（四次）",
+     "v": [
+      0.1762,
+      0.1795
+     ],
+     "unit": "",
+     "basis": "MEASURED",
+     "src": "record",
+     "engine": "original",
+     "note_zh": "斜落 0.1726–0.1732；重建引擎上不滑时 0.199988"
+    },
+    "restitution_paper_contact": {
+     "label_zh": "纸球接触点的法向比",
+     "v": 0.3464,
+     "unit": "",
+     "basis": "MEASURED",
+     "src": "record",
+     "engine": "original",
+     "note_zh": "109 次 p10–p90 0.3461–0.3466；接近 0.525 仍是这个值"
+    },
+    "paper_centre_ratio": {
+     "label_zh": "纸球球心法向比的中位",
+     "v": 0.56,
+     "unit": "",
+     "basis": "MEASURED",
+     "src": "record",
+     "engine": "original",
+     "note_zh": "p10–p90 0.03–2.41；高处落下弹起 0.26–0.88"
+    },
+    "friction_wood_floor": {
+     "label_zh": "木球对路面的合成摩擦",
+     "v": 0.56,
+     "unit": "",
+     "basis": "MEASURED",
+     "src": "record",
+     "engine": "retail"
+    },
+    "restitution_hinged_boards": {
+     "label_zh": "推板、T 型板的反弹（按 √(e1·e2)）",
+     "v": {
+      "wood": 0.447,
+      "stone": 0.316,
+      "paper": 0.632
+     },
+     "unit": "",
+     "basis": "DERIVED",
+     "how_zh": "板的弹性 1 和球的弹性相乘开方；板能动，下限不适用，没有实测"
+    },
+    "impact_gap": {
+     "label_zh": "判撞击的间隙",
+     "v": 0.01,
+     "unit": "",
+     "basis": "MEASURED",
+     "src": "measurement",
+     "engine": "rebuilt"
+    },
+    "contact_target": {
+     "label_zh": "单点接触的目标间隙",
+     "v": 0.02,
+     "unit": "",
+     "basis": "READ",
+     "src": "source"
+    },
+    "contact_keep": {
+     "label_zh": "接触保留到的间隙",
+     "v": 0.045,
+     "unit": "",
+     "basis": "DERIVED",
+     "how_zh": "接触容差在源码里从不改变"
+    },
+    "group_prefix": {
+     "label_zh": "碰撞组名比较的字节数",
+     "v": 8,
+     "unit": "字节",
+     "basis": "READ",
+     "src": "source"
+    }
+   }
+  },
+  {
+   "id": "coast",
+   "name_zh": "松开按键后的减速",
+   "owner": "ball_wood",
+   "statement_zh": "松开按键后每个物理步 v ← (1 − c/66)·v，角速度同样，没有滚动阻力。每物理秒剩下的比例：空中或纯滑动是 (1 − d/66)^66，木 0.404、石 0.740、纸 0.219；贴地纯滚动（惯量 0.4·m·r²）木 0.509、石 0.784，实测相合。纸球不是纯滚动：它八到九成物理步在空中，松键后每物理秒剩约 0.25（六次 0.235–0.261），是空中和接触的混合平均，路线按 0.25 ± 0.015；纯滚动算出的 0.299 只作模型值。几乎不动时引擎另给两个阻尼各加 0.1，物理核没有这一项。真实凸包的纸球在平地上松键还没量。",
+   "numbers": {
+    "linear_damping": {
+     "label_zh": "线阻尼",
+     "v": {
+      "wood": 0.9,
+      "stone": 0.3,
+      "paper": 1.5
+     },
+     "unit": "",
+     "basis": "READ",
+     "src": "table"
+    },
+    "air_keep": {
+     "label_zh": "空中每物理秒剩下的速度比例",
+     "v": {
+      "wood": 0.404,
+      "stone": 0.74,
+      "paper": 0.219
+     },
+     "unit": "",
+     "basis": "DERIVED",
+     "how_zh": "(1 − d/66)^66"
+    },
+    "ground_wood": {
+     "label_zh": "木球贴地滚动每物理秒剩下的比例",
+     "v": 0.509,
+     "unit": "",
+     "basis": "MEASURED",
+     "src": "measurement",
+     "engine": "rebuilt",
+     "note_zh": "两次实测 0.507–0.509 和 0.5096，规则值 0.509"
+    },
+    "ground_stone": {
+     "label_zh": "石球贴地滚动每物理秒剩下的比例",
+     "v": 0.784,
+     "unit": "",
+     "basis": "MEASURED",
+     "src": "measurement",
+     "engine": "rebuilt"
+    },
+    "paper_keep": {
+     "label_zh": "纸球松键后每物理秒剩下的比例",
+     "v": 0.25,
+     "unit": "",
+     "basis": "DERIVED",
+     "how_zh": "六次松键的位移按 s′ = αs 拟合，0.235–0.261；是空中帧和接触帧的混合平均"
+    },
+    "paper_tolerance": {
+     "label_zh": "路线给纸球这个比例的容错",
+     "v": 0.015,
+     "unit": "",
+     "basis": "DERIVED",
+     "how_zh": "取六次拟合的散布"
+    },
+    "slow_addon": {
+     "label_zh": "几乎不动时两个阻尼各加",
+     "v": 0.1,
+     "unit": "",
+     "basis": "READ",
+     "src": "source"
+    }
+   }
+  },
+  {
+   "id": "key_push",
+   "name_zh": "按键推力",
+   "owner": "ball_wood",
+   "statement_zh": "每个物理步、每个按住的方向键给球心一次冲量 = 球表的 Force（木 0.43、石 0.92、纸 0.065），不乘步长、不乘质量；每步速度增量木 0.226、石 0.092、纸 0.325，斜按是两键各推一次。步内先后：第 k 步先改速度 v_k（推力、阻尼、冲量、重力 −20/66、摩擦和约束），再走 x_{k+1} = x_k + v_k/66。贴地起步木、石纯滚动是推力的 0.71 倍；纸球第一帧 0.68–0.73 倍、前 6 帧平均 0.57–0.65，之后跳着走。推力方向在推力建立那一刻按视角定到世界并固定；按下转视角的修饰键就关掉全部推力，松开时按当场按着的键重建。某一帧按下的键当帧就推。冻结的球按着键不醒，松键或改键那一帧醒。转视角动画中推力的方向还没量。",
+   "numbers": {
+    "force": {
+     "label_zh": "每步每键的冲量（球表的 Force）",
+     "v": {
+      "wood": 0.43,
+      "stone": 0.92,
+      "paper": 0.065
+     },
+     "unit": "冲量",
+     "basis": "READ",
+     "src": "table"
+    },
+    "dv_per_step": {
+     "label_zh": "每步每键的速度增量",
+     "v": {
+      "wood": 0.226,
+      "stone": 0.092,
+      "paper": 0.325
+     },
+     "unit": "每物理秒",
+     "basis": "DERIVED",
+     "how_zh": "Force ÷ 质量；空中逐物理步核对过，残差 1e-6"
+    },
+    "push_accel": {
+     "label_zh": "推力加速度",
+     "v": {
+      "wood": 14.94,
+      "stone": 6.07,
+      "paper": 21.45
+     },
+     "unit": "每物理秒²",
+     "basis": "DERIVED",
+     "how_zh": "66 × Force ÷ 质量"
+    },
+    "air_rule_wood": {
+     "label_zh": "木球空中按键的逐步误差中位",
+     "v": 0,
+     "unit": "",
+     "basis": "MEASURED",
+     "src": "record",
+     "engine": "retail",
+     "note_zh": "零售录像 3,824 步，按每步先阻尼、再推、再重力"
+    },
+    "ground_start": {
+     "label_zh": "贴地起步的速度增量对推力之比",
+     "v": {
+      "wood": 0.711,
+      "stone": 0.713
+     },
+     "unit": "",
+     "basis": "MEASURED",
+     "src": "measurement",
+     "engine": "rebuilt",
+     "note_zh": "规则值 0.71（接触点摩擦加惯量 0.4）"
+    },
+    "paper_start_first": {
+     "label_zh": "纸球从静止起步第一帧对推力之比",
+     "v": [
+      0.68,
+      0.73
+     ],
+     "unit": "",
+     "basis": "DERIVED",
+     "how_zh": "按着键从静止起步的纸球，几次逐帧速度增量对推力的比"
+    },
+    "paper_start_six": {
+     "label_zh": "纸球起步前 6 帧的平均比",
+     "v": [
+      0.57,
+      0.65
+     ],
+     "unit": "",
+     "basis": "DERIVED",
+     "how_zh": "同几次起步前 6 帧的平均"
+    },
+    "camrot_push": {
+     "label_zh": "按住转视角修饰键时的推力",
+     "v": 0,
+     "unit": "",
+     "basis": "MEASURED",
+     "src": "measurement",
+     "engine": "rebuilt",
+     "note_zh": "空中按着前进键另按修饰键 10 帧全是 0，松开那一帧恢复"
+    },
+    "camrot_anim": {
+     "label_zh": "转视角动画的名义时长",
+     "v": 0.25,
+     "unit": "游戏秒",
+     "basis": "MEASURED",
+     "src": "record",
+     "engine": "retail"
+    }
+   }
+  },
+  {
+   "id": "score_timer",
+   "name_zh": "分数、拾取和 SR 计时",
+   "owner": "level_flow",
+   "statement_zh": "开局分数写进 1000，分数表走着时每 500 游戏毫秒扣 1 分，暂停和停表时停，变球期间照扣；载入后不久就扣第一分，原因没查，对路线无影响（路线按 SR 计时）。分数球：球心离分数球中心三维小于 3 时吃到，当帧 +100；停着时六个小球在 1.7–2.1 游戏秒里陆续各 +20，按帧还是按时间走还不知道，暂停期间小球照常收进，过盘点消失。生命球：60 以内（只看 X、Y）显示，显示后三维 4.5 以内才吃到，+1 晚 1 帧，没有上限。死亡后生命球回来，吃掉的分数球不回来。结算 = 分数 + 命数 × 200 + 100 × 关号。SR 计时：开局清零，停表事件那一帧不计、恢复那一帧计入；死亡不计 538 个物理步，变球计入 333 步，通关后再计 3 步。英雄榜和 TAS 文件名用各自的版本，和标准计时差 0–125 ms。",
+   "numbers": {
+    "start_points": {
+     "label_zh": "开局分数",
+     "v": 1000,
+     "unit": "分",
+     "basis": "READ",
+     "src": "dump"
+    },
+    "tick_ms": {
+     "label_zh": "扣 1 分的间隔",
+     "v": 500,
+     "unit": "游戏毫秒",
+     "basis": "READ",
+     "src": "dump"
+    },
+    "point_radius": {
+     "label_zh": "吃到分数球的距离（三维，到中心）",
+     "v": 3,
+     "unit": "",
+     "basis": "MEASURED",
+     "src": "record",
+     "engine": "original"
+    },
+    "point_value": {
+     "label_zh": "分数球当帧加的分",
+     "v": 100,
+     "unit": "分",
+     "basis": "DERIVED",
+     "how_zh": "第 8、10 关放球吃分数球，读分数格的变化归纳"
+    },
+    "small_points": {
+     "label_zh": "六个小球陆续收进的时段",
+     "v": [
+      1.7,
+      2.1
+     ],
+     "unit": "游戏秒",
+     "basis": "DERIVED",
+     "how_zh": "球停着时读六次 +20 的时刻；按帧还是按时间没定"
+    },
+    "life_show": {
+     "label_zh": "生命球显示的距离（只看 X、Y）",
+     "v": 60,
+     "unit": "",
+     "basis": "READ",
+     "src": "dump"
+    },
+    "life_radius": {
+     "label_zh": "吃到生命球的距离（三维）",
+     "v": 4.5,
+     "unit": "",
+     "basis": "MEASURED",
+     "src": "record",
+     "engine": "original"
+    },
+    "life_bonus": {
+     "label_zh": "结算时每条命的加分",
+     "v": 200,
+     "unit": "分",
+     "basis": "READ",
+     "src": "dump"
+    },
+    "sr_death": {
+     "label_zh": "一次死亡 SR 不计的物理步",
+     "v": 538,
+     "unit": "物理步",
+     "basis": "DERIVED",
+     "how_zh": "停表事件生效那一帧起不计，恢复事件生效那一帧计入"
+    },
+    "sr_trafo": {
+     "label_zh": "一次变球 SR 计入的物理步",
+     "v": 333,
+     "unit": "物理步",
+     "basis": "MEASURED",
+     "src": "answer",
+     "engine": "retail"
+    }
+   }
+  },
+  {
+   "id": "joints",
+   "name_zh": "关节",
+   "owner": "collision_rules",
+   "statement_zh": "被约束的部件是 Target，另一端几乎都是固定的 FixCube。铰链的锚点是关节参考系的原点、轴是它本地的 Z；滑轨的锚点是第一个点、方向是第二个点减第一个点。零位是建立那一刻的相对姿态，锚点和轴只在建立时读一次；关节没有断裂上限；只有飞船那一根滑轨开着限位，其余都没有，铰链绕轴不给力矩，板停在哪里由它碰上的 Stopper、路面或钢轨定。建关节不唤醒；连着的刚体在同一个模拟单元里，醒一个全醒。摆放倾斜的带关节机关只有第 10 关的软木桥（25°）、第 13 关的单摆（3°）、推板（7°）、落石（4°–4.5°）；所有摆放物缩放 1、不镜像。活式木栅栏的滑块走 5.000 碰上凹槽。软木桥断开后模拟单元会不会拆开还不知道。",
+   "numbers": {
+    "hinge_axis": {
+     "label_zh": "铰链轴（关节参考系的本地轴）",
+     "v": "Z",
+     "unit": "",
+     "basis": "READ",
+     "src": "source"
+    },
+    "breaking_limit": {
+     "label_zh": "关节的断裂上限",
+     "v": "无",
+     "unit": "",
+     "basis": "READ",
+     "src": "source"
+    },
+    "limited_joints": {
+     "label_zh": "开着限位的关节",
+     "v": 1,
+     "unit": "根",
+     "basis": "DERIVED",
+     "how_zh": "逐个查全部关节的限位开关，只有飞船的滑轨开着"
+    },
+    "hinges_matched": {
+     "label_zh": "按铰链转凸包和摆放行对上的处数",
+     "v": 193,
+     "unit": "处",
+     "basis": "DERIVED",
+     "how_zh": "按关节参考系转模板凸包，和每一处摆放的姿态对照"
+    },
+    "fence_stroke": {
+     "label_zh": "活式木栅栏滑块的行程",
+     "v": 5.0,
+     "unit": "",
+     "basis": "DERIVED",
+     "how_zh": "按模板几何量滑块到凹槽端的距离"
+    },
+    "tilted": {
+     "label_zh": "摆放倾斜的带关节机关（类型: 度）",
+     "v": {
+      "bridge_l10": 25,
+      "pendulum_l13": 3,
+      "flap_l13": 7
+     },
+     "unit": "度",
+     "basis": "DERIVED",
+     "how_zh": "按摆放矩阵算倾角；落石另有 4°–4.5°"
+    },
+    "placement_scale": {
+     "label_zh": "摆放物的缩放",
+     "v": 1,
+     "unit": "",
+     "basis": "READ",
+     "src": "table"
+    }
+   }
+  },
+  {
+   "id": "rigid_body_mass",
+   "name_zh": "刚体的质量属性",
+   "owner": "collision_rules",
+   "statement_zh": "质心 = 物体原点 + 物体局部的质心偏移，都不自动计算；判断机关醒后往哪边倒要用它，推板用凸包体积中心会得到相反的方向。形状：每个凸网格只取顶点求凸包；木、石是半径 2 的球体，惯量 0.4·m·r²。纸球是 157 点、310 个三角形的凸包，变球时现算，惯量约 0.277·m·r²（2002 上由撞击反推 0.2216），不是实心球。凸包的惯量按二阶矩合成 I_x = √(⟨y²⟩² + ⟨z²⟩²) × 质量，分量低于 3% 抬到下限，不加平行轴项。箱子的惯量是 2.94628，不是 4.167。双向挡板的两份惯量读数不一致，物理核暂用 2002 的。分数球、生命球、火盆、推板的转轴、盘点没有刚体。",
+   "numbers": {
+    "ball_radius": {
+     "label_zh": "木、石球的球体半径",
+     "v": 2,
+     "unit": "",
+     "basis": "MEASURED",
+     "src": "record",
+     "engine": "retail"
+    },
+    "sphere_inertia": {
+     "label_zh": "球体的惯量系数（× m·r²）",
+     "v": 0.4,
+     "unit": "",
+     "basis": "READ",
+     "src": "source"
+    },
+    "paper_hull_points": {
+     "label_zh": "纸球凸包的点数",
+     "v": 157,
+     "unit": "点",
+     "basis": "MEASURED",
+     "src": "measurement",
+     "engine": "rebuilt",
+     "note_zh": "310 个三角形；2002 上的点数没读"
+    },
+    "paper_inertia": {
+     "label_zh": "纸球的惯量",
+     "v": 0.2216,
+     "unit": "质量 × 长度²",
+     "basis": "MEASURED",
+     "src": "record",
+     "engine": "original",
+     "note_zh": "109 次撞击反推；重建引擎诞生时 (0.22151, 0.22142, 0.22179)"
+    },
+    "paper_inertia_factor": {
+     "label_zh": "纸球的惯量系数（× m·r²）",
+     "v": 0.277,
+     "unit": "",
+     "basis": "DERIVED",
+     "how_zh": "0.2216 ÷ (0.2 × 2²)"
+    },
+    "clip_floor": {
+     "label_zh": "惯量分量的下限（占最大分量）",
+     "v": "3%",
+     "unit": "",
+     "basis": "READ",
+     "src": "source"
+    },
+    "box_inertia": {
+     "label_zh": "箱子的惯量（每个轴）",
+     "v": 2.94628,
+     "unit": "质量 × 长度²",
+     "basis": "MEASURED",
+     "src": "measurement",
+     "engine": "rebuilt"
+    },
+    "flaps19_inertia": {
+     "label_zh": "双向挡板的惯量",
+     "v": [
+      143.33,
+      143.36,
+      14.76
+     ],
+     "unit": "质量 × 长度²",
+     "basis": "MEASURED",
+     "src": "answer",
+     "engine": "original",
+     "note_zh": "从 2002 DLL 读出换算；重建引擎诞生记录 (159.22, 159.30, 14.14)，原因没查"
+    },
+    "pendulum_inertia": {
+     "label_zh": "单摆杆的惯量",
+     "v": [
+      130.04,
+      130.04,
+      5.52
+     ],
+     "unit": "质量 × 长度²",
+     "basis": "MEASURED",
+     "src": "measurement",
+     "engine": "rebuilt"
+    }
+   }
+  },
+  {
+   "id": "freeze_wake",
+   "name_zh": "冻结和撞醒",
+   "owner": "collision_rules",
+   "statement_zh": "判据：短期离参考点不超过 0.01、表面转动不超过 0.0071 超过 0.3 物理秒判静；长期不超过 0.1、约 0.28 超过 4 物理秒。一个模拟单元里每个刚体都静才一起冻结，速度清零；约每 17 步查一次，要连着三次。冻结的刚体控制器一个都不跑（按键、风扇、弹簧、重力、阻尼），但照样参与碰撞；被撞那一帧醒，下一个物理步生效、线速度从 0 起。规则值：完全停住后约 0.23–0.44 游戏秒冻结；路线容错取实测并集 0.14–0.98 游戏秒（活式木栅栏 0.14–1.35，纸球到 2.30，单独放下的纸球先摇晃 2–3 游戏秒）。原版 132 fps 下醒到冻结：推板 242–390 帧、T 型板 167–207、跷跷板 98–112。玩家球只在一直按着同一组键又被挡住时冻结，按着的键不唤醒它；松键或改键那一帧醒，仍被挡住时从再按下起 0.17–0.30 游戏秒再冻结。带弹簧或铰链的刚体能带着张力在转折点入睡。",
+   "numbers": {
+    "calm_short": {
+     "label_zh": "短期判静：离参考点、表面转动、持续物理秒",
+     "v": [
+      0.01,
+      0.0071,
+      0.3
+     ],
+     "unit": "",
+     "basis": "READ",
+     "src": "source"
+    },
+    "calm_long": {
+     "label_zh": "长期判静：离参考点、表面转动、持续物理秒",
+     "v": [
+      0.1,
+      0.28,
+      4
+     ],
+     "unit": "",
+     "basis": "READ",
+     "src": "source"
+    },
+    "check_every": {
+     "label_zh": "冻结检查的间隔",
+     "v": 17,
+     "unit": "物理步",
+     "basis": "MEASURED",
+     "src": "measurement",
+     "engine": "rebuilt",
+     "note_zh": "原版一个醒着的单元时每 15–19 步"
+    },
+    "rule_window": {
+     "label_zh": "完全停住到冻结（规则值）",
+     "v": [
+      0.23,
+      0.44
+     ],
+     "unit": "游戏秒",
+     "basis": "DERIVED",
+     "how_zh": "按判据和检查节奏算：三次检查加判静要的时长"
+    },
+    "route_window": {
+     "label_zh": "停住到冻结（路线容错，实测并集）",
+     "v": [
+      0.14,
+      0.98
+     ],
+     "unit": "游戏秒",
+     "basis": "DERIVED",
+     "how_zh": "取木、石球落地静止、顶墙和板类机关各次实测的并集"
+    },
+    "fence_window": {
+     "label_zh": "活式木栅栏推开后停住到冻结",
+     "v": [
+      0.14,
+      1.35
+     ],
+     "unit": "游戏秒",
+     "basis": "DERIVED",
+     "how_zh": "木、石球推开后各次实测的并集；原因没查"
+    },
+    "paper_max": {
+     "label_zh": "纸球顶着栅栏时冻结最晚",
+     "v": 2.3,
+     "unit": "游戏秒",
+     "basis": "MEASURED",
+     "src": "measurement",
+     "engine": "rebuilt"
+    },
+    "original_flap25": {
+     "label_zh": "推板醒到冻结",
+     "v": [
+      242,
+      390
+     ],
+     "unit": "132 fps 帧",
+     "basis": "MEASURED",
+     "src": "record",
+     "engine": "original"
+    },
+    "original_tboard37": {
+     "label_zh": "T 型板醒到冻结",
+     "v": [
+      167,
+      207
+     ],
+     "unit": "132 fps 帧",
+     "basis": "MEASURED",
+     "src": "record",
+     "engine": "original"
+    },
+    "original_seesaw30": {
+     "label_zh": "跷跷板醒到冻结",
+     "v": [
+      98,
+      112
+     ],
+     "unit": "132 fps 帧",
+     "basis": "MEASURED",
+     "src": "record",
+     "engine": "original"
+    },
+    "refreeze_after_press": {
+     "label_zh": "仍被挡住时从再按下到再冻结",
+     "v": [
+      0.17,
+      0.3
+     ],
+     "unit": "游戏秒",
+     "basis": "MEASURED",
+     "src": "measurement",
+     "engine": "rebuilt",
+     "note_zh": "从醒来算是 0.24–0.38"
+    }
+   }
+  },
+  {
+   "id": "springs",
+   "name_zh": "弹簧、升降机、单摆和定时摆动",
+   "owner": "P_Modul_03",
+   "statement_zh": "弹簧每个物理步给挂点冲量 J = −Δt·{[k(ℓ − L) − c_lin(u·v)]u − c_glob·v}，另一端得 −J，Δt = 1/66 物理秒，拉压都出力，只推正在模拟的刚体。升降机：平衡顶面离摆放点满载 −10.736，加木球 −13.269、石球 −24.073、纸球 −11.002，每推掉一块墙门升 2.667，全推掉、木球在上 +8.065；出口路面在上方 6.88。平台在转折点附近冻结，不停在平衡点；球到门口时平台还在下沉。推掉墙门后球离开平台就回不去。单摆：回复力矩 10.24 sin θ，周期约 11.2 游戏秒；2002 上的挂点没核对。秋千：推、空、推、空每段 500 ms，132 fps 下一周 264 帧（±1）。沙袋每 1500 ms 加 1 帧换向，132 fps 下 198 帧。摆幅只有 66 Hz 的读数，不能搬到 132 fps。",
+   "numbers": {
+    "lift_spring": {
+     "label_zh": "升降机弹簧的参数",
+     "v": {
+      "L": 0,
+      "k": 15,
+      "c_lin": 0.1,
+      "c_glob": 1
+     },
+     "unit": "",
+     "basis": "READ",
+     "src": "dump"
+    },
+    "lift_eq_full": {
+     "label_zh": "满载时平衡顶面离摆放点",
+     "v": -10.736,
+     "unit": "",
+     "basis": "MEASURED",
+     "src": "measurement",
+     "engine": "rebuilt",
+     "note_zh": "原版记录上各载荷下冻结的高度合这条规律"
+    },
+    "lift_eq_with_ball": {
+     "label_zh": "满载加一个球时的平衡顶面",
+     "v": {
+      "wood": -13.269,
+      "stone": -24.073,
+      "paper": -11.002
+     },
+     "unit": "",
+     "basis": "MEASURED",
+     "src": "measurement",
+     "engine": "rebuilt"
+    },
+    "lift_per_block": {
+     "label_zh": "每推掉一块墙门平衡顶面升高",
+     "v": 2.667,
+     "unit": "",
+     "basis": "MEASURED",
+     "src": "measurement",
+     "engine": "rebuilt"
+    },
+    "lift_exit": {
+     "label_zh": "出口路面在摆放点上方",
+     "v": 6.88,
+     "unit": "",
+     "basis": "DERIVED",
+     "how_zh": "出口路面顶面和平台摆放点的高差，按关卡几何算"
+    },
+    "lift_period_full": {
+     "label_zh": "满载时平台的振荡周期",
+     "v": 3.79,
+     "unit": "游戏秒",
+     "basis": "MEASURED",
+     "src": "measurement",
+     "engine": "rebuilt",
+     "note_zh": "阻尼比 0.36；加木 4.02、加石 4.68"
+    },
+    "pendulum_torque": {
+     "label_zh": "单摆的回复力矩系数（× sin θ）",
+     "v": 10.24,
+     "unit": "",
+     "basis": "MEASURED",
+     "src": "measurement",
+     "engine": "rebuilt",
+     "note_zh": "挂点离轴 8；不计缩放时是 5.12"
+    },
+    "pendulum_period": {
+     "label_zh": "单摆的回位周期",
+     "v": 11.2,
+     "unit": "游戏秒",
+     "basis": "MEASURED",
+     "src": "measurement",
+     "engine": "rebuilt"
+    },
+    "swing_cycle_132": {
+     "label_zh": "秋千一周",
+     "v": 264,
+     "unit": "132 fps 帧",
+     "basis": "DERIVED",
+     "how_zh": "每段 500 ms 在 132 fps 下约 66 帧（±1），四段一周；66 Hz 工具帧下实测每段 32 帧"
+    },
+    "sack_half_132": {
+     "label_zh": "沙袋的换向间隔",
+     "v": 198,
+     "unit": "132 fps 帧",
+     "basis": "MEASURED",
+     "src": "record",
+     "engine": "original"
+    },
+    "sack_amp": {
+     "label_zh": "沙袋稳定的摆幅",
+     "v": 6.17,
+     "unit": "",
+     "basis": "MEASURED",
+     "src": "measurement",
+     "engine": "rebuilt",
+     "note_zh": "66 Hz 工具帧下的受迫振动，不能搬到 132 fps"
+    },
+    "airship_spring": {
+     "label_zh": "飞船弹簧的参数",
+     "v": {
+      "L": 15,
+      "k": 20,
+      "c_lin": 0.6,
+      "c_glob": 1
+     },
+     "unit": "",
+     "basis": "READ",
+     "src": "dump"
+    }
+   }
+  },
+  {
+   "id": "ball_limits",
+   "name_zh": "球表、极速、坡和台阶",
+   "owner": "ball_wood",
+   "statement_zh": "球表：木质量 1.9、摩擦 0.8、弹性 0.2、阻尼 0.9 / 0.1、Force 0.43；石 10、0.5、0.1、0.3 / 0.1、0.92；纸 0.2、0.5、0.4、1.5 / 0.1、0.065。平地极速（每物理秒，木 / 石 / 纸）：单键纯滚动 15.9 / 17.9 / 13.9，斜按 22.5 / 25.3 / 19.7，空中 16.6 / 20.2 / 14.3，下落终速 22.2 / 66.7 / 13.3。纸球贴地是跳着走的：八到九成物理步在空中，单键约 12.2–13、斜按到 15.6，13.9 只作模型值。从静止守坡：单键 36.8° / 16.9° / 47.0°，斜按 46.6° / 23.2° / 56.6°；石球实测守坡上限 16.0°–17.0°。台阶：静止贴着能上 0.40 / 0.09 / 0.64，冲上去约 1.4–1.9；原版木球以约 15 翻上 1.45。纸球的飞行和弹跳是真实路线的一部分，落点时间窗 0.17–0.55 游戏秒。",
+   "numbers": {
+    "top_single": {
+     "label_zh": "单键纯滚动的平地极速",
+     "v": {
+      "wood": 15.9,
+      "stone": 17.9,
+      "paper": 13.9
+     },
+     "unit": "每物理秒",
+     "basis": "DERIVED",
+     "how_zh": "按阻尼和推力的每步递推求稳定速度；纸球的 13.9 只作模型值"
+    },
+    "top_diag": {
+     "label_zh": "斜按的平地极速",
+     "v": {
+      "wood": 22.5,
+      "stone": 25.3,
+      "paper": 19.7
+     },
+     "unit": "每物理秒",
+     "basis": "DERIVED",
+     "how_zh": "同一递推，两键各推一次"
+    },
+    "top_air": {
+     "label_zh": "空中单键的极速",
+     "v": {
+      "wood": 16.6,
+      "stone": 20.2,
+      "paper": 14.3
+     },
+     "unit": "每物理秒",
+     "basis": "DERIVED",
+     "how_zh": "空中只有线阻尼的每步递推"
+    },
+    "terminal": {
+     "label_zh": "下落终速",
+     "v": {
+      "wood": 22.2,
+      "stone": 66.7,
+      "paper": 13.3
+     },
+     "unit": "每物理秒",
+     "basis": "DERIVED",
+     "how_zh": "每步重力和线阻尼平衡"
+    },
+    "wood_top_original": {
+     "label_zh": "木球单键极速（原版核对）",
+     "v": 15.9,
+     "unit": "每物理秒",
+     "basis": "MEASURED",
+     "src": "record",
+     "engine": "retail",
+     "note_zh": "斜按 22.5；重建引擎 15.88、22.43–22.47"
+    },
+    "paper_single": {
+     "label_zh": "纸球单键贴地的速度",
+     "v": [
+      12.2,
+      13
+     ],
+     "unit": "每物理秒",
+     "basis": "DERIVED",
+     "how_zh": "重建引擎稳定 12.2–12.4，原版记录单键中位 13.01，两者合成"
+    },
+    "paper_off_ground": {
+     "label_zh": "纸球路面上离地的物理步比例（水平速度: %）",
+     "v": {
+      "11–13": 81.5,
+      "13–15": 88.2,
+      "15+": 96.1
+     },
+     "unit": "%",
+     "basis": "MEASURED",
+     "src": "record",
+     "engine": "original"
+    },
+    "hold_single": {
+     "label_zh": "从静止单键守坡",
+     "v": {
+      "wood": 36.8,
+      "stone": 16.9,
+      "paper": 47.0
+     },
+     "unit": "度",
+     "basis": "DERIVED",
+     "how_zh": "从静止贴地推力沿坡的分量和重力沿坡的分量相等"
+    },
+    "hold_stone_measured": {
+     "label_zh": "石球守坡上限的实测",
+     "v": [
+      16.0,
+      17.0
+     ],
+     "unit": "度",
+     "basis": "DERIVED",
+     "how_zh": "几个坡度上按着键看是否往下滚，17° 冻结停住"
+    },
+    "step_rest": {
+     "label_zh": "静止贴着能上的台阶",
+     "v": {
+      "wood": 0.4,
+      "stone": 0.09,
+      "paper": 0.64
+     },
+     "unit": "",
+     "basis": "DERIVED",
+     "how_zh": "按推力、摩擦和台阶边的接触几何算"
+    },
+    "step_wood_original": {
+     "label_zh": "原版木球以约 15 翻上的台阶",
+     "v": 1.45,
+     "unit": "",
+     "basis": "MEASURED",
+     "src": "record",
+     "engine": "retail"
+    },
+    "landing_window": {
+     "label_zh": "纸球落点的几何时间窗",
+     "v": [
+      0.17,
+      0.55
+     ],
+     "unit": "游戏秒",
+     "basis": "DERIVED",
+     "how_zh": "原版记录里纸球飞行的落点窗口 22–73 个物理步换成游戏秒"
+    }
+   }
+  }
+ ]
+}

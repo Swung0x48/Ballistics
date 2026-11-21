@@ -1,0 +1,608 @@
+{
+ "id": "P_Modul_19",
+ "name_zh": "双向挡板",
+ "category": "mechanism",
+ "types": [
+  "P_Modul_19"
+ ],
+ "summary_zh": "双向挡板：一根钢丝横跨两条平行的路（A 路、B 路），两路在这里各断开约 6.6 长，缺口下多是死亡区。一个刚体带两片互成直角的挡板绕钢丝转，每次只填平一条路。A 姿态（小节建立和死亡复位后都是它）：A 路两向三种球都滚过；B 路的缺口边立着一片约 5.8 高的墙，只能从模板 +x 一侧往 −x 推倒它，推倒的球紧跟着过 B 路，同时 A 路断开（B 姿态）。石球贴着就推倒；木球贴着推不倒，撞前 6.5 以上推倒，中间没量；纸球推不动。翻回来要从 A 路 −x 一侧推（没量）或死亡复位。离开它的小节后两段缺口都敞着。",
+ "uses": [
+  "proximity_wake",
+  "freeze_wake",
+  "sector_rebuild",
+  "death_timing",
+  "contact",
+  "joints"
+ ],
+ "bodies": [
+  {
+   "name": "P_Modul_19_Flaps",
+   "role_zh": "唯一的刚体：两片挡板、钢丝中段和中间六棱柱钢片的碰撞体都在它身上，一起绕钢丝的铰链转；看得见的钢丝模型不是刚体。",
+   "hull": {
+    "kind": "convex_hulls",
+    "meshes": [
+     "P_Modul_19_Col1_Mesh",
+     "P_Modul_19_Col2_Mesh",
+     "P_Modul_19_Col3_Mesh",
+     "P_Modul_19_Col4_Mesh"
+    ],
+    "size": [
+     6.39,
+     6.37,
+     20.0
+    ],
+    "radius": null,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "motion": {
+    "kind": "hinge",
+    "axis": [
+     0,
+     0,
+     1
+    ],
+    "anchor": [
+     -2.926,
+     -0.246,
+     -2.499
+    ],
+    "limits": "…",
+    "basis": "READ",
+    "src": "dump"
+   },
+   "mass": {
+    "v": 3,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "friction": {
+    "v": 0.7,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "elasticity": {
+    "v": 0.4,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "lin_damp": {
+    "v": 1,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "rot_damp": {
+    "v": 0.05,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "group": {
+    "v": "Floor",
+    "basis": "READ",
+    "src": "dump"
+   },
+   "starts": {
+    "v": "frozen",
+    "basis": "READ",
+    "src": "dump"
+   }
+  }
+ ],
+ "forces": [],
+ "numbers": {
+  "wake_radius": {
+   "label_zh": "唤醒：球心到机关原点的水平距离小于",
+   "v": 50,
+   "unit": "",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  "lane_z": {
+   "label_zh": "两条路的位置（模板 z 范围）",
+   "v": {
+    "lane_A": [
+     -12.5,
+     -7.5
+    ],
+    "lane_B": [
+     2.5,
+     7.5
+    ]
+   },
+   "unit": "",
+   "basis": "DERIVED",
+   "how_zh": "地图路面换到模板坐标后读出两条路的横向范围"
+  },
+  "gap_x": {
+   "label_zh": "两段缺口（模板 x 范围，各约 6.6 长）",
+   "v": {
+    "lane_A": [
+     -3.34,
+     3.3
+    ],
+    "lane_B": [
+     -9.12,
+     -2.52
+    ]
+   },
+   "unit": "",
+   "basis": "DERIVED",
+   "how_zh": "地图路面换到模板坐标后沿两条路的中线找没有路面的区间"
+  },
+  "gap_drop": {
+   "label_zh": "缺口处路面到下面死亡区顶面的高差",
+   "v": [
+    21.6,
+    105.9
+   ],
+   "unit": "",
+   "note_zh": "第 11 关有两处 A 路缺口下先有一层低 5.0–5.7 的路面",
+   "basis": "DERIVED",
+   "how_zh": "缺口四角换到世界后落进的死亡区，取机关原点高度减其顶面"
+  },
+  "standing_flap_height": {
+   "label_zh": "立着那片的顶高（离路面）",
+   "v": 5.81,
+   "unit": "",
+   "basis": "DERIVED",
+   "how_zh": "挡板凸包按 A 姿态转动后的范围"
+  },
+  "pose_b_deg": {
+   "label_zh": "B 姿态的板角（实测）",
+   "v": [
+    84.89,
+    84.94
+   ],
+   "unit": "度",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  "tip_over_deg": {
+   "label_zh": "从 A 姿态要转过才会倒向 B 的角度",
+   "v": 44.9,
+   "unit": "度",
+   "basis": "DERIVED",
+   "how_zh": "核心相对轴的位置按几何算到轴的正上方"
+  },
+  "stone_touch_to_80deg": {
+   "label_zh": "石球贴着按键到挡板过 +80°",
+   "v": 0.88,
+   "unit": "游戏秒",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  "stone_impact_to_80deg": {
+   "label_zh": "石球撞上到挡板过 +80°：撞前速度 → 时长",
+   "v": {
+    "4.6": 0.33,
+    "6.3": 0.26,
+    "7.7": 0.23,
+    "8.8": 0.2,
+    "9.8": 0.18
+   },
+   "unit": "每物理秒 → 游戏秒",
+   "note_zh": "每个撞前速度两次",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  "wood_impact_to_80deg": {
+   "label_zh": "木球撞上到挡板过 +80°：撞前速度 → 时长",
+   "v": {
+    "6.6": 0.71,
+    "8.8": 0.52,
+    "10.5": 0.42,
+    "11.6": 0.39,
+    "12.5": 0.36
+   },
+   "unit": "每物理秒 → 游戏秒",
+   "note_zh": "每个撞前速度两次",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  "wood_speed_after_impact": {
+   "label_zh": "木球撞前速度 → 撞击那一帧末的球速",
+   "v": {
+    "6.62": 3.33,
+    "8.78": 4.43,
+    "10.56": 1.61,
+    "11.6": 5.86,
+    "12.46": 6.28
+   },
+   "unit": "每物理秒 → 每物理秒",
+   "note_zh": "不单调（撞前 10.5 只剩 1.6），按表查，不要插值",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  "wood_untested_band": {
+   "label_zh": "木球没量的区间：碰上 1.25 推不倒，撞前 6.53 起推倒",
+   "v": [
+    1.25,
+    6.53
+   ],
+   "unit": "每物理秒",
+   "note_zh": "1.25 四次不倒；6.53 起每档两次都倒",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  "wood_held_freeze_seconds": {
+   "label_zh": "木球贴着推不倒时撞击到一起冻结",
+   "v": 0.8,
+   "unit": "游戏秒",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  }
+ },
+ "machine": {
+  "states": [
+   {
+    "name": "sector_off",
+    "meaning_zh": "所在小节不是当前小节：没有刚体，挡板不在缺口里。A 路（模板 x −3.34..3.30）和 B 路（x −9.12..−2.52）各约 6.6 长的缺口都敞着，两条路都不通。"
+   },
+   {
+    "name": "placed",
+    "meaning_zh": "小节刚建好、还没醒：保持摆放姿态，比 A 姿态多转约 5°（平放那片外端抬起约 0.5）。A 路通，B 路只能推过去；没有球靠近时一直这样。"
+   },
+   {
+    "name": "pose_a",
+    "meaning_zh": "A 姿态，约 −4.8°（第 9 关约 −5.2°，原版 4.7–4.9°）：平放那片填平 A 路缺口、顶面与路齐平；立着那片（约 5.8 高）站在 B 路缺口靠 +x 的边上。A 路两向通，B 路只能从 +x 一侧推过去。"
+   },
+   {
+    "name": "held_a",
+    "meaning_zh": "木球贴着推不倒时的僵持：挡板被顶起约 1.4°（−3.36…−3.45°），球被立片挡住，两者一起冻结。B 路不通；A 路这时能不能过没有量。"
+   },
+   {
+    "name": "tipping",
+    "meaning_zh": "正被推着在两个姿态之间翻：原来通的那条路缺口已敞开、另一条还没嵌平，两条路都不通。推的球按着键跟在立片后面。"
+   },
+   {
+    "name": "pose_b",
+    "meaning_zh": "B 姿态，约 +84.9°：原立片倒进 B 路缺口、顶面齐平，B 路通；原平放那片竖起在 A 路缺口靠 −x 的边上，A 路缺口敞开，从 +x 来的球掉下去，只能从 −x 一侧推回。"
+   }
+  ],
+  "initial": "sector_off",
+  "flags": [
+   {
+    "name": "frozen",
+    "meaning_zh": "刚体冻结着：不受重力，照样挡球、照样是路面；被玩家球、道具球、箱子等组相容的运动刚体撞到当帧醒。和姿态无关，小节建好时为真，停住后又变真。"
+   },
+   {
+    "name": "proximity_armed",
+    "meaning_zh": "邻近检测开着。小节建好时为真，第一次触发后关掉，到小节重建前不再打开。"
+   }
+  ],
+  "transitions": [
+   {
+    "from": "sector_off",
+    "to": "placed",
+    "trigger": "sector_enter",
+    "condition_zh": "小节管理器激活它所在的小节：开局或过盘点进入这一小节。",
+    "effect_zh": "在摆放位置建刚体和铰链，冻结（frozen 为真），打开邻近检测。",
+    "time_zh": "调用小节管理器后第 6 个行为帧（132 fps 下 0.045 游戏秒）",
+    "seconds": null,
+    "basis": "READ",
+    "src": "dump"
+   },
+   {
+    "from": "placed",
+    "to": "placed",
+    "trigger": "proximity",
+    "condition_zh": "proximity_armed 为真、这一帧是检查帧，球心到机关原点的水平距离（只看 X、Z）严格小于 50。重建引擎只量过 +x、+z；原版记录里醒时球到摆放点 48.71–49.86。",
+    "effect_zh": "唤醒挡板（frozen 变假），同时关掉邻近检测，只触发一次。",
+    "time_zh": "132 fps、接近每物理秒 66 以内时最多比跨过 50 晚 10 个行为帧（0.076 游戏秒）",
+    "seconds": null,
+    "basis": "MEASURED",
+    "src": "measurement",
+    "engine": "rebuilt"
+   },
+   {
+    "from": "*",
+    "to": "*",
+    "trigger": "contact",
+    "condition_zh": "frozen 为真，被正在模拟、碰撞组相容的刚体撞到：玩家球、道具球、箱子等。路面、钢轨和同组的机关碰不到它。",
+    "effect_zh": "撞击那一个物理步先醒（frozen 变假）再受冲量，它不是固定墙；推翻的转移可以紧接着发生。",
+    "time_zh": "撞击当帧",
+    "seconds": 0,
+    "basis": "MEASURED",
+    "src": "measurement",
+    "engine": "rebuilt"
+   },
+   {
+    "from": "placed",
+    "to": "pose_a",
+    "trigger": "force",
+    "condition_zh": "醒着、没有被推。",
+    "effect_zh": "重力把它往回转约 5°，平放那片外端压上 A 路缺口下的挡块就停：A 路通，B 路只能推过去。",
+    "time_zh": "转动约 0.13 游戏秒（按重力粗估）；醒到冻结实测 0.45 游戏秒",
+    "seconds": null,
+    "basis": "MEASURED",
+    "src": "measurement",
+    "engine": "rebuilt"
+   },
+   {
+    "from": "*",
+    "to": "*",
+    "trigger": "timer",
+    "condition_zh": "frozen 为假，挡板停住（任一姿态，含 held_a 时连同顶着它的球）。",
+    "effect_zh": "再冻结（frozen 变真），姿态不变，照样挡球、照样是路面。",
+    "time_zh": "停住后 0.14–0.98 游戏秒（容错范围）；B 姿态倒平后实测 0.71–0.94，原版醒到冻结 0.48–1.05",
+    "seconds": null,
+    "basis": "DERIVED",
+    "how_zh": "冻结规则的实测并集，加本机关倒平后和原版记录里醒到冻结的实测"
+   },
+   {
+    "from": "pose_a",
+    "to": "tipping",
+    "trigger": "contact",
+    "condition_zh": "球在 B 路 +x 一侧顶立片、按着模板 −x 的键接着推：石球任何速度都行；木球撞前 6.53 以上实测都翻，碰上时 1.25 不翻，中间没量；纸球不翻。",
+    "effect_zh": "挡板开始翻，A 路缺口随即敞开；要把核心抬过轴的正上方（从 A 姿态转 44.9°）才倒向 B 姿态。",
+    "time_zh": "撞击到过 +80°：石球 0.18–0.33、木球 0.36–0.71 游戏秒；石球贴着起步从按键算 0.88",
+    "seconds": null,
+    "basis": "MEASURED",
+    "src": "measurement",
+    "engine": "rebuilt"
+   },
+   {
+    "from": "tipping",
+    "to": "pose_b",
+    "trigger": "force",
+    "condition_zh": "从 A 姿态推起、核心过了轴的正上方。",
+    "effect_zh": "重力把它压到 B 路缺口下的挡块上，停在约 +84.9°，不过头、不弹回；推的球紧跟着从倒平的那片上过 B 路，A 路断开。",
+    "time_zh": "过 +80° 以后到停住还要很短一段，没有单列",
+    "seconds": null,
+    "basis": "MEASURED",
+    "src": "measurement",
+    "engine": "rebuilt"
+   },
+   {
+    "from": "pose_a",
+    "to": "held_a",
+    "trigger": "contact",
+    "condition_zh": "木球在 B 路 +x 一侧贴着立片，碰上时每物理秒约 1.25 以下，按着模板 −x 的键（四次）。",
+    "effect_zh": "挡板只被顶起约 1.4° 就停，球被挡住，球和挡板一起冻结。",
+    "time_zh": "撞击到冻结约 0.8 游戏秒",
+    "seconds": null,
+    "basis": "MEASURED",
+    "src": "measurement",
+    "engine": "rebuilt"
+   },
+   {
+    "from": "held_a",
+    "to": "pose_a",
+    "trigger": "force",
+    "condition_zh": "松键或改键：球当帧醒、退开。仍顶着再按同一个键，0.17–0.30 游戏秒后球又冻结。",
+    "effect_zh": "按重力挡板应落回 A 姿态；落回没有量。",
+    "time_zh": "落回不到 0.1 游戏秒（重力粗估，没有量）",
+    "seconds": null,
+    "basis": "ASSUMED"
+   },
+   {
+    "from": "pose_b",
+    "to": "tipping",
+    "trigger": "contact",
+    "condition_zh": "球在 A 路 −x 一侧顶竖起那片、按着模板 +x 的键推。没有实测，按对称当作和 A → B 相同：石球贴着就够，木球要助跑，纸球不行。",
+    "effect_zh": "挡板往回翻，B 路缺口敞开；没有“两片都倒下”的状态，每次只通一条路。",
+    "time_zh": "没有实测；按对称取 A → B 的时长",
+    "seconds": null,
+    "basis": "DERIVED",
+    "how_zh": "两段缺口和两片挡板的几何对称，门槛和时长借 A → B 的实测"
+   },
+   {
+    "from": "tipping",
+    "to": "pose_a",
+    "trigger": "force",
+    "condition_zh": "从 B 姿态推起并过了顶点；或从 A 姿态推起没过顶点又落回（实测里没出现过）。",
+    "effect_zh": "回到 A 姿态：A 路通，B 路只能再推。",
+    "time_zh": "按对称取 A → B 的时长；落回的情形没有量",
+    "seconds": null,
+    "basis": "ASSUMED"
+   },
+   {
+    "from": "*",
+    "to": "placed",
+    "trigger": "death",
+    "condition_zh": "球在它所在的小节判死或重开关卡。别的小节的双向挡板不受影响。",
+    "effect_zh": "当前小节拆掉再建：回到冻结的摆放姿态（醒后落到 A 姿态），邻近检测重开（节拍接着上次）。七处重生点离它水平 81.8 以上，等待中不会醒。",
+    "time_zh": "132 fps 下判死后第 136 帧拆、第 140 帧建，第 539 帧能操控",
+    "seconds": null,
+    "basis": "DERIVED",
+    "how_zh": "小节拆建的通则和时序加本机关的拆除、建立分支；本机关没有单独跑过死亡"
+   },
+   {
+    "from": "*",
+    "to": "sector_off",
+    "trigger": "sector_leave",
+    "condition_zh": "过盘点离开这一小节，小节管理器拆掉它。",
+    "effect_zh": "关铰链、关检测、删刚体，放回模板姿态；两段缺口敞开。",
+    "time_zh": "调用小节管理器后第 2 个行为帧",
+    "seconds": null,
+    "basis": "READ",
+    "src": "dump"
+   }
+  ],
+  "reset": {
+   "on_death_zh": "在它的小节里死亡或重开：拆掉再建，回到摆放姿态，醒后落到 A 姿态（A 路通、B 路要推）。这是复位它的唯一办法，代价一条命、回到重生点和 4.08 游戏秒。",
+   "on_sector_change_zh": "不在当前小节时没有刚体，立片挡不住球，但嵌平那片也不在：A、B 两路的缺口都敞着，下面多是死亡区，两条路都断。回到前面小节它不会重建。",
+   "basis": "DERIVED",
+   "how_zh": "小节拆建的通则加本机关的拆除分支；不在当前小节时的样子按同类机关类推"
+  }
+ },
+ "by_ball": {
+  "wood": {
+   "verdict": "pushes",
+   "can_zh": "要助跑：贴着（碰上时 1.25）推不倒、和挡板一起冻结，要松键退回去重来；助跑 3 到 18（撞前 6.53–12.51）各两次全推倒，球跟着过 B 路。门槛在 1.25 和 6.53 之间没量。原版记录里撞前 9.63、10.03 也推倒。从 A 路推回没有量。",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  "stone": {
+   "verdict": "pushes",
+   "can_zh": "不要助跑：贴着从静止按键就推倒，按键到过 +80° 0.88 游戏秒；助跑 3 到 18（撞前 4.6–9.8）也都推倒，撞击到过 +80° 0.18–0.33 游戏秒，球跟着过 B 路。从 A 路推回没有量。",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  "paper": {
+   "verdict": "depends",
+   "can_zh": "推不动：贴着到助跑 18（撞前最高 11.81）16 次挡板都没转，14 次被弹回，2 次贴着立片滑开、从 B 路侧面掉下去。只能走当时通着的那条路（A 姿态下的 A 路两向都能过）。",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  }
+ },
+ "route_effects": [
+  {
+   "kind": "opens",
+   "effect_zh": "A 姿态（建立和复位后都是它）下 A 路是通路：三种球两个方向都从嵌平那片上滚过，挡板不动，不加时间。只要同一小节里没人把它推成 B 姿态。",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  {
+   "kind": "blocks",
+   "effect_zh": "A 姿态下 B 路被立片挡住：只能由石球或木球从 +x 一侧往模板 −x 推倒它，推倒就是通过；从 −x 来先掉进缺口。B 姿态反过来：B 路通，A 路从 +x 来掉进缺口。",
+   "basis": "DERIVED",
+   "how_zh": "缺口和两个姿态下挡板的几何，加推倒、掉进缺口的实测"
+  },
+  {
+   "kind": "timing",
+   "effect_zh": "在 B 路推倒过去，比同长平路多花：石球约 0.2–0.9 游戏秒，木球约 0.4–0.7（撞击到倒平，粗估）。倒平前球跟在挡板后面，撞后球速只剩一部分（木球撞前 6.6 只剩 3.3），之后再加速。B 路推侧只有 5.0 长的两处有钢轨车道接进来，带速到达，速度够不够没量。",
+   "basis": "DERIVED",
+   "how_zh": "按实测的撞击到倒平时长粗估，没有单独量过这处比平路多多少"
+  },
+  {
+   "kind": "timing",
+   "effect_zh": "B 姿态下从 A 路 −x 一侧往模板 +x 推回去：没有实测，按对称取推倒的门槛和时间，容错未知。用在推过 B 路后要再从 A 路回来的地方。",
+   "basis": "DERIVED",
+   "how_zh": "按几何对称借推倒的实测"
+  },
+  {
+   "kind": "one_way",
+   "effect_zh": "每次翻只能从一侧推：A → B 在 B 路 +x 一侧往 −x，B → A 在 A 路 −x 一侧往 +x；另一侧是缺口，球到不了挡板跟前。铰链本身不限位，方向限制来自缺口。",
+   "basis": "DERIVED",
+   "how_zh": "缺口位置和铰链不限位推出"
+  },
+  {
+   "kind": "hazard",
+   "effect_zh": "翻错会困住：翻一次就换一条路断开。七处里四处两路在 −x 一侧相连，一处在 +x 一侧相连，两处（第 9 关第 1 小节较高的那处、第 11 关第 6 小节）只经过挡板相连；去不了的一侧只能推回或死亡复位。",
+   "basis": "DERIVED",
+   "how_zh": "两个姿态下各路通不通的规则，加粗层图里挡板以外各端头怎样相连"
+  },
+  {
+   "kind": "hazard",
+   "effect_zh": "翻起的那一刻原来通的那条路缺口敞开，从那一侧来的球掉进去；多数缺口正下方没有路面，一直落进死亡区（高差 21.6–105.9）。第 11 关两处 A 路缺口下低 5.0–5.7 处先有一层路面。",
+   "basis": "DERIVED",
+   "how_zh": "缺口范围、缺口下的路面和死亡区的几何，加一次掉进缺口的实测"
+  },
+  {
+   "kind": "hazard",
+   "effect_zh": "小节没激活时（提前到或回到拆掉的小节）挡板没有刚体也不在缺口里，A、B 两路都断着 6.6 长的缺口；跨小节的路线不能把 A 路当通路，只能带速度跳过（没量）。",
+   "basis": "DERIVED",
+   "how_zh": "不在当前小节的机关没有刚体，加两段缺口的几何"
+  },
+  {
+   "kind": "timing",
+   "effect_zh": "推错以后只能死亡复位：判死到能操控 4.08 游戏秒，一条命，再加从重生点（水平 81.8–312.1 外）回来的路程。复位是确定的，回到 A 姿态。",
+   "basis": "DERIVED",
+   "how_zh": "只有死亡能复位的通则加死亡的时长和重生点距离"
+  },
+  {
+   "kind": "forbids_ball",
+   "effect_zh": "纸球翻不了挡板，只能走当时通着的那条路，顶着立片还可能从 B 路侧面滑下去。第 9 关第 1 小节的两处只会来木球或石球；第 10、11 关三种球都可能到场。",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  {
+   "kind": "blocks",
+   "effect_zh": "两路之间没有路面；中间的六棱柱钢片碰撞体（外接圆半径约 2.76）比看得见的钢片（约 1.28）大一倍多，挡住沿钢丝从一条路滚到另一条路的球。传说能沿钢丝控过去，怎样走没量。",
+   "basis": "DERIVED",
+   "how_zh": "凸包几何和两路之间没有路面的扫描"
+  },
+  {
+   "kind": "hazard",
+   "effect_zh": "第 9 关第 1 小节较高的那处：一颗道具石球压在 A 路缺口的平放那片上方，可能增加推 B 路那片的阻力，或在翻起时滚进缺口；能不能推、它停在哪里都没量。",
+   "basis": "DERIVED",
+   "how_zh": "碰撞组的规则和道具石球的摆放位置"
+  },
+  {
+   "kind": "none",
+   "effect_zh": "粗层的计划七处都不从挡板的两条路上过；第 11 关有两处从 A 路缺口下面的低层穿过，离平放那片的底面只差约 1.1，要在引擎里核对。",
+   "basis": "DERIVED",
+   "how_zh": "把粗层计划的点换到每处的模板坐标，找离机关最近的点"
+  }
+ ],
+ "model": [
+  {
+   "feature": "hinge",
+   "need_zh": "一个绕固定轴转的刚体：质量 3，绕轴惯量 20.74，四个凸包随它转，铰链无限位、无弹簧，由缺口下两块挡块托住两个姿态。",
+   "minimal_zh": "绕轴一维转动，重力力矩加接触力矩，每物理秒阻尼约三成；或用两个单侧硬限位（A −4.8°、B +84.9°）代替挡块。用撞后球速表和翻转时长表核对。"
+  },
+  {
+   "feature": "trigger",
+   "need_zh": "冻结与唤醒：建好时冻结（照样挡球、被撞就醒），球进入水平 50 才醒；死亡、重开回到摆放姿态。",
+   "minimal_zh": "一个“醒着”的布尔量加以机关原点为圆心、半径 50 的水平检测，只触发一次，之后靠撞击唤醒；132 fps 下最多晚 10 个物理步。"
+  },
+  {
+   "feature": "state_only",
+   "need_zh": "回答路线问题只要知道每个姿态下每条路通不通、从哪边能翻、要什么球。",
+   "minimal_zh": "A、B 两个姿态加“正在翻”：石球任何速度翻；木球撞前 ≥ 6.53 翻、≤ 1.25 僵持冻结、之间按不翻处理；纸球不翻。翻时两路都不通，倒平后推的球过 B 路、A 路断开。"
+  },
+  {
+   "feature": "shape_only",
+   "need_zh": "粗层要用隐藏的四个凸包当障碍，现在导出的是显示网格：大钢片碰撞体漏了、钢丝两段没碰撞体却算了、姿态差约 5°。",
+   "minimal_zh": "把 A 姿态下的四个凸包作为可被球改变的固定障碍放进粗层，代替显示网格；B 姿态另备一组，中间钢片和钢丝中段两个姿态都在。"
+  }
+ ],
+ "unknowns": [
+  {
+   "kind": "measure",
+   "question_zh": "木球推倒它的门槛：碰上 1.25 推不倒、撞前 6.53 推倒，中间没量；原版引擎下也没定。",
+   "matters_zh": "两处 A 路 −x 一侧只有 5.0 长，推回时木球最多助跑约 3，正落在这段里。",
+   "how_zh": "在第 10 关那处按助跑 0.5–2.5 各推两次，读撞前速度和是否推倒；再从原版记录里找木球碰上挡板时的速度和结局对照。"
+  },
+  {
+   "kind": "measure",
+   "question_zh": "原版脚本下推倒的门槛：现有实测都在改过的脚本下量的。",
+   "matters_zh": "另一种挡板上两种脚本的撞时角和撞后速度不一致，这里要核对一次。",
+   "how_zh": "用原版脚本，第 10 关第 4 小节，木球在 B 路 +x 一侧助跑 3 和 6 推，读挡板转角和球速，各两次。"
+  },
+  {
+   "kind": "measure",
+   "question_zh": "B → A 推回的门槛和耗时，以及 B 姿态下另一颗球从 B 路 −x 往 +x 滚过嵌平那片。",
+   "matters_zh": "推回去的路线和“B 姿态下 B 路两向通”现在只按对称推。",
+   "how_zh": "第 10 关那处先推倒过 B 路，绕到 A 路 −x 一侧再朝模板 +x 推；另一次过 B 路后立即反向滚回。"
+  },
+  {
+   "kind": "measure",
+   "question_zh": "第 9 关第 1 小节那颗道具石球建好后停在哪里、还压不压着挡板，压着时能不能推倒 B 路那片。",
+   "matters_zh": "决定第 9 关第 1 小节这一处的走法（只有木球、石球）。",
+   "how_zh": "开局不碰它，看道具石球和挡板何时冻结、停在哪里；再用木球在 B 路 +x 一侧助跑 6、10 推。"
+  },
+  {
+   "kind": "measure",
+   "question_zh": "沿钢丝从一条路控到另一条路的捷径怎样走、要不要某种球。",
+   "matters_zh": "决定两路之间能不能不推挡板就越过，以及竞速路线是否用它。",
+   "how_zh": "第 10 关那处把球放在 A 路贴着钢丝，按模板 +z 推，记球心轨迹和挡板转角；木球、石球各两次。"
+  },
+  {
+   "kind": "measure",
+   "question_zh": "挡板惯量两份读数不一致（绕轴 20.74 对 20.12），按网格复算也对不上。",
+   "matters_zh": "差 3%，路线用的是实测，只影响逐步复现。",
+   "how_zh": "读原版脚本下诞生时的质量和惯量，和两份读数比，再按诞生时的网格和缩放重算。"
+  },
+  {
+   "kind": "measure",
+   "question_zh": "唤醒圆心在 −x、−z 方向是否也是机关原点：只量过 +x、+z。",
+   "matters_zh": "影响很小，醒后 0.13 游戏秒就到 A 姿态。",
+   "how_zh": "第 9 关开局，把球放到机关 −x、−z 方向 49.99 和 50.01 处，看挡板醒不醒，各两次。"
+  }
+ ]
+}

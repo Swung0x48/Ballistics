@@ -1,0 +1,556 @@
+{
+ "id": "P_Modul_25",
+ "name_zh": "推板",
+ "category": "mechanism",
+ "types": [
+  "P_Modul_25"
+ ],
+ "summary_zh": "路面尽头一块用铰链立着的木板，后面是约 9 到 10 宽的空隙。球进到水平 50 以内它醒来，朝来球一侧后仰约 15.6° 停住，挡住去路；从路面一侧推倒后它平躺在空隙上成为 5 宽的桥，推它的球紧跟着从板上过去，操作处即通过处。木球、石球按着键撞上就推倒（实测撞前木 4.20、石 2.56 起全部推倒，下限没找到），撞击到对面路面木 1.39–1.95、石 1.29–1.79 游戏秒；纸球推不倒、被弹回。背后没有路面，只能从来路一侧推。死亡是唯一的复位：板立回去要重新推；离开它的小节后板不存在。",
+ "uses": [
+  "proximity_wake",
+  "freeze_wake",
+  "sector_rebuild",
+  "death_timing",
+  "contact",
+  "joints",
+  "key_push",
+  "transform_timing"
+ ],
+ "bodies": [
+  {
+   "name": "P_Modul_25_Bridge",
+   "role_zh": "木板：机关唯一的刚体，铰链连在锚体上，后仰时是障碍，倒下后是桥。",
+   "hull": {
+    "kind": "convex_hulls",
+    "meshes": [
+     "P_Modul_25_Col01_Mesh",
+     "P_Modul_25_Col02_Mesh"
+    ],
+    "size": [
+     9.57,
+     0.5,
+     5.0
+    ],
+    "radius": null,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "motion": {
+    "kind": "hinge",
+    "axis": [
+     0,
+     0,
+     1
+    ],
+    "anchor": [
+     -0.669,
+     -0.234,
+     0
+    ],
+    "limits": "不限位：存了 −45..45，但 Limitations 开关是 FALSE，可以整圈自由转动",
+    "basis": "READ",
+    "src": "template"
+   },
+   "mass": {
+    "v": 3,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "friction": {
+    "v": 0.7,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "elasticity": {
+    "v": 1.0,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "lin_damp": {
+    "v": 1,
+    "unit": "每物理秒",
+    "basis": "READ",
+    "src": "dump"
+   },
+   "rot_damp": {
+    "v": 0.05,
+    "unit": "每物理秒",
+    "basis": "READ",
+    "src": "dump"
+   },
+   "group": {
+    "v": "",
+    "basis": "READ",
+    "src": "dump"
+   },
+   "starts": {
+    "v": "frozen",
+    "basis": "READ",
+    "src": "dump"
+   }
+  }
+ ],
+ "forces": [],
+ "numbers": {
+  "wake_radius": {
+   "label_zh": "唤醒：球心到摆放点的水平距离小于",
+   "v": 50,
+   "unit": "",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  "lean_rest_deg": {
+   "label_zh": "后仰静止角（第 2 关实测）",
+   "v": -15.56,
+   "unit": "度",
+   "note_zh": "别处按几何碰上角减约 0.9° 推，35 处碰上角 −13.20° 到 −21.51°",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  "lean_settle_seconds": {
+   "label_zh": "醒后第一次到静止角",
+   "v": 0.61,
+   "unit": "游戏秒",
+   "basis": "DERIVED",
+   "how_zh": "一处一个配置的逐帧曲线，帧差换成游戏秒"
+  },
+  "fallen_deg": {
+   "label_zh": "倒下后的板角（第 2 关实测）",
+   "v": [
+    89.86,
+    89.9
+   ],
+   "unit": "度",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  "fall_seconds": {
+   "label_zh": "撞击到板过 +85°",
+   "v": {
+    "wood_game_s": [
+     0.62,
+     1.18
+    ],
+    "stone_game_s": [
+     0.33,
+     0.71
+    ]
+   },
+   "unit": "游戏秒",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  "cross_seconds": {
+   "label_zh": "撞击到球到对面路面（按着键）",
+   "v": {
+    "wood_game_s": [
+     1.39,
+     1.95
+    ],
+    "stone_game_s": [
+     1.29,
+     1.79
+    ]
+   },
+   "unit": "游戏秒",
+   "basis": "DERIVED",
+   "how_zh": "每次运行过到对面的帧减撞击帧，换成游戏秒"
+  },
+  "wood_lowest_tested_speed": {
+   "label_zh": "木球实测推倒的最低撞前速度（不是门槛）",
+   "v": 4.2,
+   "unit": "每物理秒",
+   "note_zh": "原版记录里 3.34 也推倒",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  "stone_lowest_tested_speed": {
+   "label_zh": "石球实测推倒的最低撞前速度（不是门槛）",
+   "v": 2.56,
+   "unit": "每物理秒",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  "paper_one_hit_h8": {
+   "label_zh": "纸球在板顶附近一撞推倒的粗估速度",
+   "v": [
+    14.4,
+    14.8
+   ],
+   "unit": "每物理秒",
+   "basis": "DERIVED",
+   "how_zh": "撞击动能对越顶势能的粗估，没有实测"
+  },
+  "refreeze_after_push": {
+   "label_zh": "推倒后停住到冻结",
+   "v": {
+    "after_push_wood_game_s": [
+     0.42,
+     0.56
+    ],
+    "after_push_stone_game_s": [
+     0.21,
+     0.98
+    ]
+   },
+   "unit": "游戏秒",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  "respawn_distance_min": {
+   "label_zh": "35 处里重生点到板最近的水平距离",
+   "v": 60.2,
+   "unit": "",
+   "basis": "DERIVED",
+   "how_zh": "按地图上的重生点和摆放位置算"
+  },
+  "tip_angle_deg": {
+   "label_zh": "竖直时再转多少度质心越过转轴",
+   "v": 4.9,
+   "unit": "度",
+   "basis": "DERIVED",
+   "how_zh": "质心在轴上方 2.49、朝路面偏 0.21，取反正切"
+  }
+ },
+ "machine": {
+  "states": [
+   {
+    "name": "sector_off",
+    "meaning_zh": "所在小节不是当前小节：木板没有刚体、移到世界原点，摆放点上什么都没有，空隙是空的，过不去。"
+   },
+   {
+    "name": "frozen_upright",
+    "meaning_zh": "小节刚激活：板冻结、按摆放姿势立着（前 12 关竖直，第 13 关随坡歪 7°）。被正在模拟的刚体撞到就醒，不是固定墙。正常玩法里球到板前它早已醒来后仰，几乎遇不到这个姿势。"
+   },
+   {
+    "name": "leaning",
+    "meaning_zh": "醒后朝来球一侧后仰，楔块抵住路面停住，挡住去路。第 2 关实测静止 −15.56°…−15.67°，弹跳中 −12.8°…−18.1°；别处按几何碰上角减约 0.9° 推（35 处碰上角 −13.20° 到 −21.51°，29 处 −16.48°）。"
+   },
+   {
+    "name": "fallen",
+    "meaning_zh": "被推倒约 90°，平躺在空隙上，顶面和路面齐平，远端由托座托住，是一座桥。第 2 关实测停在 +89.86°…+89.90°；前 12 关托座玩家球穿过，第 13 关托座被板盖住只露 0.13–0.19 宽一条。"
+   },
+   {
+    "name": "flipped_back",
+    "meaning_zh": "后仰一侧没有路面挡住时，板醒后一直转到倒立。原版 35 处后仰一侧都有路面，这个状态不会出现，只有自制地图才要管。"
+   }
+  ],
+  "initial": "sector_off",
+  "flags": [
+   {
+    "name": "frozen",
+    "meaning_zh": "板冻结着：不受重力，照样挡球；被正在模拟、碰撞组相容的刚体撞到当步醒。小节建好时为真；后仰、倒下停住后会再变真。"
+   },
+   {
+    "name": "proximity_armed",
+    "meaning_zh": "邻近检测开着。小节建好时为真，第一次触发后关掉，到小节重建前不再打开。"
+   }
+  ],
+  "transitions": [
+   {
+    "from": "sector_off",
+    "to": "frozen_upright",
+    "trigger": "sector_enter",
+    "condition_zh": "小节管理器激活它所在的小节：开局、过上一个盘点、死亡后重建当前小节。",
+    "effect_zh": "板放到摆放位置，建刚体并冻结，建铰链，打开邻近检测。",
+    "time_zh": "调用小节管理器后第 6 个行为帧",
+    "seconds": null,
+    "basis": "READ",
+    "src": "dump"
+   },
+   {
+    "from": "frozen_upright",
+    "to": "leaning",
+    "trigger": "proximity",
+    "condition_zh": "proximity_armed 为真，在检查帧上球心到摆放点的水平距离（只看 X、Z）严格小于 50。离得越近检查越密：55 以内每 10 个行为帧，100 以外每 60 帧。",
+    "effect_zh": "唤醒木板，关掉检测（只触发一次）。板在重力下后仰，弹几下停在静止角；球不碰它也照样后仰。",
+    "time_zh": "132 fps 下唤醒最多晚 10 个物理步；醒后 0.61 游戏秒到静止角，1.45 秒后稳定在 ±0.3° 以内",
+    "seconds": null,
+    "basis": "MEASURED",
+    "src": "measurement",
+    "engine": "rebuilt"
+   },
+   {
+    "from": "frozen_upright",
+    "to": "leaning",
+    "trigger": "contact",
+    "condition_zh": "检测唤醒它之前，被正在模拟的刚体（玩家球、道具球、箱子、别的机关）撞到，冲量不够让它越过顶点。竖直冻结的板被撞没有实测。",
+    "effect_zh": "撞击当步醒，按自由刚体受这一下，然后自行后仰到静止角。",
+    "time_zh": "撞击当步醒；之后的后仰同邻近唤醒",
+    "seconds": null,
+    "basis": "DERIVED",
+    "how_zh": "冻结部件被撞即醒的通则加本机关质心朝来球一侧偏的几何；本机关竖直时被撞没有测"
+   },
+   {
+    "from": "frozen_upright",
+    "to": "fallen",
+    "trigger": "contact",
+    "condition_zh": "还竖直冻结时被从路面一侧撞，冲量让质心越过转轴正上方：只要再转约 4.9°、势能约 0.55，比从后仰推倒小得多。原版里没找到球在板醒前撞上的地方。",
+    "effect_zh": "板醒来朝空隙倒下，结果同从后仰推倒。",
+    "time_zh": "没有推算，没有实测",
+    "seconds": null,
+    "basis": "DERIVED",
+    "how_zh": "质心在轴上方 2.49、朝路面偏 0.21，按几何算越顶角和势能"
+   },
+   {
+    "from": "leaning",
+    "to": "fallen",
+    "trigger": "contact",
+    "condition_zh": "木球或石球从路面一侧按住方向键撞上后仰的板。第 2 关从起点距离 3 到 18（撞前木 4.20–11.05、石 2.56–7.96）24 次全部推倒，下限没找到；撞上时板角 −8.1°…−17.1° 都一样。",
+    "effect_zh": "板向前倒下落在托座上成为桥，按着键的球紧跟着过到对面，没被板打乱。撞后木球几乎停下或和板一起往前，石球同向 1.01–5.53。",
+    "time_zh": "撞击到板过 +85°：木 0.62–1.18、石 0.33–0.71 游戏秒；撞击到对面路面：木 1.39–1.95、石 1.29–1.79",
+    "seconds": null,
+    "basis": "MEASURED",
+    "src": "measurement",
+    "engine": "rebuilt"
+   },
+   {
+    "from": "leaning",
+    "to": "leaning",
+    "trigger": "contact",
+    "condition_zh": "后仰的板被撞或推但没越过顶点：纸球从路面一侧撞，或单摆杆从旁边撞（第 7 关实测板只转 0.195°）。冻结着就先被撞醒。",
+    "effect_zh": "板转回静止角。纸球按着键顶着它时两者一起冻结；单独醒着的板停住后再冻结。",
+    "time_zh": "纸球顶住到一起冻结 0.55–0.56 游戏秒；单摆那一撞醒到再冻结 0.76–0.91",
+    "seconds": null,
+    "basis": "MEASURED",
+    "src": "measurement",
+    "engine": "rebuilt"
+   },
+   {
+    "from": "fallen",
+    "to": "fallen",
+    "trigger": "contact",
+    "condition_zh": "倒下的板被撞（球落到桥上、别的东西撞它）。",
+    "effect_zh": "冻结着就先醒，铰链不给力矩、托座托着远端，它落回平躺。球落到桥上会不会把板撞得弹起没有测。",
+    "time_zh": "没有推算",
+    "seconds": null,
+    "basis": "DERIVED",
+    "how_zh": "撞醒、再冻结的通则加托座托住远端；按着键过桥有实测，别的撞法没有"
+   },
+   {
+    "from": "*",
+    "to": "*",
+    "trigger": "timer",
+    "condition_zh": "frozen 为假，板停住下来（后仰停稳、倒下停在托座上，或和顶着它的纸球一起静止）。球在桥上滚时不冻结。",
+    "effect_zh": "板再冻结（frozen 变真），姿势不变。",
+    "time_zh": "推倒后停住到冻结：木 0.42–0.56、石 0.21–0.98 游戏秒；路线容错取 0.14–0.98",
+    "seconds": null,
+    "basis": "MEASURED",
+    "src": "measurement",
+    "engine": "rebuilt"
+   },
+   {
+    "from": "frozen_upright",
+    "to": "flipped_back",
+    "trigger": "proximity",
+    "condition_zh": "唤醒后，后仰一侧没有路面挡住楔块。原版 35 处都有路面挡着，不会发生。",
+    "effect_zh": "板一直朝来球一侧转下去直到倒立、质心挂在轴下方。",
+    "time_zh": "原版里不发生，没有推算",
+    "seconds": null,
+    "basis": "DERIVED",
+    "how_zh": "铰链没有限位和回复力，质心朝来球一侧偏，没有东西挡就一直转"
+   },
+   {
+    "from": "*",
+    "to": "frozen_upright",
+    "trigger": "death",
+    "condition_zh": "球在推板所在的当前小节判死。",
+    "effect_zh": "当前小节拆掉再建：推倒的板立回摆放姿势并冻结，要重新推；邻近检测重新打开。35 处离重生点水平 60.2 到 643.6，死亡等待中不会醒。推倒后死亡没有跑过，立回去是按脚本推的。",
+    "time_zh": "132 fps 下判死后第 134 帧调用小节管理器，其后第 2 帧拆、第 6 帧建；4.08 游戏秒后能操控",
+    "seconds": null,
+    "basis": "DERIVED",
+    "how_zh": "小节拆建的时序加本机关脚本的拆除、建立分支；去刚体和重建在没推倒的板上实测过"
+   },
+   {
+    "from": "*",
+    "to": "sector_off",
+    "trigger": "sector_leave",
+    "condition_zh": "过下一个盘点，小节管理器停用它所在的小节（死亡重建的前半步也走这里）。",
+    "effect_zh": "拆铰链、删刚体，板回到世界原点，邻近检测关掉。",
+    "time_zh": "调用小节管理器后第 2 个行为帧",
+    "seconds": null,
+    "basis": "READ",
+    "src": "dump"
+   }
+  ],
+  "reset": {
+   "on_death_zh": "当前小节整个拆除再重建：板立回摆放姿势并冻结，桥没了，要再推一次。只有死亡能复位它，代价一条命、回到重生点和 4.08 游戏秒。推倒后死亡没有单独跑过。",
+   "on_sector_change_zh": "离开它的小节后板被删除、移到原点，空隙是空的；还没激活的后面小节里的板同样不在摆放点上。只有它的小节是当前小节时空隙上才可能有板。",
+   "basis": "DERIVED",
+   "how_zh": "小节拆建的通则加本机关脚本的拆除分支；后面小节的板在原点有实测"
+  }
+ },
+ "by_ball": {
+  "wood": {
+   "verdict": "pushes",
+   "can_zh": "从路面一侧按着键撞上就推倒，紧跟着过桥：第 2 关撞前 4.20 到 11.05 每物理秒 12 次全部推倒，原版记录 32 次最低 3.34 也推倒；下限没找到。从静止贴着推和松键后没有测。",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  "stone": {
+   "verdict": "pushes",
+   "can_zh": "不需要助跑：第 2 关起点 3（撞前 2.56）到 18（7.96）12 次全部推倒，和板一起往前连着推，撞击到对面路面 1.29–1.79 游戏秒。下限没找到。",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  "paper": {
+   "verdict": "blocked",
+   "can_zh": "推不倒：撞前 3.68–10.49 共 12 次全部被弹回，原版环境也 3 次推不倒；按粗估在路面上怎样助跑都不够。从高处飞来撞板顶没有排除；别的球推倒后纸球能不能过桥没有测。",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  }
+ },
+ "route_effects": [
+  {
+   "kind": "blocks",
+   "effect_zh": "推倒前，路面尽头立着后仰的木板，后面是 9 到 10 宽的空隙：去路被挡，空隙也过不去，路线要过这里先得推倒它。纸球推不倒。",
+   "basis": "DERIVED",
+   "how_zh": "空隙按 35 处路面边界读出，后仰板的占位按凸包几何算，纸球推不倒有实测"
+  },
+  {
+   "kind": "opens",
+   "effect_zh": "推倒后板平躺成 5 宽的桥，顶面和两边路面齐平，操作处即通过处：推它的球紧跟着过去。桥起点 +Z 边上有约 0.61 高的楔块凸起，球心偏离中线 0.55 以上会碰到（按几何推，没试）。",
+   "basis": "DERIVED",
+   "how_zh": "倒下实测角加凸包绕转轴转 90° 的几何；托座和路面高度读关卡文件"
+  },
+  {
+   "kind": "requires_ball",
+   "effect_zh": "只有木球、石球推得倒（第 2 关 24 次全部推倒，纸球 12 次全部推不倒）。纸球到这里要先变石球或木球；第 2 关第 3 小节路面一侧有石球变球器，过桥后有纸球变球器，路面连通没核对。",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  {
+   "kind": "changes_ball",
+   "effect_zh": "路线假说（第 2 关第 3 小节）：木球或石球推倒过桥后到对岸的纸球变球器变纸球，或推倒后折回来路一侧 19.5 处的纸球变球器再过桥。纸球能不能从桥上过去没测。",
+   "basis": "DERIVED",
+   "how_zh": "按地图上变球器和推板的位置换到推板本地坐标；路面连通没核对"
+  },
+  {
+   "kind": "one_way",
+   "effect_zh": "只能从路面一侧推：35 处板背后都没有同高的路面，从对面来的球先掉进空隙。推倒后桥两个方向都能走（推的，没测反方向）。",
+   "basis": "DERIVED",
+   "how_zh": "粗层路面网格逐处查背后有没有同高路面"
+  },
+  {
+   "kind": "timing",
+   "effect_zh": "过推板的用时：球到板前板总已后仰；按着键撞上，撞击到对面路面木 1.39–1.95、石 1.29–1.79 游戏秒，起点 3 到 18、横挪 0.3、按键晚 1 个 66 Hz 工具帧 24 次无失败。只在第 2 关一处测过；松键、斜撞、偏离中线没测。",
+   "basis": "DERIVED",
+   "how_zh": "第 2 关一处的按着键实测归纳，加醒后后仰曲线和平地极速的比较"
+  },
+  {
+   "kind": "timing",
+   "effect_zh": "推倒和过桥要在同一条命里：死亡后板立回去要重新推，代价一条命、回到重生点和 4.08 游戏秒，再加从重生点回到板前的时间。没有别的复位办法。",
+   "basis": "DERIVED",
+   "how_zh": "死亡转移和小节拆建的通则"
+  },
+  {
+   "kind": "blocks",
+   "effect_zh": "推板所在小节没激活时（还没到，或已经过了下一个盘点），摆放点上没有板，空隙是空的，过不去。",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  {
+   "kind": "opens",
+   "effect_zh": "可能的另一种推倒办法（用单摆）还没有成立：第 7 关第 5 小节杆回摆撞上冻结的后仰板只转 0.195° 又回去；第 3 关第 4 小节两处只有不可信的推算。把杆直接朝推板推过去没测。",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  {
+   "kind": "blocks",
+   "effect_zh": "第 7 关第 5 小节板前立着一摞 3 个箱子，球先碰到箱子；第 11 关第 1 小节板前 22.9 处有道具石球。推它们去撞板能不能推倒都没测。",
+   "basis": "DERIVED",
+   "how_zh": "按地图摆放位置换到推板本地坐标"
+  }
+ ],
+ "model": [
+  {
+   "feature": "hinge",
+   "need_zh": "一个铰链刚体：两个凸包，质量 3，质心偏，绕本地 Z 的无限位铰链；和球双向接触，冻结时被撞即醒。物理核现在没有动态刚体和铰链。",
+   "minimal_zh": "单自由度板角三态：后仰（第 2 关 −15.6°，当固定障碍）、倒下（约 +90°，当固定桥面）、不存在。木、石球从路面一侧按着键撞上就倒，按过桥时间窗放过；纸球永远推不倒、被弹回。"
+  },
+  {
+   "feature": "trigger",
+   "need_zh": "唤醒：球心到摆放点的水平距离小于 50 时唤醒一次；醒前被撞也会醒。",
+   "minimal_zh": "球到板前总要先经过 50 以内，可以当作球到达时板已后仰；撞时角在 −8° 到 −17° 之间不改变结局。"
+  },
+  {
+   "feature": "state_only",
+   "need_zh": "只有当前小节的推板存在；死亡后回到竖直冻结。",
+   "minimal_zh": "每个推板一个“已推倒”布尔量挂在它的小节上：进入小节为假，死亡清零，离开小节后板不存在。"
+  },
+  {
+   "feature": "shape_only",
+   "need_zh": "后仰和倒下两种姿势的静态形状；粗层地图里放的是竖直的显示网格和一个没有碰撞的转轴，要换掉。",
+   "minimal_zh": "每处删掉转轴网格和显示网格，按状态放两个凸包：后仰取该处碰上角减约 0.9°，倒下取 90°，小节不当前时都不放。托座前 12 关玩家球不碰，第 13 关已在路面网格里。"
+  }
+ ],
+ "unknowns": [
+  {
+   "kind": "measure",
+   "question_zh": "还竖直冻结着的板被撞上会后仰还是直接倒下。",
+   "matters_zh": "原版里找不到球在板醒前撞上的地方，对路线影响小。",
+   "how_zh": "在两次远处检查之间把木球放到竖直板顶上方落下，读板的状态和板角。"
+  },
+  {
+   "kind": "measure",
+   "question_zh": "第 2 关以外的静止角：碰上角不同的几处（−13.20°、−21.51°、−17.15°、第 13 关倾 7° 的 6 处）没在引擎里量过。",
+   "matters_zh": "决定那几处障碍的形状；差 1° 以内，不影响能不能推倒。",
+   "how_zh": "在各处激活小节、球不碰板，读板角终值，每处一次。"
+  },
+  {
+   "kind": "measure",
+   "question_zh": "原版脚本下推倒的门槛、从静止贴着推能不能倒、撞后速度为何和另一组实测不一致；原版环境上的检测间隔和门槛。",
+   "matters_zh": "决定要不要助跑、能不能在板前停下再推，以及唤醒晚几个行为帧。",
+   "how_zh": "原版脚本下把木球放到板前从静止按键，再放到近起点；另读原版记录里球碰板那一刻的球速和板后来的角度。"
+  },
+  {
+   "kind": "measure",
+   "question_zh": "推倒后松键、斜着撞、偏离桥面中线能不能过；球落到桥上会不会把板撞起。",
+   "matters_zh": "决定推板处能不能减速、转弯或从桥边进出，以及容错。",
+   "how_zh": "撞上后不同时刻松键，另几次推倒后横向偏 0.5、1.0、1.5 过桥，读球的位置和板角。"
+  },
+  {
+   "kind": "measure",
+   "question_zh": "别的东西推倒推板：把单摆杆直接朝板推、推箱子或道具石球去撞板，结果怎样。",
+   "matters_zh": "可能有不需要正面推的路线，或板被意外弄倒。",
+   "how_zh": "在第 3、7、11 关相应小节用木球推单摆、箱子、道具石球朝板去，读几者的位置和板角。"
+  },
+  {
+   "kind": "measure",
+   "question_zh": "别的球推倒后纸球能不能过桥；纸球从高处飞来撞板顶能不能推倒；纸球撞板的反弹系数。",
+   "matters_zh": "决定“推倒后变纸球过桥”成不成立，和纸球撞板后弹回多远。",
+   "how_zh": "推倒后折回纸球变球器变纸球再过桥；另一次不推板直接撞，撞前松键读撞前撞后速度。"
+  },
+  {
+   "kind": "measure",
+   "question_zh": "推倒后死亡，板是不是立回摆放姿势并冻结（只在没推倒的板上测过拆建）。",
+   "matters_zh": "确认死亡后要重新推。",
+   "how_zh": "在出生小节就有推板的关里推倒后掉进空隙判死，读重建后板的状态和角度。"
+  },
+  {
+   "kind": "tool",
+   "question_zh": "唤醒和复位作用的目标是按参数排列推的，工具没打印出来。",
+   "matters_zh": "实测已旁证，对路线没有影响。",
+   "how_zh": "改工具，让脚本描述打印积木的目标参数。"
+  },
+  {
+   "kind": "measure",
+   "question_zh": "板的惯量按模板网格复算对不上建体时的记录，原因没查。",
+   "matters_zh": "物理核只用记录值，不影响路线。",
+   "how_zh": "读激活时的建体记录，按当时的网格和缩放重算比较。"
+  }
+ ]
+}

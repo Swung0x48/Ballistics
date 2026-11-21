@@ -1,0 +1,504 @@
+{
+ "id": "P_Box",
+ "name_zh": "箱子",
+ "category": "loose",
+ "types": [
+  "P_Box"
+ ],
+ "summary_zh": "5×5×5 的木箱，质量 1 的自由刚体，没有关节和脚本，只在它的小节是当前小节时存在。侧面挡路，顶面能落脚，但比同层路面高 5，当不了台阶。木球推得动一只（推一个箱身贴着约 1.0 游戏秒、助跑时 0.29–0.50），两只并排、三层一摞推不动；石球贴着就推得动两只并排，三层一摞 8 次里 7 次整摞推下；纸球推不动。箱子被推时滑、不翻。推下台边的箱子落到本关深度阈值以下就被去掉，只有死亡能把箱子放回摆放位置。第 3 关第 3 小节标准走法要推箱子垫路。",
+ "uses": [
+  "sector_rebuild",
+  "death_timing",
+  "freeze_wake",
+  "contact",
+  "key_push",
+  "rigid_body_mass",
+  "ball_limits"
+ ],
+ "bodies": [
+  {
+   "name": "P_Box_MF",
+   "role_zh": "箱子本身，唯一的刚体；同一个物体在几个小节里复用，各占一个摆放位置。",
+   "hull": {
+    "kind": "convex_hulls",
+    "meshes": [
+     "P_Box_Mesh"
+    ],
+    "size": [
+     5.0,
+     5.0,
+     5.0
+    ],
+    "radius": null,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "motion": {
+    "kind": "free",
+    "axis": null,
+    "anchor": null,
+    "limits": "",
+    "basis": "READ",
+    "src": "measurement"
+   },
+   "mass": {
+    "v": 1.0,
+    "basis": "READ",
+    "src": "table"
+   },
+   "friction": {
+    "v": 0.7,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "elasticity": {
+    "v": 0.3,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "lin_damp": {
+    "v": 0.1,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "rot_damp": {
+    "v": 0.1,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "group": {
+    "v": "",
+    "basis": "READ",
+    "src": "dump"
+   },
+   "starts": {
+    "v": "awake",
+    "basis": "READ",
+    "src": "dump"
+   }
+  }
+ ],
+ "forces": [],
+ "numbers": {
+  "box_size": {
+   "label_zh": "箱子边长（立方体，质心在中心）",
+   "v": 5,
+   "unit": "",
+   "basis": "READ",
+   "src": "dump"
+  },
+  "mass": {
+   "label_zh": "质量",
+   "v": 1.0,
+   "unit": "",
+   "basis": "READ",
+   "src": "table"
+  },
+  "floor_friction": {
+   "label_zh": "箱子对路面、钢轨、别的箱子的摩擦",
+   "v": 0.49,
+   "unit": "",
+   "basis": "DERIVED",
+   "how_zh": "两边摩擦相乘：箱子 0.7 乘路面 0.7"
+  },
+  "wood_push5_touching": {
+   "label_zh": "木球贴着推走一个箱身",
+   "v": [
+    1.0,
+    1.05
+   ],
+   "unit": "游戏秒",
+   "note_zh": "一处平地，每个配置两次",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  "wood_push5_runup": {
+   "label_zh": "木球助跑 4–25 推走一个箱身",
+   "v": [
+    0.29,
+    0.5
+   ],
+   "unit": "游戏秒",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  "stone_push5_touching": {
+   "label_zh": "石球贴着推走一个箱身",
+   "v": [
+    0.76,
+    0.77
+   ],
+   "unit": "游戏秒",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  "stone_push5_runup": {
+   "label_zh": "石球助跑 4–25 推走一个箱身",
+   "v": [
+    0.24,
+    0.45
+   ],
+   "unit": "游戏秒",
+   "note_zh": "只推单只量过",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  "paper_max_move": {
+   "label_zh": "纸球 16 次撞击箱子最多挪",
+   "v": 0.48,
+   "unit": "",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  "stone_4_layers_threshold": {
+   "label_zh": "石球推四层一摞：门槛对传力（临界，未测）",
+   "v": 47.3,
+   "unit": "",
+   "note_zh": "传力 45.0，差 5%",
+   "basis": "DERIVED",
+   "how_zh": "按球滚着推时的静力模型算的四层滑动门槛"
+  },
+  "top_above_floor": {
+   "label_zh": "箱顶比所在路面高",
+   "v": 5,
+   "unit": "",
+   "basis": "DERIVED",
+   "how_zh": "箱子边长 5、箱底贴着路面，按形状算"
+  },
+  "settle_single": {
+   "label_zh": "单箱激活后落下压实的落差",
+   "v": 0.18,
+   "unit": "",
+   "basis": "DERIVED",
+   "how_zh": "摆放高度减实测静止高度"
+  },
+  "rebuild_delay": {
+   "label_zh": "死亡或换小节时拆到建相隔",
+   "v": 4,
+   "unit": "行为帧",
+   "basis": "READ",
+   "src": "dump"
+  },
+  "freeze_tolerance": {
+   "label_zh": "停住到冻结（规划容错）",
+   "v": [
+    0.14,
+    0.98
+   ],
+   "unit": "游戏秒",
+   "basis": "DERIVED",
+   "how_zh": "冻结规则加别的刚体实测范围的并集"
+  },
+  "death_cost": {
+   "label_zh": "死亡复位箱子的代价（另加一条命）",
+   "v": 4.08,
+   "unit": "游戏秒",
+   "basis": "DERIVED",
+   "how_zh": "死亡到重生的通用时序，不是箱子自己量的"
+  }
+ },
+ "machine": {
+  "states": [
+   {
+    "name": "sector_off",
+    "meaning_zh": "所在小节不是当前小节：没有刚体、隐藏，停在被拆时的位置。球碰不到它，不挡路。"
+   },
+   {
+    "name": "placed",
+    "meaning_zh": "小节已激活：箱子在摆放位置建成自由刚体，先落下压实（单箱约 0.18，成摞更多），之后静置。侧面挡球，顶面可落脚。"
+   },
+   {
+    "name": "displaced",
+    "meaning_zh": "被球、别的箱子、碎片或机关推动过，位置和摆放时不同（仍是同一个刚体，滑动不翻）。到下次在本小节重建前一直保持。"
+   },
+   {
+    "name": "lost",
+    "meaning_zh": "掉下去低于本关深度阈值，被去掉刚体、隐藏、移到原点：不挡路也不能再用，直到本小节重建。"
+   }
+  ],
+  "initial": "sector_off",
+  "flags": [
+   {
+    "name": "frozen",
+    "meaning_zh": "被引擎冻结：静止后自动冻结，照样挡球；被正在动、碰撞组相容的刚体撞到当帧先醒再受力。叠着的一摞要整摞静下来才一起冻结。建好时为假。"
+   }
+  ],
+  "transitions": [
+   {
+    "from": "sector_off",
+    "to": "placed",
+    "trigger": "sector_enter",
+    "condition_zh": "小节管理器激活它的小节：开局、过上一个盘点、死亡后重建、重开关卡。箱子的行总是会建。",
+    "effect_zh": "在摆放位置建出新刚体（速度为零），受重力落下压实。",
+    "time_zh": "先拆后建，相隔 4 个行为帧；过盘点约在触发后第 6 个行为帧出现（推的，未实测）",
+    "seconds": null,
+    "basis": "READ",
+    "src": "measurement"
+   },
+   {
+    "from": "placed",
+    "to": "displaced",
+    "trigger": "contact",
+    "condition_zh": "球按着键顶推或撞上，传力超过箱子对路面的摩擦：木球推得动一只；石球推得动两只并排和三层一摞；纸球推不动。",
+    "effect_zh": "箱子滑动，倾角不超过约 5.6°，只在掉下边缘时翻。推着走时木球和箱子约 2.3–5.1 每物理秒。",
+    "time_zh": "推一个箱身：木球贴着 1.0–1.05、助跑 4–25 时 0.29–0.50；石球贴着 0.76–0.77、助跑 0.24–0.45 游戏秒",
+    "seconds": null,
+    "basis": "MEASURED",
+    "src": "measurement",
+    "engine": "rebuilt"
+   },
+   {
+    "from": "placed",
+    "to": "displaced",
+    "trigger": "contact",
+    "condition_zh": "变球碎片或机关撞上它：碎片在 3.0 外炸开，箱子 2 个 66 Hz 工具帧后醒、挪 0.8367；第 7 关第 5 小节单摆 17 的杆把那一摞三层推开 0.75–1.25。",
+    "effect_zh": "箱子被推开一小段后再冻结；推不到让出路的程度。",
+    "time_zh": "",
+    "seconds": null,
+    "basis": "MEASURED",
+    "src": "measurement",
+    "engine": "rebuilt"
+   },
+   {
+    "from": "*",
+    "to": "*",
+    "trigger": "timer",
+    "condition_zh": "frozen 为假，箱子（或叠着的整摞）静止下来。",
+    "effect_zh": "frozen 变真，位置不变。",
+    "time_zh": "规则值停住后 0.23–0.44 游戏秒；规划容错取 0.14–0.98。箱子自己的停住到冻结没有单独量",
+    "seconds": null,
+    "basis": "DERIVED",
+    "how_zh": "引擎的冻结规则加别的刚体实测范围的并集"
+   },
+   {
+    "from": "*",
+    "to": "*",
+    "trigger": "contact",
+    "condition_zh": "frozen 为真，被正在模拟、碰撞组相容的刚体撞到：玩家球、道具球、碎片、别的箱子、组为 Floor 的机关。",
+    "effect_zh": "当帧醒（frozen 变假），再受这次撞击。两个都冻结的刚体之间不会互相弄醒。",
+    "time_zh": "撞击当帧",
+    "seconds": 0,
+    "basis": "READ",
+    "src": "source"
+   },
+   {
+    "from": "*",
+    "to": "placed",
+    "trigger": "death",
+    "condition_zh": "球判死，箱子的行属于当前小节（别的小节的箱子不受影响）。无论被推远、翻倒还是掉落去掉，都会重建。",
+    "effect_zh": "去掉刚体、隐藏，4 个行为帧后回到摆放位置、新刚体从静止开始，再落一次压实。实测只覆盖 5 cm 的小位移；推远、掉落后的复原按脚本流程推的。",
+    "time_zh": "132 fps 下判死后第 135 帧拆、第 139 帧建；成摞落定还要 1.45–3.6 游戏秒",
+    "seconds": null,
+    "basis": "MEASURED",
+    "src": "measurement",
+    "engine": "rebuilt"
+   },
+   {
+    "from": "*",
+    "to": "sector_off",
+    "trigger": "sector_leave",
+    "condition_zh": "过下一个盘点，小节管理器拆掉当前小节（死亡和重开先拆的也是这一步）。",
+    "effect_zh": "去掉刚体、隐藏，停在被拆时的位置；下次激活才放回摆放位置。",
+    "time_zh": "调用小节管理器的下一个行为帧；过盘点约在触发后第 2 个行为帧（推的，未实测）",
+    "seconds": null,
+    "basis": "READ",
+    "src": "dump"
+   },
+   {
+    "from": "*",
+    "to": "lost",
+    "trigger": "script",
+    "condition_zh": "箱子原点的世界 y 低于本关深度阈值（本关最低死亡区底面 − 200，第 1 关 −329.444）。13 关的箱子都在检查组里。",
+    "effect_zh": "去掉刚体、隐藏、移到原点，直到本小节下次重建。第 8、10 关实测掉下去的箱子在阈值处消失。",
+    "time_zh": "逐个轮查，每个成员每 N + 1 个行为帧查一次；第 10 关越过阈值后 0.12–0.21 游戏秒去掉",
+    "seconds": null,
+    "basis": "READ",
+    "src": "dump"
+   },
+   {
+    "from": "*",
+    "to": "sector_off",
+    "trigger": "level_start",
+    "condition_zh": "载入关卡：每一行先激活一次再全部拆掉，然后开局激活第 1 小节。",
+    "effect_zh": "复用的箱子物体停在它在表里最后一行的位置，没有刚体、隐藏。",
+    "time_zh": "",
+    "seconds": null,
+    "basis": "READ",
+    "src": "measurement"
+   }
+  ],
+  "reset": {
+   "on_death_zh": "当前小节的箱子全部拆掉、4 个行为帧后回到摆放位置重建。推乱、推丢、卡住的箱子只能这样复原：代价一条命、回到重生点和约 4.08 游戏秒。借箱子的走法死亡后要重做。暂停不影响箱子。",
+   "on_sector_change_zh": "离开小节：箱子去掉刚体、隐藏，停在当时的位置。进入小节：放回摆放位置重新建。提前跑进后面的小节或回头都碰不到那里的箱子。",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  }
+ },
+ "by_ball": {
+  "wood": {
+   "verdict": "pushes",
+   "can_zh": "推得动一只，贴着就推得动，推一个箱身贴着约 1.0、助跑 4–25 时 0.29–0.50 游戏秒。两只并排持续推停住（8/8），助跑 12–25 有时把第二只撞下边缘（8 次里 5 次）；正对三层一摞推不动，球被冻结。两层一摞没有量，粗算推不动。",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  "stone": {
+   "verdict": "pushes",
+   "can_zh": "贴着起步就推着两只并排走并推下边缘（8/8）；三层一摞 8 次里 7 次整摞推下（助跑 4 以上 6/6，贴着 1/2）。推一个箱身贴着 0.76–0.77、助跑 0.24–0.45 游戏秒。四层一摞没有量，粗算临界、不定。原版脚本下没有量。",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  "paper": {
+   "verdict": "blocked",
+   "can_zh": "推不动：16 次（撞前最高 12.6 每物理秒）箱子只挪 0.00–0.48，纸球被弹开；顶着不动会被冻结。对纸球箱子是墙，箱顶能落脚（按形状推的）。原版脚本下没有量。",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  }
+ },
+ "route_effects": [
+  {
+   "kind": "blocks",
+   "effect_zh": "箱子侧面是墙：例如第 1 关第 1 小节大平台地面上的 3 只箱子挡着平台上的路。现在的粗层把箱子当碰到就停的障碍，走不出碰箱子、推箱子的路线。",
+   "basis": "READ",
+   "src": "table"
+  },
+  {
+   "kind": "blocks",
+   "effect_zh": "箱子和 Stopper 碰撞（Stopper 只放过玩家球），推不过去；也和组为 Floor 的机关相碰。",
+   "basis": "READ",
+   "src": "source"
+  },
+  {
+   "kind": "opens",
+   "effect_zh": "垫路：把箱子推到缺口处补路或当垫脚。推是操作处（球在箱子后面），箱子停下处是通过处，推完球还要能走到那里；箱顶高 5，从同层路面上不去，要从更高处下来或箱子落在坑里。",
+   "basis": "WIKI",
+   "src": "wiki"
+  },
+  {
+   "kind": "requires_ball",
+   "effect_zh": "第 3 关第 3 小节（盘点 3 之前）的路线假说：(1) 标准：石球或木球把 8 只箱子里的一只推到平台北沿，垫在平台和北边那段路之间（高差约 2.7、隔约 3.6）再过去，时间和容错没有量；(2) 备选：石球不推箱子走东沿的单轨，很难、容错低。",
+   "basis": "DERIVED",
+   "how_zh": "项目主人的回答加地图几何；怎样垫没有实测"
+  },
+  {
+   "kind": "requires_ball",
+   "effect_zh": "推一排或一摞：纸球一只也推不动；木球只推得动单只，两只并排停住、三层推不动；石球推得动两只并排和三层一摞。三层以上的摞在第 7 关第 5、第 8 关第 2 和第 5、第 12 关第 7 小节（四层，石球未测）。推三层的时间没有实测，粗算 1.27–2.21 游戏秒。",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  {
+   "kind": "hazard",
+   "effect_zh": "箱面斜对着球时球被偏开（第 8 关第 2 小节，木球 16 次都滑下台边）；推不动时球被冻结，要松键或改键才醒。",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  {
+   "kind": "carries",
+   "effect_zh": "箱顶是高 5 的平台，侧面能改球的方向。第 1 关弯轨捷径的录像用到箱子，但两份描述不一致（箱顶弹一下再撞箱转向 / 擦过箱子和墙角落到墙顶），原始轨迹本机没有。",
+   "basis": "MEASURED",
+   "src": "docs",
+   "engine": "rebuilt"
+  },
+  {
+   "kind": "opens",
+   "effect_zh": "第 7 关第 5 小节、第 9 关第 3 小节，转动单摆 17 能从另一侧推箱子；第 7 关实测木球转杆只把三层一摞推开 0.75–1.25，让不出路。单摆不碰就不转，箱子不会自己动。",
+   "basis": "DERIVED",
+   "how_zh": "单摆和箱子同小节、桨板够得着且高度重叠，按摆放位置算；第 7 关有一次实测印证"
+  },
+  {
+   "kind": "one_way",
+   "effect_zh": "推下台边的箱子落到本关深度阈值以下就消失，到死亡或重开前不再回来，也不再挡路；推错、推丢只能死一次复位。",
+   "basis": "READ",
+   "src": "dump"
+  },
+  {
+   "kind": "none",
+   "effect_zh": "箱子不触发任何检测：把它推进机关唤醒、盘点、变球器、道具球的范围什么也不发生。但被推动的箱子能撞醒冻结的机关部件（没有实测）。",
+   "basis": "DERIVED",
+   "how_zh": "这些检测只量玩家球的位置；撞醒按冻结规则推的"
+  }
+ ],
+ "model": [
+  {
+   "feature": "state_only",
+   "need_zh": "箱子只在当前小节存在；死亡、过盘点按先拆后建复位；掉到深度阈值以下变成不存在。",
+   "minimal_zh": "每个小节一份箱子列表，位姿取摆放位置竖直落到下方路面（中心 = 面 + 2.5 + 0.018），成摞按层距 5.02；拆建隔 4 个行为帧；原点低于阈值即去掉。"
+  },
+  {
+   "feature": "shape_only",
+   "need_zh": "不推它时，箱子是 5×5×5 的有向立方体：侧面挡球，顶面是摩擦 0.7、弹性 0.3 的可站立面。",
+   "minimal_zh": "按静止位姿（不是摆放位姿，摞的箱顶最多差约 1.9）把箱子加进碰撞网格，侧面当墙、顶面当路面；粗层先从碰到就停改成这样。"
+  },
+  {
+   "feature": "rigid_body",
+   "need_zh": "推箱子、垫路要自由刚体、冻结和撞醒、落下后的静止位姿；物理核现在没有动态刚体。",
+   "minimal_zh": "先做只平移不翻的滑块：推得动的条件是每层门槛 9.8/(1 − 0.49μ_b)（木 13.51、石 11.83）对传力 F/(1+μ_b)（木 18.2、石 45.0）；推着走的时间直接用实测。"
+  }
+ ],
+ "unknowns": [
+  {
+   "kind": "measure",
+   "question_zh": "木球顶推两层一摞、带助跑撞三层一摞；原版脚本下的纸球推箱子。",
+   "matters_zh": "两层一摞挡住的路木球通不通；带助跑撞是木球唯一可能的办法。",
+   "how_zh": "原版脚本下激活那一小节，球放到箱子前方，从贴着和助跑 4、12、25 各按着键撞两次，读箱子和球。"
+  },
+  {
+   "kind": "measure",
+   "question_zh": "石球推第 12 关第 7 小节的四层一摞和第 8 关第 5 小节的几摞；原版脚本下的石球。",
+   "matters_zh": "四层一摞按门槛是临界；推得动就多一条石球路线。",
+   "how_zh": "用小节摆好的箱子，石球助跑 0.3、4、12 各两次按着键推，读各层位移和倾角。"
+  },
+  {
+   "kind": "measure",
+   "question_zh": "原版 2002 引擎里木球推箱子的速度和重建引擎是否一致。",
+   "matters_zh": "推箱子的时间全来自重建引擎。",
+   "how_zh": "只读本机已有的第 11 关 132 fps 原版记录，找球和箱子接触的帧，看推着走的球速。"
+  },
+  {
+   "kind": "measure",
+   "question_zh": "第 8 关第 5 小节架在两箱上的那只、第 1 关第 2 小节和第 6 关第 4 小节各摞落定后的高度；第 10 关倾斜那只在旁边箱子被推开后怎样倒。",
+   "matters_zh": "箱顶高度和侧面位置决定能不能落脚、从哪里擦过。",
+   "how_zh": "激活这几个小节、不按键，读每只箱子落定后的位姿，和按面 + 2.5 的预测比。"
+  },
+  {
+   "kind": "measure",
+   "question_zh": "推远、翻倒或掉落去掉的箱子，死亡后实测是否回到摆放位置（现有实测只有 5 cm 的推动）。",
+   "matters_zh": "推丢箱子的死局是不是死一次就解开。",
+   "how_zh": "真正过盘点走到有箱子的小节（或用第 1 关第 1 小节的箱子），把箱子推下去再死，看重建那一帧的位置。"
+  },
+  {
+   "kind": "host2002",
+   "question_zh": "要原版环境：第 1 关弯轨捷径的录像碰了箱子的哪些面：箱顶弹起，还是只擦过侧面。",
+   "matters_zh": "决定粗层要放开箱顶落脚还是只放开侧面擦过。",
+   "how_zh": "要那条 264 fps 录像的原版记录，按每帧的接触三角形法向判断碰的是箱顶还是侧面；本机只有它的按键文件。"
+  },
+  {
+   "kind": "read",
+   "question_zh": "球和顶着的箱子一起冻结后，松键再按，箱子会不会和球一起醒。",
+   "matters_zh": "不醒的话“顶着等、再推”等于推墙。",
+   "how_zh": "读引擎摩擦系统的冻结路径，或按着键顶住三层一摞到冻结、松键再按，看箱子和球是否同一帧醒。"
+  },
+  {
+   "kind": "tool",
+   "question_zh": "零售版 132 fps 死亡后 2.0 游戏秒那 51 个去刚体里有没有箱子。",
+   "matters_zh": "有的话死亡后的箱子复原时序要改。",
+   "how_zh": "找到零售死亡记录后只读列出那一帧去刚体的物体名。"
+  },
+  {
+   "kind": "measure",
+   "question_zh": "第 3 关第 3 小节具体推哪只箱子、朝哪推、垫在哪，球从哪里上下；石球、木球各要多久、容错多少。",
+   "matters_zh": "这是标准路线上必须的一步，粗层在这里是断点。",
+   "how_zh": "激活第 3 小节，石球从平台西侧按着键把北边那一臂的箱子推向平台北沿，读落点，再试从箱顶过到北边的路。"
+  }
+ ]
+}

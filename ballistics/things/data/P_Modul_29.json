@@ -1,0 +1,1114 @@
+{
+ "id": "P_Modul_29",
+ "name_zh": "软木桥",
+ "category": "mechanism",
+ "types": [
+  "P_Modul_29"
+ ],
+ "summary_zh": "软木桥：9 块木板用 10 个铰链串成、两端铰在固定锚上的吊桥，操作处就是通过处。小节激活时整桥冻结、平直；玩家球到机关原点水平 80 以内，九块一起醒，桥在重力下下垂（静止时跨中低约 2.1，第一次先低到 3.58），约 10 游戏秒后入睡。木球、纸球都能走过去，桥不会断：实测 33 次全部过桥，用 0.62–1.02 游戏秒。玩家石球到第 6 块木板原点三维 4 以内，第 6、7 块之间的铰链断开，石球随那一段落下，17 座里 15 座桥下只有死亡区；实测到每物理秒 10.04 都越不过，更快的没有定。断了的桥只有在本小节死亡才复位；离开小节后桥不存在，桥位是个洞。",
+ "uses": [
+  "proximity_wake",
+  "freeze_wake",
+  "sector_rebuild",
+  "death_timing",
+  "joints",
+  "contact",
+  "ball_limits"
+ ],
+ "bodies": [
+  {
+   "name": "P_Modul_29_Platte01",
+   "role_zh": "第 1 块木板：铰在本地 −x 那端的锚上。",
+   "hull": {
+    "kind": "convex_hulls",
+    "meshes": [
+     "P_Modul_29_Platte01_Mesh"
+    ],
+    "size": [
+     1.5,
+     0.6,
+     5.0
+    ],
+    "radius": null,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "motion": {
+    "kind": "hinge",
+    "axis": [
+     0,
+     0,
+     1
+    ],
+    "anchor": [
+     -6.584,
+     0.0,
+     0.0
+    ],
+    "limits": "存了 -45 到 45，但 Limitations 为 FALSE，所以不限位，可以自由转",
+    "basis": "READ",
+    "src": "dump"
+   },
+   "mass": {
+    "v": 0.5,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "friction": {
+    "v": 0.7,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "elasticity": {
+    "v": 0.4,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "lin_damp": {
+    "v": 0.1,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "rot_damp": {
+    "v": 0.3,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "group": {
+    "v": "Modul29",
+    "basis": "READ",
+    "src": "dump"
+   },
+   "starts": {
+    "v": "frozen",
+    "basis": "READ",
+    "src": "dump"
+   }
+  },
+  {
+   "name": "P_Modul_29_Platte02",
+   "role_zh": "第 2 块木板。",
+   "hull": {
+    "kind": "convex_hulls",
+    "meshes": [
+     "P_Modul_29_Platte02_Mesh"
+    ],
+    "size": [
+     1.449,
+     0.6,
+     5.081
+    ],
+    "radius": null,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "motion": {
+    "kind": "hinge",
+    "axis": [
+     0,
+     0,
+     1
+    ],
+    "anchor": [
+     -4.916,
+     0.0,
+     0.0
+    ],
+    "limits": "存了 -45 到 45，但 Limitations 为 FALSE，所以不限位，可以自由转",
+    "basis": "READ",
+    "src": "dump"
+   },
+   "mass": {
+    "v": 0.5,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "friction": {
+    "v": 0.7,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "elasticity": {
+    "v": 0.4,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "lin_damp": {
+    "v": 0.1,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "rot_damp": {
+    "v": 0.3,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "group": {
+    "v": "Modul29",
+    "basis": "READ",
+    "src": "dump"
+   },
+   "starts": {
+    "v": "frozen",
+    "basis": "READ",
+    "src": "dump"
+   }
+  },
+  {
+   "name": "P_Modul_29_Platte03",
+   "role_zh": "第 3 块木板：石球只踩到这里为止（从第 1 块那端来）不断桥。",
+   "hull": {
+    "kind": "convex_hulls",
+    "meshes": [
+     "P_Modul_29_Platte03_Mesh"
+    ],
+    "size": [
+     1.5,
+     0.6,
+     4.688
+    ],
+    "radius": null,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "motion": {
+    "kind": "hinge",
+    "axis": [
+     0,
+     0,
+     1
+    ],
+    "anchor": [
+     -3.291,
+     0.0,
+     0.0
+    ],
+    "limits": "存了 -45 到 45，但 Limitations 为 FALSE，所以不限位，可以自由转",
+    "basis": "READ",
+    "src": "dump"
+   },
+   "mass": {
+    "v": 0.5,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "friction": {
+    "v": 0.7,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "elasticity": {
+    "v": 0.4,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "lin_damp": {
+    "v": 0.1,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "rot_damp": {
+    "v": 0.3,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "group": {
+    "v": "Modul29",
+    "basis": "READ",
+    "src": "dump"
+   },
+   "starts": {
+    "v": "frozen",
+    "basis": "READ",
+    "src": "dump"
+   }
+  },
+  {
+   "name": "P_Modul_29_Platte04",
+   "role_zh": "第 4 块木板：唤醒指向它，九块一起醒；从第 1 块那端来的石球在它上面触发断桥。",
+   "hull": {
+    "kind": "convex_hulls",
+    "meshes": [
+     "P_Modul_29_Platte04_Mesh"
+    ],
+    "size": [
+     1.5,
+     0.6,
+     5.0
+    ],
+    "radius": null,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "motion": {
+    "kind": "hinge",
+    "axis": [
+     0,
+     0,
+     1
+    ],
+    "anchor": [
+     -1.639,
+     0.0,
+     0.0
+    ],
+    "limits": "存了 -45 到 45，但 Limitations 为 FALSE，所以不限位，可以自由转",
+    "basis": "READ",
+    "src": "dump"
+   },
+   "mass": {
+    "v": 0.5,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "friction": {
+    "v": 0.7,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "elasticity": {
+    "v": 0.4,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "lin_damp": {
+    "v": 0.1,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "rot_damp": {
+    "v": 0.3,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "group": {
+    "v": "Modul29",
+    "basis": "READ",
+    "src": "dump"
+   },
+   "starts": {
+    "v": "frozen",
+    "basis": "READ",
+    "src": "dump"
+   }
+  },
+  {
+   "name": "P_Modul_29_Platte05",
+   "role_zh": "第 5 块木板：跨中，下垂最深。",
+   "hull": {
+    "kind": "convex_hulls",
+    "meshes": [
+     "P_Modul_29_Platte05_Mesh"
+    ],
+    "size": [
+     1.5,
+     0.6,
+     4.888
+    ],
+    "radius": null,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "motion": {
+    "kind": "hinge",
+    "axis": [
+     0,
+     0,
+     1
+    ],
+    "anchor": [
+     0.033,
+     0.0,
+     0.0
+    ],
+    "limits": "存了 -45 到 45，但 Limitations 为 FALSE，所以不限位，可以自由转",
+    "basis": "READ",
+    "src": "dump"
+   },
+   "mass": {
+    "v": 0.5,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "friction": {
+    "v": 0.7,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "elasticity": {
+    "v": 0.4,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "lin_damp": {
+    "v": 0.1,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "rot_damp": {
+    "v": 0.3,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "group": {
+    "v": "Modul29",
+    "basis": "READ",
+    "src": "dump"
+   },
+   "starts": {
+    "v": "frozen",
+    "basis": "READ",
+    "src": "dump"
+   }
+  },
+  {
+   "name": "P_Modul_29_Platte06",
+   "role_zh": "第 6 块木板：断桥判定以它此刻的原点为球心，半径 4；断的是它和第 7 块之间的铰链。",
+   "hull": {
+    "kind": "convex_hulls",
+    "meshes": [
+     "P_Modul_29_Platte06_Mesh"
+    ],
+    "size": [
+     1.5,
+     0.6,
+     5.107
+    ],
+    "radius": null,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "motion": {
+    "kind": "hinge",
+    "axis": [
+     0,
+     0,
+     1
+    ],
+    "anchor": [
+     1.639,
+     0.0,
+     0.0
+    ],
+    "limits": "存了 -45 到 45，但 Limitations 为 FALSE，所以不限位，可以自由转",
+    "basis": "READ",
+    "src": "dump"
+   },
+   "mass": {
+    "v": 0.5,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "friction": {
+    "v": 0.7,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "elasticity": {
+    "v": 0.4,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "lin_damp": {
+    "v": 0.1,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "rot_damp": {
+    "v": 0.3,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "group": {
+    "v": "Modul29",
+    "basis": "READ",
+    "src": "dump"
+   },
+   "starts": {
+    "v": "frozen",
+    "basis": "READ",
+    "src": "dump"
+   }
+  },
+  {
+   "name": "P_Modul_29_Platte07",
+   "role_zh": "第 7 块木板：断桥后和第 8、9 块一起挂在本地 +x 那端的锚上。",
+   "hull": {
+    "kind": "convex_hulls",
+    "meshes": [
+     "P_Modul_29_Platte07_Mesh"
+    ],
+    "size": [
+     1.416,
+     0.6,
+     5.0
+    ],
+    "radius": null,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "motion": {
+    "kind": "hinge",
+    "axis": [
+     0,
+     0,
+     1
+    ],
+    "anchor": [
+     3.327,
+     0.0,
+     0.0
+    ],
+    "limits": "存了 -45 到 45，但 Limitations 为 FALSE，所以不限位，可以自由转",
+    "basis": "READ",
+    "src": "dump"
+   },
+   "mass": {
+    "v": 0.5,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "friction": {
+    "v": 0.7,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "elasticity": {
+    "v": 0.4,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "lin_damp": {
+    "v": 0.1,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "rot_damp": {
+    "v": 0.3,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "group": {
+    "v": "Modul29",
+    "basis": "READ",
+    "src": "dump"
+   },
+   "starts": {
+    "v": "frozen",
+    "basis": "READ",
+    "src": "dump"
+   }
+  },
+  {
+   "name": "P_Modul_29_Platte08",
+   "role_zh": "第 8 块木板：从第 9 块那端来的石球在它上面触发断桥。",
+   "hull": {
+    "kind": "convex_hulls",
+    "meshes": [
+     "P_Modul_29_Platte08_Mesh"
+    ],
+    "size": [
+     1.415,
+     0.566,
+     4.826
+    ],
+    "radius": null,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "motion": {
+    "kind": "hinge",
+    "axis": [
+     0,
+     0,
+     1
+    ],
+    "anchor": [
+     4.936,
+     0.0,
+     0.0
+    ],
+    "limits": "存了 -45 到 45，但 Limitations 为 FALSE，所以不限位，可以自由转",
+    "basis": "READ",
+    "src": "dump"
+   },
+   "mass": {
+    "v": 0.5,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "friction": {
+    "v": 0.7,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "elasticity": {
+    "v": 0.4,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "lin_damp": {
+    "v": 0.1,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "rot_damp": {
+    "v": 0.3,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "group": {
+    "v": "Modul29",
+    "basis": "READ",
+    "src": "dump"
+   },
+   "starts": {
+    "v": "frozen",
+    "basis": "READ",
+    "src": "dump"
+   }
+  },
+  {
+   "name": "P_Modul_29_Platte09",
+   "role_zh": "第 9 块木板：铰在本地 +x 那端的锚上，质量是别的木板的两倍。",
+   "hull": {
+    "kind": "convex_hulls",
+    "meshes": [
+     "P_Modul_29_Platte09_Mesh"
+    ],
+    "size": [
+     1.5,
+     0.6,
+     5.002
+    ],
+    "radius": null,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "motion": {
+    "kind": "hinge",
+    "axis": [
+     0,
+     0,
+     1
+    ],
+    "anchor": [
+     6.592,
+     0.0,
+     0.0
+    ],
+    "limits": "存了 -45 到 45，但 Limitations 为 FALSE，所以不限位，可以自由转",
+    "basis": "READ",
+    "src": "dump"
+   },
+   "mass": {
+    "v": 1.0,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "friction": {
+    "v": 0.7,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "elasticity": {
+    "v": 0.4,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "lin_damp": {
+    "v": 0.1,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "rot_damp": {
+    "v": 0.3,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "group": {
+    "v": "Modul29",
+    "basis": "READ",
+    "src": "dump"
+   },
+   "starts": {
+    "v": "frozen",
+    "basis": "READ",
+    "src": "dump"
+   }
+  },
+  {
+   "name": "FixCube",
+   "role_zh": "公共的固定锚体，碰撞关闭；第 1、9 块各用一个铰链连到它上面。",
+   "hull": {
+    "kind": "box",
+    "meshes": [],
+    "size": [
+     4.0,
+     4.0,
+     4.0
+    ],
+    "radius": null,
+    "basis": "WIKI",
+    "src": "wiki"
+   },
+   "motion": {
+    "kind": "fixed",
+    "axis": null,
+    "anchor": null,
+    "limits": "",
+    "basis": "READ",
+    "src": "dump"
+   },
+   "mass": {
+    "v": 1.0,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "friction": {
+    "v": 0.7,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "elasticity": {
+    "v": 0.4,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "lin_damp": {
+    "v": 0.1,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "rot_damp": {
+    "v": 0.1,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "group": {
+    "v": "",
+    "basis": "READ",
+    "src": "dump"
+   },
+   "starts": {
+    "v": "fixed",
+    "basis": "READ",
+    "src": "dump"
+   }
+  }
+ ],
+ "forces": [],
+ "numbers": {
+  "wake_radius": {
+   "label_zh": "唤醒：球心到机关原点的水平距离小于",
+   "v": 80,
+   "unit": "",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  "break_radius": {
+   "label_zh": "断桥：石球球心到第 6 块此刻原点的三维距离小于",
+   "v": 4,
+   "unit": "",
+   "basis": "READ",
+   "src": "source"
+  },
+  "break_delay_s": {
+   "label_zh": "132 fps 下进 4 到断开",
+   "v": [
+    0,
+    0.095
+   ],
+   "unit": "游戏秒",
+   "basis": "READ",
+   "src": "dump"
+  },
+  "stone_trigger_x_from_plank1_end": {
+   "label_zh": "从第 1 块那端来的触发点（本地 x，第 4 块上）",
+   "v": [
+    -1.73,
+    -0.88
+   ],
+   "unit": "",
+   "note_zh": "上桥每物理秒 1.99–8.75",
+   "basis": "DERIVED",
+   "how_zh": "实测里 9 次石球在球心第一次进 4 的那一帧读球心的本地 x"
+  },
+  "stone_trigger_x_from_plank9_end": {
+   "label_zh": "从第 9 块那端来的触发点（本地 x，第 8 块上）",
+   "v": [
+    4.68,
+    5.73
+   ],
+   "unit": "",
+   "basis": "DERIVED",
+   "how_zh": "实测里 6 次石球在球心第一次进 4 的那一帧读球心的本地 x"
+  },
+  "stone_fastest_still_broken": {
+   "label_zh": "实测最快的石球（到 4 以内时）照样断、越不过",
+   "v": 10.04,
+   "unit": "每物理秒",
+   "note_zh": "更快的没有量",
+   "basis": "READ",
+   "src": "dump"
+  },
+  "break_miss_above": {
+   "label_zh": "132 fps 下正中穿过可能漏检的速度",
+   "v": 50,
+   "unit": "每物理秒",
+   "note_zh": "没有量到；按键到不了",
+   "basis": "DERIVED",
+   "how_zh": "断桥检测的检查间隔规则代入直线匀速、正中穿过的轨迹"
+  },
+  "rest_sag_lowest": {
+   "label_zh": "醒后静止时跨中比放好时低（原版脚本，不上球）",
+   "v": -2.12,
+   "unit": "",
+   "note_zh": "第一次先低到 3.58",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  "centre_drop_with_ball": {
+   "label_zh": "木、纸球在桥上时球心最低比桥头低",
+   "v": [
+    2.39,
+    4.04
+   ],
+   "unit": "",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  "crossing_wood_s": {
+   "label_zh": "木球从第 1 个铰链到第 10 个",
+   "v": [
+    0.83,
+    1.02
+   ],
+   "unit": "游戏秒",
+   "note_zh": "按住一个键沿中线走，上桥每物理秒 3.2–11.8",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  "crossing_paper_s": {
+   "label_zh": "纸球从第 1 个铰链到第 10 个",
+   "v": [
+    0.62,
+    0.92
+   ],
+   "unit": "游戏秒",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  "lateral_drift_wood": {
+   "label_zh": "木球过桥横向最大偏移（桥面半宽 2.5）",
+   "v": 0.86,
+   "unit": "",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  "anchor_span": {
+   "label_zh": "两端锚点的距离",
+   "v": 14.808,
+   "unit": "",
+   "basis": "DERIVED",
+   "how_zh": "两端铰链框架在模板里的 x 相减"
+  },
+  "sleep_after_wake_s": {
+   "label_zh": "醒后到入睡（原版脚本，不上球，一次）",
+   "v": 10.24,
+   "unit": "游戏秒",
+   "basis": "DERIVED",
+   "how_zh": "入睡帧减唤醒帧的 66 Hz 工具帧数除以 66"
+  },
+  "death_reset_s": {
+   "label_zh": "死亡复位的代价（判死到能操控）",
+   "v": 4.08,
+   "unit": "游戏秒",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  }
+ },
+ "machine": {
+  "states": [
+   {
+    "name": "sector_off",
+    "meaning_zh": "所在小节不是当前小节：木板没有刚体、没有铰链。桥位上只有静态路面，桥面高度开着洞；15 座桥下只有死亡区，第 6 关第 5 小节两座下面是不可见的路面和钢轨。"
+   },
+   {
+    "name": "intact",
+    "meaning_zh": "整桥：九块木板由十个铰链连成一条。醒之前平直、冻结在放好的姿态；醒后下垂成会晃的木板链，跨中静止时低约 2.1，上桥、下桥那两块板约 30° 的坡。"
+   },
+   {
+    "name": "torn",
+    "meaning_zh": "断桥：第 6、7 块之间的铰链关掉了，第 1–6 块挂在第 1 块那端，第 7–9 块挂在第 9 块那端，中间是缺口，桥面不能再走。到复位前不会再断或复原。"
+   }
+  ],
+  "initial": "sector_off",
+  "flags": [
+   {
+    "name": "frozen",
+    "meaning_zh": "木板冻结着：不动、不受重力，照样挡球。小节建好时为真；唤醒或被球、道具球、箱子撞到时变假；醒后静止下来会再变真。断桥后两段各自判冻结。"
+   },
+   {
+    "name": "wake_armed",
+    "meaning_zh": "唤醒检测（水平 80）开着。小节建好时为真，触发一次就关，到小节重建前不再打开。"
+   },
+   {
+    "name": "break_armed",
+    "meaning_zh": "断桥检测（第 6 块原点三维 4）开着。唤醒那一刻打开，断桥时关掉；木球、纸球进 4 不关它。"
+   }
+  ],
+  "transitions": [
+   {
+    "from": "sector_off",
+    "to": "intact",
+    "trigger": "sector_enter",
+    "condition_zh": "小节管理器激活桥所在的小节：开局、过上一个盘点。",
+    "effect_zh": "九块木板按摆放姿态建出刚体并冻结，建好十个铰链（建铰链不唤醒），打开唤醒检测。",
+    "time_zh": "激活那一帧里做完；拆和建之间隔 4 个行为帧",
+    "seconds": null,
+    "basis": "READ",
+    "src": "dump"
+   },
+   {
+    "from": "intact",
+    "to": "intact",
+    "trigger": "proximity",
+    "condition_zh": "wake_armed 为真，玩家球球心到机关原点的水平距离严格小于 80，和球种无关。道具球、箱子不触发，只能靠撞醒。",
+    "effect_zh": "唤醒第 4 块，九块同一物理步一起醒（frozen 变假），关掉唤醒检测，打开断桥检测；桥开始下垂。",
+    "time_zh": "132 fps 下迎面每物理秒 26 以内最多晚 10 个物理步（0.076 游戏秒），最长 60 步（0.45 游戏秒）",
+    "seconds": null,
+    "basis": "MEASURED",
+    "src": "measurement",
+    "engine": "rebuilt"
+   },
+   {
+    "from": "*",
+    "to": "*",
+    "trigger": "contact",
+    "condition_zh": "frozen 为真，木板被正在模拟、碰撞组相容的刚体撞到：玩家球、道具球、箱子。",
+    "effect_zh": "那一段当帧醒（frozen 变假）。",
+    "time_zh": "撞击当帧",
+    "seconds": 0,
+    "basis": "DERIVED",
+    "how_zh": "冻结和撞醒的通则加木板的初始冻结设置"
+   },
+   {
+    "from": "*",
+    "to": "*",
+    "trigger": "timer",
+    "condition_zh": "frozen 为假，木板链停住不动。",
+    "effect_zh": "再冻结（frozen 变真），保持当时的下垂姿态，可以带着张力停在非平衡姿态。",
+    "time_zh": "原版脚本、球不上桥：醒后约 10.2 游戏秒入睡（另一次 9.7 还没睡）；球开过来上桥时桥总在晃、没有入睡",
+    "seconds": null,
+    "basis": "MEASURED",
+    "src": "measurement",
+    "engine": "rebuilt"
+   },
+   {
+    "from": "intact",
+    "to": "torn",
+    "trigger": "proximity",
+    "condition_zh": "break_armed 为真，当前球种是石球，玩家球球心到第 6 块此刻原点的三维距离严格小于 4。只看距离和球种，速度为 0 也断；道具石球不触发。在 4 以内变成石球不算，零售没有这种位置。",
+    "effect_zh": "断开第 6、7 块之间的铰链，关掉断桥检测。石球随所在那一段落下：从第 1 块那端来在第 4 块上触发，从第 9 块那端来在第 8 块上。",
+    "time_zh": "进 4 到断开：实测 2–5 个 66 Hz 工具帧，132 fps 下 0–0.095 游戏秒",
+    "seconds": null,
+    "basis": "READ",
+    "src": "dump"
+   },
+   {
+    "from": "intact",
+    "to": "intact",
+    "trigger": "proximity",
+    "condition_zh": "木球或纸球进第 6 块原点三维 4 以内。",
+    "effect_zh": "什么也不发生，断桥检测照样开着；之后石球从 4 以外进来仍会断。",
+    "time_zh": "",
+    "seconds": null,
+    "basis": "DERIVED",
+    "how_zh": "球种判断只有“是石球”一支接了动作；进入事件只在从外到内时发"
+   },
+   {
+    "from": "*",
+    "to": "intact",
+    "trigger": "death",
+    "condition_zh": "玩家球在桥所在的当前小节判死，不管桥断没断。别的小节的桥不受影响。",
+    "effect_zh": "当前小节拆掉再建：桥复原成完整、平直、冻结的样子，唤醒检测重新打开。死在桥边也不会让重建的桥当场醒，要重生的球再进 80。",
+    "time_zh": "132 fps 下判死后第 136 帧拆、第 140 帧建；断桥的情形实测过一次，未断的按同一路径推",
+    "seconds": null,
+    "basis": "MEASURED",
+    "src": "measurement",
+    "engine": "rebuilt"
+   },
+   {
+    "from": "*",
+    "to": "sector_off",
+    "trigger": "sector_leave",
+    "condition_zh": "小节管理器停用桥所在的小节：过下一个盘点、重开关卡（死亡时先走这一支再重建）。",
+    "effect_zh": "关掉两个检测和十个铰链，木板去掉刚体、挪回世界原点。",
+    "time_zh": "停用那一帧里做完",
+    "seconds": null,
+    "basis": "READ",
+    "src": "dump"
+   }
+  ],
+  "reset": {
+   "on_death_zh": "死在桥所在的小节：桥不管断没断都拆掉重建成完整、冻结的整桥，要再进 80 才醒。断了的桥只有这样才复位，代价一条命、回到重生点和 4.08 游戏秒。",
+   "on_sector_change_zh": "过盘点离开后桥被拆掉，回到那里桥不存在，桥位是个洞；小节只往后激活，不会再建。进入桥所在的小节时建成完整、冻结的桥。",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  }
+ },
+ "by_ball": {
+  "wood": {
+   "verdict": "passes",
+   "can_zh": "能走过去，桥不断。实测 15 次全部过桥，没有一次滑出桥边：横向最多偏 0.86（桥面半宽 2.5），最低的板低 3.10–3.88，过桥 0.83–1.02 游戏秒。走的是下垂、会晃的木板链，桥边外多半是死亡区。",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  "stone": {
+   "verdict": "breaks",
+   "can_zh": "沿桥面过去必断：球心进第 6 块原点 4 以内就断，实测 15 次全断，随那一段落下，到每物理秒 10.04 都越不过缺口，更快的没有定。只踩第 1–3 块或第 9 块不断；压着桥边棱、球心在桥面外约 0.65 以上的走法不进 4，很不稳。",
+   "basis": "READ",
+   "src": "dump"
+  },
+  "paper": {
+   "verdict": "passes",
+   "can_zh": "能走过去，桥不断。实测 18 次全部过桥，没有一次滑出桥边：横向最多偏 1.01，最低的板低 3.07–3.33，过桥 0.62–0.92 游戏秒，比木球略快。在晃动的链上跳动的情况没有单独整理。",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  }
+ },
+ "route_effects": [
+  {
+   "kind": "forbids_ball",
+   "effect_zh": "石球过不去：沿桥面走必断，随那一段落下，实测到每物理秒 10.04 都越不过缺口。慢石球上桥等于一条命加 4.08 游戏秒，不当路线；极速石球冲过缺口没有定，只能作极低容错的假说。要用石球的路线只能绕开或先变成木球、纸球。",
+   "basis": "READ",
+   "src": "dump"
+  },
+  {
+   "kind": "hazard",
+   "effect_zh": "断桥和缺桥都是洞：断后两段挂在两端，桥不在当前小节时桥位没有木板。15 座桥下只有死亡区（顶面在桥面下 12–57），第 6 关第 5 小节下面是不可见的路面。",
+   "basis": "DERIVED",
+   "how_zh": "实测的触发位置加对 17 座桥桥面的竖直射线取样"
+  },
+  {
+   "kind": "timing",
+   "effect_zh": "木球、纸球过桥（按住一个键沿中线走）：木 0.83–1.02、纸 0.62–0.92 游戏秒；横向余量约 1.5；桥醒后自己下垂 2.1–2.4，有球时球心比桥头低 2.39–4.04，上下桥两块板约 30° 坡，桥总在晃，不能当平板。斜着上桥、慢于每物理秒 3 没有量。",
+   "basis": "DERIVED",
+   "how_zh": "第 2 关第 3 小节那座的实测归纳，别的桥按同一模板套用"
+  },
+  {
+   "kind": "blocks",
+   "effect_zh": "断桥不可逆：石球上过这座桥以后，同一条命里它不能再用，只有在本小节死亡才复位；过了盘点就再也回不来。",
+   "basis": "DERIVED",
+   "how_zh": "只有死亡能复位机关的通则，加上断桥检测关掉后不再打开"
+  },
+  {
+   "kind": "opens",
+   "effect_zh": "第 6 关第 5 小节：两座交叉的桥正下方 12–14 处有一块不可见的路面，再往下有钢轨，分数球就在那块路面的高度上；压断桥或从桥上掉下的球可能落在路面上接着上钢轨。落点和能不能停住没有实测。",
+   "basis": "DERIVED",
+   "how_zh": "对这一小节的地图网格从桥面做竖直射线，读下面先碰到的面"
+  },
+  {
+   "kind": "hazard",
+   "effect_zh": "第 6 关第 5 小节两座桥上下差 5、垂直交叉，木板互不碰撞。石球沿下桥从第 1 块那端走，多半先隔空压断上桥（看那一刻上桥晃到哪）；从上桥压断后落到下桥，下桥很可能也断。木、纸球从上桥底下过，余隙约 −0.1…+2.2。都没有实测。",
+   "basis": "DERIVED",
+   "how_zh": "两座桥的摆放矩阵按几何算距离，再用第 2 关那座的实测下垂重算"
+  },
+  {
+   "kind": "hazard",
+   "effect_zh": "第 10 关第 3 小节那座横向倾斜约 25°，球在桥上有横坡，可能滚出桥边，桥下 18–20 是死亡区。没有实测。",
+   "basis": "DERIVED",
+   "how_zh": "关卡文件里这座桥的摆放矩阵：桥面法向离竖直 25°"
+  },
+  {
+   "kind": "none",
+   "effect_zh": "道具石球压不断桥，放在桥上只是压重或障碍。",
+   "basis": "DERIVED",
+   "how_zh": "断桥检测只认玩家球；道具球和木板碰撞组不同，会相碰"
+  },
+  {
+   "kind": "none",
+   "effect_zh": "飞船上的木板桥不是这个机关，没有按球种断桥的检测。",
+   "basis": "DERIVED",
+   "how_zh": "飞船的脚本自己物理化木板，只在通关时断一个铰链"
+  }
+ ],
+ "model": [
+  {
+   "feature": "hinge",
+   "need_zh": "完整模拟要 9 个凸包刚体加 10 个不限位、不断裂的铰链，两端铰到固定点。锚点共线，刚性链会是直的；引擎里销点被拉开，桥会下垂。",
+   "minimal_zh": "木、纸球：按实测静止姿态摆一条固定的下垂折线面（各块低 0.32、1.07、1.64、2.01、2.13、2.01、1.65、1.07、0.33），高度给 ±1 容错；滑出桥边按掉进死亡区算。"
+  },
+  {
+   "feature": "trigger",
+   "need_zh": "断桥：第 6 块此刻原点为心、三维半径 4 的检测，只对玩家石球、只在进入时判；132 fps 下快于约每物理秒 50 才可能漏。",
+   "minimal_zh": "石球：每步查球心到第 6 块原点（按所用下垂姿态）的距离，小于 4 就把桥面换成缺口，不用模拟木板落下。贴着桥面走时等于把桥面截在第 4 块（第 1 块那端来）或第 8 块（第 9 块那端来）。"
+  },
+  {
+   "feature": "state_only",
+   "need_zh": "每座桥一个状态：不在场、完整、已断。",
+   "minimal_zh": "按当前小节和有没有石球经过选状态；已断只有在本小节死亡才回到完整（4.08 游戏秒、一条命）。"
+  }
+ ],
+ "unknowns": [
+  {
+   "kind": "measure",
+   "question_zh": "快于每物理秒约 10 的石球断桥后能不能越过缺口，甚至落在对岸挂着的那段上？",
+   "matters_zh": "决定极速石球能不能把断桥当一次性跳板。",
+   "how_zh": "第 2 关第 3 小节，石球斜按从更远的起点冲上桥，记达到的速度、断开的时刻和球心去向。"
+  },
+  {
+   "kind": "measure",
+   "question_zh": "第 6 关第 5 小节交叉的两座桥：石球会不会先隔空压断上桥、两座都断后落到哪；已入睡的桥被隔空压断时两段是不是原地立着。",
+   "matters_zh": "决定石球在这里的去向和断了的上桥还能不能当路面。",
+   "how_zh": "在这一小节让石球、木球沿下桥走，读两座桥的断开和球心；另让桥入睡后再把石球放到第 6 块下方 4 以内。"
+  },
+  {
+   "kind": "measure",
+   "question_zh": "木球、纸球斜着上桥（15°、30°）或慢于每物理秒 3 上桥会不会滑出桥边？",
+   "matters_zh": "决定木、纸球在桥上的容错；桥边外多半是死亡区。",
+   "how_zh": "第 2 关第 3 小节，按偏离桥轴 15°、30° 的方向和慢速起点各跑两次，读横向偏差和是否落下。"
+  },
+  {
+   "kind": "measure",
+   "question_zh": "第 10 关第 3 小节横倾 25° 的桥下垂成什么样，木、纸球的实际容错多大？",
+   "matters_zh": "决定这座桥能不能走、容错多少。",
+   "how_zh": "不按键唤醒后读九块的位姿；再让木、纸球按住键沿桥走，读横向偏差和是否落下。"
+  },
+  {
+   "kind": "measure",
+   "question_zh": "原版脚本下每块的转角、下沉随时间的过程和有球时的下沉；原版脚本下的断桥时机和过桥时间。",
+   "matters_zh": "最小模型的桥面坡和高度容错；核对实测里的数。",
+   "how_zh": "原版脚本下不按键唤醒并逐步存九块的位姿；再让木球过桥、石球进 4，读下沉、时间和断开的时刻。"
+  },
+  {
+   "kind": "measure",
+   "question_zh": "石球只踩桥端（第 1–3 块、第 9 块）时，桥端下沉会不会把第 6 块拉进 4 以内？",
+   "matters_zh": "决定“石球只踩桥端再离开”能不能当路线假说。",
+   "how_zh": "桥醒后把石球放在第 2、3、9 块上不按键，读销点间隙、球心到第 6 块原点的距离和是否断开。"
+  },
+  {
+   "kind": "measure",
+   "question_zh": "132 fps 下快于约每物理秒 50 正中穿过是否真的漏检；石球落到桥上会不会被弹开而不断？",
+   "matters_zh": "只对从高处冲下来的石球有意义，优先级低。",
+   "how_zh": "把石球从第 6 块正上方不同高度落下，读断开的时刻和球有没有弹出 4 以外。"
+  },
+  {
+   "kind": "measure",
+   "question_zh": "唤醒检测在 −x、−z 方向的阈值是不是也是 80？",
+   "matters_zh": "只影响唤醒时刻，对路线影响很小。",
+   "how_zh": "沿机关原点的 −x、−z 方向在 79.99 和 80.01 处放球，看木板是否醒。"
+  }
+ ]
+}

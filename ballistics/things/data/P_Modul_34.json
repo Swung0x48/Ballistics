@@ -1,0 +1,588 @@
+{
+ "id": "P_Modul_34",
+ "name_zh": "落石",
+ "category": "mechanism",
+ "types": [
+  "P_Modul_34"
+ ],
+ "summary_zh": "落石：下层地面上一个自由箱子托着一块 5×5×5 的路块，路块挂在竖直滑轨上，只能上下滑。路块没落时挡住上层道路；从下层沿本地 z 把箱子顶出路块的投影，路块落下 4.78，顶面和两侧上层路面平齐、补上上层道路，同时封死下层从缺口穿过的路。操作处在下层、通过处在上层，推完要另找路回上层。单次撞击只有石球推开过：要有助跑、按住键一直顶着；木球一次只把箱子挪 1.73 以内，纸球推不动。球到路块水平 50 以内醒。只有死亡能复位它；离开小节后它不存在。",
+ "uses": [
+  "proximity_wake",
+  "freeze_wake",
+  "sector_rebuild",
+  "death_timing",
+  "contact",
+  "key_push",
+  "coast"
+ ],
+ "bodies": [
+  {
+   "name": "P_Modul_34_Schiebestein",
+   "role_zh": "路块：5×5×5，压在箱子上挡住上层道路；箱子移开后沿竖直滑轨落下，补平上层道路。",
+   "hull": {
+    "kind": "convex_hulls",
+    "meshes": [
+     "P_Modul_34_Schiebestein_Mesh"
+    ],
+    "size": [
+     5.0,
+     5.0,
+     5.0
+    ],
+    "radius": null,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "motion": {
+    "kind": "slider",
+    "axis": [
+     0.0,
+     -1.0,
+     0.0
+    ],
+    "anchor": [
+     -7.7,
+     5.0,
+     0.0
+    ],
+    "limits": "无：Limitations (meter) 为 FALSE，存着的 −1 / +1 不生效",
+    "basis": "READ",
+    "src": "dump"
+   },
+   "mass": {
+    "v": 1.6,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "friction": {
+    "v": 0.5,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "elasticity": {
+    "v": 0.4,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "lin_damp": {
+    "v": 0.1,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "rot_damp": {
+    "v": 0.1,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "group": {
+    "v": "",
+    "basis": "READ",
+    "src": "dump"
+   },
+   "starts": {
+    "v": "frozen",
+    "basis": "READ",
+    "src": "dump"
+   }
+  },
+  {
+   "name": "P_Modul_34_Kiste",
+   "role_zh": "箱子：4.1×4.1×5 的自由刚体，站在下层地面上托住路块，没有关节；被顶出投影后路块落下。",
+   "hull": {
+    "kind": "convex_hulls",
+    "meshes": [
+     "P_Modul_34_Kiste_Mesh"
+    ],
+    "size": [
+     4.1,
+     4.1,
+     5.0
+    ],
+    "radius": null,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "motion": {
+    "kind": "free",
+    "axis": null,
+    "anchor": null,
+    "limits": "",
+    "basis": "READ",
+    "src": "dump"
+   },
+   "mass": {
+    "v": 1.4,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "friction": {
+    "v": 0.8,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "elasticity": {
+    "v": 0.4,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "lin_damp": {
+    "v": 0.1,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "rot_damp": {
+    "v": 0.1,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "group": {
+    "v": "",
+    "basis": "READ",
+    "src": "dump"
+   },
+   "starts": {
+    "v": "frozen",
+    "basis": "READ",
+    "src": "dump"
+   }
+  }
+ ],
+ "forces": [],
+ "numbers": {
+  "wake_radius": {
+   "label_zh": "唤醒：球心到路块静止位置的水平距离小于",
+   "v": 50,
+   "unit": "",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  "wake_centre_offset": {
+   "label_zh": "唤醒圆心（路块）离摆放点的水平距离",
+   "v": 7.7,
+   "unit": "",
+   "basis": "DERIVED",
+   "how_zh": "路块在机关模板里的偏移；四个方向的翻转点实测相合"
+  },
+  "drop_distance": {
+   "label_zh": "路块的落程（第 10 关实测）",
+   "v": 4.78,
+   "unit": "",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  "box_clear_shift": {
+   "label_zh": "箱子不转时要沿推向挪开",
+   "v": 5.0,
+   "unit": "",
+   "basis": "DERIVED",
+   "how_zh": "两块水平投影的半长相加；撞歪的箱子要挪得更远"
+  },
+  "stone_pz_drop": {
+   "label_zh": "石球沿 +z 撞前速度：落了的（8 / 8）",
+   "v": [
+    5.95,
+    8.2
+   ],
+   "unit": "每物理秒",
+   "note_zh": "按住键，每配置两次",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  "stone_pz_no_drop": {
+   "label_zh": "石球沿 +z 撞前速度：没落的（0 / 4）",
+   "v": [
+    3.33,
+    4.92
+   ],
+   "unit": "每物理秒",
+   "note_zh": "过渡区在 4.92 和 5.95 之间，没测",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  "stone_mz_drop": {
+   "label_zh": "石球沿 −z 撞前速度：3 / 4 落的区间",
+   "v": [
+    6.86,
+    7.58
+   ],
+   "unit": "每物理秒",
+   "note_zh": "7.58 也失败过一次",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  "stone_mz_no_drop": {
+   "label_zh": "石球沿 −z 撞前速度：没落的（0 / 6）",
+   "v": [
+    3.22,
+    5.95
+   ],
+   "unit": "每物理秒",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  "wood_push_by_speed": {
+   "label_zh": "木球一次撞击：撞前速度 → 箱子挪动",
+   "v": {
+    "4.89–4.91": [
+     0.39,
+     0.4
+    ],
+    "7.11–7.17": [
+     0.79,
+     0.81
+    ],
+    "8.43–8.45": [
+     1.03,
+     1.06
+    ],
+    "9.43": [
+     1.32,
+     1.33
+    ],
+    "10.29–10.31": [
+     1.53,
+     1.54
+    ],
+    "10.94": [
+     1.58,
+     1.73
+    ]
+   },
+   "unit": "每物理秒 → 长度",
+   "note_zh": "按住键，沿 +z，每个速度两次，路块都没落",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  "drop_start_seconds": {
+   "label_zh": "撞击到路块开始下沉",
+   "v": [
+    0.45,
+    1.12
+   ],
+   "unit": "游戏秒",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  "drop_done_seconds": {
+   "label_zh": "撞击到路块落到底",
+   "v": [
+    0.92,
+    1.41
+   ],
+   "unit": "游戏秒",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  "gap_width": {
+   "label_zh": "上层板上缺口的宽",
+   "v": 5.4,
+   "unit": "",
+   "basis": "DERIVED",
+   "how_zh": "地图几何上量缺口两面的位置"
+  },
+  "beam_end_l10": {
+   "label_zh": "第 10 关下层窄梁从箱子中心沿推向的长度",
+   "v": 17.5,
+   "unit": "",
+   "basis": "DERIVED",
+   "how_zh": "地图几何上沿梁取样找到的尽头"
+  },
+  "respawn_distance_min": {
+   "label_zh": "23 处里重生点到路块最近的水平距离",
+   "v": 67.8,
+   "unit": "",
+   "basis": "DERIVED",
+   "how_zh": "按地图上的重生点和摆放位置算"
+  }
+ },
+ "machine": {
+  "states": [
+   {
+    "name": "sector_off",
+    "meaning_zh": "所在小节不是当前小节：两块都没有刚体。上层道路在这里留一个宽 5.4 的缺口（上层滚不过，只能跳过），下层从缺口底下通过、没有箱子挡。按几何推的，没有单独量。"
+   },
+   {
+    "name": "standing",
+    "meaning_zh": "小节已激活：箱子站在下层地面，路块压在箱子上，顶面高出摆放点约 4.14，挡住上层道路；箱子占着下层的缺口。箱子被推过后停在新位置，下一次从那里推起。"
+   },
+   {
+    "name": "dropped",
+    "meaning_zh": "箱子已离开路块投影，路块沿滑轨落到下层地面（不倾斜的 19 处落 4.78），顶面和两侧上层路面平齐、补上上层道路；缺口被封，下层从这里过不去。落下后冻结、稳定。"
+   }
+  ],
+  "initial": "sector_off",
+  "flags": [
+   {
+    "name": "frozen",
+    "meaning_zh": "两块冻结着：不受重力，照样挡球；被正在模拟、碰撞组相容的刚体撞到当帧醒。小节建好时为真；醒后停住约 0.14–0.98 游戏秒再冻结。和形态无关，standing、dropped 里都可能为真。"
+   },
+   {
+    "name": "proximity_armed",
+    "meaning_zh": "邻近检测开着，只认玩家球。小节建好时为真，第一次触发后关掉，到小节重建前不再打开。"
+   }
+  ],
+  "transitions": [
+   {
+    "from": "*",
+    "to": "sector_off",
+    "trigger": "level_start",
+    "condition_zh": "关卡载入。",
+    "effect_zh": "载入时按表把各行先建后拆；载入后它不在原位、没有刚体，到自己的小节被激活时再建。",
+    "time_zh": "载入期间",
+    "seconds": null,
+    "basis": "READ",
+    "src": "dump"
+   },
+   {
+    "from": "sector_off",
+    "to": "standing",
+    "trigger": "sector_enter",
+    "condition_zh": "小节管理器激活它所在的小节：开局、过上一个盘点、死亡后重建当前小节。",
+    "effect_zh": "箱子、路块在摆放位置建出刚体并冻结（frozen 为真），建好竖直滑轨，打开邻近检测。",
+    "time_zh": "132 fps 下调用小节管理器后第 6 个行为帧（0.045 游戏秒）",
+    "seconds": null,
+    "basis": "READ",
+    "src": "dump"
+   },
+   {
+    "from": "standing",
+    "to": "standing",
+    "trigger": "proximity",
+    "condition_zh": "proximity_armed 为真，检查的那一帧玩家球球心到路块静止位置的水平距离（只看 X、Z）严格小于 50。圆心是路块，离摆放点 7.7。道具球、箱子靠近不触发。",
+    "effect_zh": "唤醒路块（frozen 变假）并关掉检测；路块落约 0.21 撞醒箱子，箱子沉降 0.45、路块沉降 0.66，仍挡路。原版 DLL 记录 36 处唤醒距离 48.10–49.95。",
+    "time_zh": "132 fps 下最多比跨过 50 晚 10 个行为帧（0.076 游戏秒）；箱子再晚 8 个物理步醒",
+    "seconds": null,
+    "basis": "MEASURED",
+    "src": "measurement",
+    "engine": "rebuilt"
+   },
+   {
+    "from": "*",
+    "to": "*",
+    "trigger": "contact",
+    "condition_zh": "frozen 为真，箱子或路块被正在模拟、碰撞组相容的刚体撞到：玩家球、道具球、别的箱子。",
+    "effect_zh": "撞击当帧醒，再受这次撞击，所以冻结不改变推的结果。不经撞击的低速接触能不能唤醒冻结体没有读到。",
+    "time_zh": "撞击当帧",
+    "seconds": 0,
+    "basis": "DERIVED",
+    "how_zh": "冻结和撞醒的通则用到这两块上；箱子正是被落下的路块撞醒的"
+   },
+   {
+    "from": "*",
+    "to": "*",
+    "trigger": "timer",
+    "condition_zh": "frozen 为假，两块静止下来；按着键又被箱子挡住的球自己也会冻结。",
+    "effect_zh": "再冻结（frozen 变真），箱子的位移和路块的高度不变。",
+    "time_zh": "停住后按规则约 0.23–0.44 游戏秒，路线容错取实测并集 0.14–0.98 游戏秒；原版 DLL 记录路块醒到冻结 0.43–0.59 游戏秒",
+    "seconds": null,
+    "basis": "DERIVED",
+    "how_zh": "冻结规则的范围加原版记录里路块醒到冻结的时长"
+   },
+   {
+    "from": "standing",
+    "to": "dropped",
+    "trigger": "contact",
+    "condition_zh": "下层沿本地 z 把箱子顶出路块投影（不转时挪 5.0 以上）。只有石球做到过，按住键一直顶着：+z 撞前 5.95–8.20 共 8 / 8 落，−z 6.86–7.58 共 3 / 4 落。",
+    "effect_zh": "路块先落 0.11–0.14 压在顶箱子的球顶上（11 次里 9 次），球出投影后再落到底，共落 4.78、冻结。箱子被推出下层路，11 次里 10 次掉出地图。",
+    "time_zh": "撞击后 0.45–1.12 游戏秒开始下沉，0.92–1.41 游戏秒落到底；悬着时上层还没补平",
+    "seconds": null,
+    "basis": "MEASURED",
+    "src": "measurement",
+    "engine": "rebuilt"
+   },
+   {
+    "from": "*",
+    "to": "sector_off",
+    "trigger": "sector_leave",
+    "condition_zh": "过下一个盘点，小节管理器停用它所在的小节。",
+    "effect_zh": "滑轨关掉、邻近检测关掉、两块去掉刚体，部件回到初始状态（在世界原点），球碰不到。",
+    "time_zh": "调用小节管理器后第 2 个行为帧",
+    "seconds": null,
+    "basis": "READ",
+    "src": "dump"
+   },
+   {
+    "from": "*",
+    "to": "standing",
+    "trigger": "death",
+    "condition_zh": "球在它所在的当前小节判死。别的小节的落石不受影响。",
+    "effect_zh": "当前小节拆掉再建：箱子托着路块回到初始姿态并冻结，落下的路块回到箱子上方，邻近检测重开，要重推。只测过唤醒沉降后死亡，没测过推落后再死。",
+    "time_zh": "132 fps 下判死后第 136 帧拆、第 140 帧建；重生点离路块都在水平 67.8 以外，等待中不会醒",
+    "seconds": null,
+    "basis": "DERIVED",
+    "how_zh": "小节拆建的通则加本机关的拆除、建立分支；唤醒沉降后死亡的复位实测相合"
+   }
+  ],
+  "reset": {
+   "on_death_zh": "当前小节拆掉再建：箱子和路块回到初始姿态（实测两次，唤醒沉降后死亡回到模板高度），落下的路块回到箱子上方，要再推一次。死亡是唯一的复位，代价一条命、回到重生点和 4.08 游戏秒。",
+   "on_sector_change_zh": "离开它的小节后两块没有刚体、部件在世界原点，球碰不到；提前跑进后面的小节时那里的落石也没有刚体。",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  }
+ },
+ "by_ball": {
+  "wood": {
+   "verdict": "blocked",
+   "can_zh": "一次撞击推不落：撞前 4.89–10.94 每物理秒（12 次），箱子只挪 0.39–1.73，之后球和箱子一起停住冻结。按趋势外推到单键极速 15.9 也只约 2.7–3.5，不到 5.0。多次撞击能否累加、下坡来的更快木球都没测。要开路先变石球。",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  "stone": {
+   "verdict": "pushes",
+   "can_zh": "能推开，要助跑、按住键一直顶着：+z 撞前 5.95–8.20 共 8 / 8 落，3.33–4.92 共 0 / 4；−z 撞前 6.86–7.58 共 3 / 4 落，3.22–5.95 共 0 / 6。从静止助跑 5.5 约 0.85 游戏秒到 6.04。只在第 10 关中间那一处测过，每配置两次；中途松键、反向的结果没测。",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  "paper": {
+   "verdict": "blocked",
+   "can_zh": "推不动：撞前 4.67–11.04，箱子只动 −0.01 到 0.03，纸球被弹回。要开路先变石球；第 11 关第 3 小节可以推旁边的道具石球去撞箱子，能不能推开没测。",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  }
+ },
+ "route_effects": [
+  {
+   "kind": "blocks",
+   "effect_zh": "路块没落时挡住上层道路：5×5 的方块、顶面高出摆放点约 4.14，球滚不过去。",
+   "basis": "DERIVED",
+   "how_zh": "路块的静止姿态加上层路面的几何"
+  },
+  {
+   "kind": "opens",
+   "effect_zh": "通过处在上层：路块落下后顶面和两侧上层路面相差不到 0.06，补上缺口，球从路块上过。第 13 关第 2 小节两侧是钢轨，怎样接上没测；落下的路块被球滚过时动不动也没测。",
+   "basis": "DERIVED",
+   "how_zh": "路块沿滑轨的落程和两侧路面的高差按几何算，第 10 关实测落 4.78 相合"
+  },
+  {
+   "kind": "requires_ball",
+   "effect_zh": "操作处在下层、箱子沿本地 z 的两端：沿 z 滚来把箱子顶出投影。沿本地 x 推不到箱子（缺口两面挡着，两侧只空 0.65）。推完球留在推向一侧的下层，要另走回上层。",
+   "basis": "DERIVED",
+   "how_zh": "石球的推动实测加缺口的几何"
+  },
+  {
+   "kind": "requires_ball",
+   "effect_zh": "单次撞击只有石球推开过（+z 8 / 8、−z 3 / 4）；木球到撞前 10.94、纸球到 11.04 都没落（0 / 12、0 / 6）。木球多次撞击能否累积没测，所以“必须是石球”只对单次撞击成立。",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  {
+   "kind": "timing",
+   "effect_zh": "假说一，石球沿 +z：下层离箱子中心 10 以上（助跑取 6 以上留余量）从静止按住朝箱子的键，约 0.85 游戏秒后以约 6.0 撞上并一直顶着；按键到路块落好约 1.8–2.3 游戏秒，再反向按键 0.43–0.67 游戏秒停住（推算）。助跑 5.5 是 8 / 8 的最低点，3.5 是 0 / 2；横偏 0.3 不影响。",
+   "basis": "DERIVED",
+   "how_zh": "撞前速度和下沉时刻的实测，加单键纯滚动和反向停车的推算"
+  },
+  {
+   "kind": "timing",
+   "effect_zh": "假说二，石球沿 −z：助跑 7.5 以上（撞前 6.86 以上）3 / 4 落，7.58 也失败过一次；沿 +z 撞前 5.95 就每次都落，沿 −z 同样的 5.93–5.95 两次都不落。容错比 +z 差，只在 +z 一侧到不了时用。别处的方向差没测。",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  {
+   "kind": "hazard",
+   "effect_zh": "第 10 关三处、第 11 关第 2 小节、第 5 关第 3 小节的下层是宽约 5 的敞开窄梁：第 10 关的梁只到箱子中心外约 17.5，一直按着键的石球 1.80–2.64 游戏秒后冲出梁尽头。路块落到底时反向按键，按规则 0.43–0.67 游戏秒停在梁上（推算，没测）。",
+   "basis": "DERIVED",
+   "how_zh": "球冲出梁的实测时刻、梁长的几何，加反向按键的停车推算"
+  },
+  {
+   "kind": "hazard",
+   "effect_zh": "推开那一刻球多半在路块底下：11 次里 9 次路块先压在球顶，球出投影后才落到底，这约 0.3–0.5 游戏秒里上层缺口还没补平，上层来的球会撞到它。纸球可能被压住（推算，没测）。",
+   "basis": "DERIVED",
+   "how_zh": "下沉过程的逐帧实测，加顶面摩擦对按键推力的推算"
+  },
+  {
+   "kind": "one_way",
+   "effect_zh": "路块落下后封住缺口（两侧只剩 0.2）：19 处下层是从缺口穿过上层板的，落下后这条下层路走不通，只能在落下之前走。第 13 关下层是一大片地面，可以绕开；第 1 关第 2 小节、第 7 关第 3 小节能否绕过板的两端没查。",
+   "basis": "DERIVED",
+   "how_zh": "路块落到下层地面的姿态加缺口和板的几何"
+  },
+  {
+   "kind": "timing",
+   "effect_zh": "回上层的路（读地图推断，不计球半径和速度，没在引擎里跑）：找到的 6 处按石球极速约 1.0–5.9 游戏秒（下限）；第 10 关三处要依次推开、从落下的路块上过。11 处没找到回程，推开的这条命可能过不了这里。",
+   "basis": "DERIVED",
+   "how_zh": "地图格点上的广度优先搜索，路长按石球单键极速换成时间"
+  },
+  {
+   "kind": "blocks",
+   "effect_zh": "推开和经过要在同一条命里：失败（推不开、掉下梁）只能死亡复位，代价一条命、回到重生点、4.08 游戏秒，箱子和路块回到原位要重推。",
+   "basis": "DERIVED",
+   "how_zh": "死亡转移和小节拆建的通则，唤醒沉降后死亡的复位实测相合"
+  },
+  {
+   "kind": "none",
+   "effect_zh": "离开小节或提前进入后面的小节时，那里的落石没有刚体、不在原位，球碰不到。",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  {
+   "kind": "none",
+   "effect_zh": "第 11 关第 3 小节上排三个落石的下层各摆一颗道具石球，离箱子端面约 0.67；推它去撞箱子能不能推开没测，是纸球、木球开路的备选。箱子推走后球跟进要先上 0.7 的台阶。",
+   "basis": "DERIVED",
+   "how_zh": "地图上道具球和箱子的摆放位置、台阶的几何"
+  }
+ ],
+ "model": [
+  {
+   "feature": "slider",
+   "need_zh": "路块：5×5×5 盒子，只沿机关本地竖直轴滑、不转，无限位、不会断，受重力；箱子：4.1×4.1×5 自由盒子，站在下层地面上。",
+   "minimal_zh": "路块按状态放成静态盒子：standing 在箱子上，dropped 落到底面碰地。箱子的旋转矩形不再和路块 5×5 投影重叠时切换；补上投影下有球时先停在球顶、撞击后 0.92–1.41 游戏秒才落好；上层板和缺口两面当静态几何。"
+  },
+  {
+   "feature": "rigid_body",
+   "need_zh": "箱子被撞后的平移和绕竖轴的转动，顶上压着路块时的地面摩擦；位移在两次撞击之间保留。",
+   "minimal_zh": "查表：按球种、推的方向和撞前速度给落不落和箱子位移（石 +z 5.95–8.20 落、3.33–4.92 不落；−z 6.86–7.58 落 3 / 4；木挪 0.39–1.73 不落；纸不动）。坡和台阶处要分方向；更细要做带摩擦的自由盒子。"
+  },
+  {
+   "feature": "state_only",
+   "need_zh": "按小节决定它在不在；死亡后的状态。",
+   "minimal_zh": "只在它的小节是当前小节时加入碰撞；唤醒前按冻结处理；死亡后回到 standing、位移清零；没有别的复位。"
+  }
+ ],
+ "unknowns": [
+  {
+   "kind": "measure",
+   "question_zh": "木球多次撞击能否累积推开箱子；石球中途松键或反向后还推不推得开；偏心撞；原版脚本下的门槛。",
+   "matters_zh": "木球能累积就不必先变石球；何时能松键决定石球会不会冲下梁。",
+   "how_zh": "在第 10 关中间那个落石上，木球撞停后退回再撞 3–5 次，逐帧记两块位置；石球撞上后不同时刻松键或反向，看路块落不落。"
+  },
+  {
+   "kind": "measure",
+   "question_zh": "推开后球从上层滚过落下的路块时，路块会不会动。",
+   "matters_zh": "落下的路块是上层道路的一部分；落下后实测冻结、稳定，但还没有球从上面滚过。",
+   "how_zh": "推开后把三种球放到上层板上路块一侧，按键滚过路块，记路块的高度和球的轨迹，各两次。"
+  },
+  {
+   "kind": "measure",
+   "question_zh": "第 11 关第 3 小节能否靠推道具石球撞开箱子；第 13 关第 2 小节落下的路块怎样接上钢轨；坡、台阶、V 形底处的门槛。",
+   "matters_zh": "道具球能推开的话纸球、木球也能开路；门槛现在只来自第 10 关一处。",
+   "how_zh": "木球、纸球推道具球去撞箱子；第 13 关推开后让三种球沿钢轨经过路块；坡和台阶处石球两个方向各做几个起点。"
+  },
+  {
+   "kind": "measure",
+   "question_zh": "地图上找到的回程在引擎里走不走得通；没找到回程的 11 处有没有靠球速、跳跃或别的机关的路。",
+   "matters_zh": "推开路块的球要回到上层才用得上它。",
+   "how_zh": "按找到的回程逐段按键走，记球的轨迹；没找到的放宽坡度和下落再搜，并找附近的钢轨、变球器、风扇。"
+  },
+  {
+   "kind": "tool",
+   "question_zh": "唤醒和复位两个积木的目标参数接在哪（现在按参数排列推断）。",
+   "matters_zh": "不影响路线：行为已实测（路块先醒、箱子晚 4 个 66 Hz 工具帧；死亡后两块都回初始姿态）。",
+   "how_zh": "改工具，让它印出积木的目标参数和连到的本地参数。"
+  }
+ ]
+}

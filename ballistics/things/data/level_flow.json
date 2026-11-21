@@ -1,0 +1,953 @@
+{
+ "id": "level_flow",
+ "name_zh": "关卡流程：出生点、盘点、飞船、小节、死亡和复位",
+ "category": "rule",
+ "types": [],
+ "summary_zh": "一关的总规则。开局在出生点放球，3.0 游戏秒后才有刚体。同一时刻只有当前小节的机关、箱子、道具存在，路面和钢轨一直在。盘点只能按顺序点：球心进到下一个盘点的大火焰（盘点原点上方 1.4948）三维 6.5 以内，就换到下一小节、换重生点。球的有向盒碰到死亡区的盒子就死：生命够时重建当前小节、在重生点静止重生，132 fps 下判死到能操控 539 帧（4.08 游戏秒），SR 不计其中 538 帧；这是复位机关的唯一办法。终点是最后一个小节的飞船：先进筐水平 70 以内把它唤醒，再让球心离筐原点三维 < 1 就通关；醒后筐和桥会下沉。三种球规则相同，只是判死的高度略有不同。",
+ "uses": [
+  "units",
+  "death_timing",
+  "transform_timing",
+  "trafo_other_sector",
+  "proximity_wake",
+  "sector_rebuild",
+  "finish",
+  "score_timer",
+  "player_ball_lifecycle"
+ ],
+ "bodies": [
+  {
+   "name": "PE_Balloon_Platform",
+   "role_zh": "飞船的筐，终点。不固定、开始冻结的刚体，碰撞是六个看不见的凸包；可见的船体没有碰撞。",
+   "hull": {
+    "kind": "convex_hulls",
+    "meshes": [
+     "PE_Balloon_Col_01_Mesh",
+     "PE_Balloon_Col_02_Mesh",
+     "PE_Balloon_Col_03_Mesh",
+     "PE_Balloon_Col_04_Mesh",
+     "PE_Balloon_Col_05_Mesh",
+     "PE_Balloon_Col_06_Mesh"
+    ],
+    "size": [
+     12.88,
+     4.22,
+     8.71
+    ],
+    "radius": null,
+    "basis": "MEASURED",
+    "src": "record",
+    "engine": "rebuilt"
+   },
+   "motion": {
+    "kind": "slider",
+    "axis": [
+     0.0,
+     -1.0,
+     0.0
+    ],
+    "anchor": [
+     0.0,
+     7.002,
+     0.0
+    ],
+    "limits": "滑轨 A 不限位（Limitations FALSE，存着的 −2、2 米不传给 IVP）。",
+    "basis": "DERIVED",
+    "how_zh": "醒后的实际运动见 locked_until_finish（实测不锁死）。"
+   },
+   "mass": {
+    "v": 4.0,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "friction": {
+    "v": 0.7,
+    "basis": "MEASURED",
+    "src": "record",
+    "engine": "rebuilt"
+   },
+   "elasticity": {
+    "v": 0.4,
+    "basis": "MEASURED",
+    "src": "record",
+    "engine": "rebuilt"
+   },
+   "lin_damp": {
+    "v": 0.1,
+    "basis": "MEASURED",
+    "src": "record",
+    "engine": "rebuilt"
+   },
+   "rot_damp": {
+    "v": 0.1,
+    "basis": "MEASURED",
+    "src": "record",
+    "engine": "rebuilt"
+   },
+   "group": {
+    "v": "Floor",
+    "basis": "READ",
+    "src": "dump"
+   },
+   "starts": {
+    "v": "frozen",
+    "basis": "READ",
+    "src": "dump"
+   }
+  },
+  {
+   "name": "PE_Balloon_Platte01..08",
+   "role_zh": "飞船的木板桥：八块木板各是一个刚体，从路的尽头连到筐的门槛，球滚过它上船。",
+   "hull": {
+    "kind": "convex_hulls",
+    "meshes": [
+     "PE_Balloon_Platte01_Mesh",
+     "PE_Balloon_Platte02_Mesh",
+     "PE_Balloon_Platte03_Mesh",
+     "PE_Balloon_Platte04_Mesh",
+     "PE_Balloon_Platte05_Mesh",
+     "PE_Balloon_Platte06_Mesh",
+     "PE_Balloon_Platte07_Mesh",
+     "PE_Balloon_Platte08_Mesh"
+    ],
+    "size": [
+     1.5,
+     0.6,
+     5.0
+    ],
+    "radius": null,
+    "basis": "MEASURED",
+    "src": "record",
+    "engine": "rebuilt"
+   },
+   "motion": {
+    "kind": "hinge",
+    "axis": [
+     0.0,
+     0.0,
+     1.0
+    ],
+    "anchor": null,
+    "limits": "无：9 个铰链全部 Limitations=FALSE，存着的 −45、45 不传给 IVP。",
+    "basis": "READ",
+    "src": "dump"
+   },
+   "mass": {
+    "v": 0.5,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "friction": {
+    "v": 0.7,
+    "basis": "MEASURED",
+    "src": "record",
+    "engine": "rebuilt"
+   },
+   "elasticity": {
+    "v": 0.4,
+    "basis": "MEASURED",
+    "src": "record",
+    "engine": "rebuilt"
+   },
+   "lin_damp": {
+    "v": 0.1,
+    "basis": "MEASURED",
+    "src": "record",
+    "engine": "rebuilt"
+   },
+   "rot_damp": {
+    "v": 0.1,
+    "basis": "MEASURED",
+    "src": "record",
+    "engine": "rebuilt"
+   },
+   "group": {
+    "v": "Floor",
+    "basis": "READ",
+    "src": "dump"
+   },
+   "starts": {
+    "v": "frozen",
+    "basis": "READ",
+    "src": "dump"
+   }
+  },
+  {
+   "name": "PE_Box_slide / PE_Balloon_Ballon01..04 / PE_Balloon_Ballon_Seil01..04",
+   "role_zh": "飞船的滑车、气球和绳：刚体，但碰撞关着，球碰不到。",
+   "hull": {
+    "kind": "convex_hulls",
+    "meshes": [
+     "Box_slide_Mesh",
+     "PE_Balloon_Ballon01_Mesh",
+     "PE_Balloon_Ballon02_Mesh",
+     "PE_Balloon_Ballon03_Mesh",
+     "PE_Balloon_Ballon04_Mesh",
+     "PE_Balloon_Ballon_Seil01_Mesh",
+     "PE_Balloon_Ballon_Seil02_Mesh",
+     "PE_Balloon_Ballon_Seil03_Mesh",
+     "PE_Balloon_Ballon_Seil04_Mesh"
+    ],
+    "size": null,
+    "radius": null,
+    "basis": "MEASURED",
+    "src": "record",
+    "engine": "rebuilt"
+   },
+   "motion": {
+    "kind": "slider",
+    "axis": [
+     -1.0,
+     0.0,
+     0.0
+    ],
+    "anchor": [
+     0.0,
+     20.0,
+     0.0
+    ],
+    "limits": "…",
+    "basis": "DERIVED",
+    "how_zh": "由读到和测到的事实推出"
+   },
+   "mass": {
+    "v": 4.0,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "friction": {
+    "v": 0.7,
+    "basis": "MEASURED",
+    "src": "record",
+    "engine": "rebuilt"
+   },
+   "elasticity": {
+    "v": 0.4,
+    "basis": "MEASURED",
+    "src": "record",
+    "engine": "rebuilt"
+   },
+   "lin_damp": {
+    "v": 1.0,
+    "basis": "MEASURED",
+    "src": "record",
+    "engine": "rebuilt"
+   },
+   "rot_damp": {
+    "v": 1.0,
+    "basis": "MEASURED",
+    "src": "record",
+    "engine": "rebuilt"
+   },
+   "group": {
+    "v": "",
+    "basis": "READ",
+    "src": "dump"
+   },
+   "starts": {
+    "v": "frozen",
+    "basis": "READ",
+    "src": "dump"
+   }
+  },
+  {
+   "name": "FixCube",
+   "role_zh": "世界原点的固定方块，只作关节的固定端；碰撞关着，球碰不到。",
+   "hull": {
+    "kind": "box",
+    "meshes": [],
+    "size": [
+     4.0,
+     4.0,
+     4.0
+    ],
+    "radius": null,
+    "basis": "WIKI",
+    "src": "wiki"
+   },
+   "motion": {
+    "kind": "fixed",
+    "axis": null,
+    "anchor": [
+     0.0,
+     0.0,
+     0.0
+    ],
+    "limits": "",
+    "basis": "READ",
+    "src": "dump"
+   },
+   "mass": {
+    "v": 1.0,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "friction": {
+    "v": 0.7,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "elasticity": {
+    "v": 0.4,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "lin_damp": {
+    "v": 0.1,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "rot_damp": {
+    "v": 0.1,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "group": {
+    "v": "",
+    "basis": "READ",
+    "src": "dump"
+   },
+   "starts": {
+    "v": "fixed",
+    "basis": "READ",
+    "src": "dump"
+   }
+  },
+  {
+   "name": "Phys_Floors / Phys_FloorRails / Phys_FloorStopper",
+   "role_zh": "所有小节的路面、钢轨和 Stopper：载入时建成固定刚体，一直存在，不随小节变。",
+   "hull": {
+    "kind": "mesh",
+    "meshes": [],
+    "size": null,
+    "radius": null,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "motion": {
+    "kind": "fixed",
+    "axis": null,
+    "anchor": null,
+    "limits": "",
+    "basis": "MEASURED",
+    "src": "measurement",
+    "engine": "rebuilt"
+   },
+   "mass": {
+    "v": 1.0,
+    "basis": "READ",
+    "src": "table"
+   },
+   "friction": {
+    "v": 0.7,
+    "basis": "READ",
+    "src": "table"
+   },
+   "elasticity": {
+    "v": 0.3,
+    "basis": "READ",
+    "src": "table"
+   },
+   "lin_damp": {
+    "v": 0.1,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "rot_damp": {
+    "v": 0.1,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "group": {
+    "v": "Floor（路面、钢轨）；Ball（Stopper）",
+    "basis": "READ",
+    "src": "table"
+   },
+   "starts": {
+    "v": "fixed",
+    "basis": "READ",
+    "src": "dump"
+   }
+  }
+ ],
+ "forces": [
+  {
+   "name": "gravity",
+   "kind": "global",
+   "law_zh": "重力 (0, −20, 0)；时间因子 2：1 游戏秒 = 2 物理秒 = 132 个物理步。路线按 132 fps 行为帧评估，每帧 1 个物理步。暂停和第 1 关教程冻结时因子为 0，一步不走。",
+   "region_zh": "整个世界，所有刚体。",
+   "basis": "READ",
+   "src": "note"
+  },
+  {
+   "name": "balloon_lift",
+   "kind": "point_force",
+   "law_zh": "飞船醒的那一帧给 4 个气球和 4 根绳各加 0.3 的推力，桥断开时关掉。不作用于球。",
+   "region_zh": "飞船的气球和绳（碰撞关着）。",
+   "basis": "READ",
+   "src": "dump"
+  },
+  {
+   "name": "box_slide_push",
+   "kind": "point_force",
+   "law_zh": "通关那一帧给飞船的滑车加 0.2 的推力，带飞船沿模板 −X 移走。不作用于球，那时球已不能操控。",
+   "region_zh": "飞船的滑车（碰撞关着）。",
+   "basis": "READ",
+   "src": "dump"
+  }
+ ],
+ "numbers": {
+  "checkpoint_radius": {
+   "label_zh": "盘点：球心到大火焰的三维距离小于",
+   "v": 6.5,
+   "unit": "",
+   "basis": "READ",
+   "src": "dump"
+  },
+  "flame_height": {
+   "label_zh": "大火焰在盘点原点正上方的高度",
+   "v": 1.4948,
+   "unit": "",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  "next_checkpoint_frames": {
+   "label_zh": "盘点触发后下一个盘点生效（行为帧）",
+   "v": 12,
+   "unit": "行为帧",
+   "note_zh": "复用的盘点再晚 1–9 个行为帧",
+   "basis": "DERIVED",
+   "how_zh": "盘点链的连线延迟加小节管理器的帧数，66 Hz 工具帧上有实测，132 fps 上没有验证"
+  },
+  "dying_seconds": {
+   "label_zh": "判死到去刚体、重建小节",
+   "v": 1.0,
+   "unit": "游戏秒",
+   "basis": "READ",
+   "src": "dump"
+  },
+  "respawn_wait_seconds": {
+   "label_zh": "重生点上等到有刚体",
+   "v": 3.0,
+   "unit": "游戏秒",
+   "basis": "READ",
+   "src": "dump"
+  },
+  "death_to_control_frames": {
+   "label_zh": "判死到能操控",
+   "v": 539,
+   "unit": "132 fps 行为帧",
+   "note_zh": "约 4.08 游戏秒；SR 不计其中 538 个行为帧",
+   "basis": "MEASURED",
+   "src": "answer",
+   "engine": "retail"
+  },
+  "start_lives": {
+   "label_zh": "开局生命数",
+   "v": 3,
+   "unit": "",
+   "basis": "READ",
+   "src": "dump"
+  },
+  "death_height_wood": {
+   "label_zh": "木球判死：球心在死亡区顶面上方小于（竖直, 转着最高）",
+   "v": [
+    2.0,
+    3.46
+   ],
+   "unit": "",
+   "basis": "DERIVED",
+   "how_zh": "木球网格盒随球转后的竖直半高"
+  },
+  "death_height_stone": {
+   "label_zh": "石球判死：球心在死亡区顶面上方小于（竖直, 最高）",
+   "v": [
+    2.0,
+    3.458
+   ],
+   "unit": "",
+   "basis": "DERIVED",
+   "how_zh": "石球网格盒随球转后的竖直半高，没有实测"
+  },
+  "death_height_paper": {
+   "label_zh": "纸球判死：球心在死亡区顶面上方小于（竖直, 最高）",
+   "v": [
+    2.031,
+    3.525
+   ],
+   "unit": "",
+   "basis": "DERIVED",
+   "how_zh": "纸球网格盒随球转后的竖直半高，没有实测"
+  },
+  "transform_lock_frames": {
+   "label_zh": "变球：检测到能操控",
+   "v": 333,
+   "unit": "132 fps 行为帧",
+   "note_zh": "SR 照走",
+   "basis": "MEASURED",
+   "src": "answer",
+   "engine": "retail"
+  },
+  "airship_wake_radius": {
+   "label_zh": "飞船唤醒：球心到筐原点的水平距离小于",
+   "v": 70,
+   "unit": "",
+   "basis": "READ",
+   "src": "dump"
+  },
+  "finish_radius": {
+   "label_zh": "通关：球心到筐此刻原点的三维距离小于",
+   "v": 1,
+   "unit": "",
+   "basis": "READ",
+   "src": "dump"
+  },
+  "basket_sink": {
+   "label_zh": "空船醒后 2.3–2.8 游戏秒筐原点下沉",
+   "v": [
+    2.06,
+    2.8
+   ],
+   "unit": "",
+   "note_zh": "还在往下走，最终停在哪没有量",
+   "basis": "DERIVED",
+   "how_zh": "第 10 关空船八次，醒后筐的位置对摆放原点的差，重建引擎"
+  }
+ },
+ "machine": {
+  "states": [
+   {
+    "name": "loading",
+    "meaning_zh": "载入关卡：路面、钢轨、Stopper 建成固定刚体；各小节的摆放物登记进表、先激活一次再全部停用。球还没有出现。"
+   },
+   {
+    "name": "spawning",
+    "meaning_zh": "球放在当前重生点，没有刚体、不能操控，等 3.0 游戏秒。开局和每次死亡后都经过这里，SR 计时停着。重生后视角朝哪里没有读到。"
+   },
+   {
+    "name": "rolling",
+    "meaning_zh": "球有刚体、可以操控。只有当前小节 S 的摆放物存在，只放着下一个要点的盘点；最后一个小节没有盘点，飞船在。"
+   },
+   {
+    "name": "dying",
+    "meaning_zh": "判死后的 1.0 游戏秒：不能操控、计时停，球仍是刚体、受重力继续走；盘点、变球器、道具的检测照常，这时吃到的生命会被扣命覆盖。"
+   },
+   {
+    "name": "game_over",
+    "meaning_zh": "死亡时生命已是 0：不扣命、不重建小节、不重生，只能重开关卡或退出。"
+   },
+   {
+    "name": "paused",
+    "meaning_zh": "按 Esc 暂停：一个物理步也不跑，死亡、重生、变球的计时停住，机关脚本的计时照走。分数表和 SR 计时停。"
+   },
+   {
+    "name": "finished",
+    "meaning_zh": "通关：发出过关消息后第 3 个行为帧 SR 计时停，进入结算。第 12、13 关之后来接球的飞碟只是动画。"
+   },
+   {
+    "name": "transforming",
+    "meaning_zh": "变球：约 2.5 游戏秒没有刚体、不能操控，SR 计时和分数表照走；新球在变球器原点正上方 3、静止出现。"
+   }
+  ],
+  "initial": "loading",
+  "flags": [
+   {
+    "name": "checkpoint_armed",
+    "meaning_zh": "下一个盘点的 6.5 检测开着。盘点放好后先只开一个水平 70 的检测，它看到球才打开 6.5；点燃时关掉，不再打开。"
+   },
+   {
+    "name": "airship_awake",
+    "meaning_zh": "飞船醒着：球心进到筐原点水平 70 以内时置真，同时打开三维 1 的通关检测；醒后筐和木板不再冻结，开始下沉。"
+   }
+  ],
+  "transitions": [
+   {
+    "from": "loading",
+    "to": "spawning",
+    "trigger": "level_start",
+    "condition_zh": "进关或重开后开始一局。",
+    "effect_zh": "重力 (0, −20, 0)、时间因子 2；建第 1 小节、放第 1 个盘点；生命 3、分数 1000；球种第 1–12 关木球、第 13 关石球；球放到出生点。",
+    "time_zh": "第 1 关有教程，各段把时间因子设 0 冻住世界，冻多久看玩家按键",
+    "seconds": null,
+    "basis": "READ",
+    "src": "dump"
+   },
+   {
+    "from": "spawning",
+    "to": "rolling",
+    "trigger": "timer",
+    "condition_zh": "在重生点等满 3.0 游戏秒。",
+    "effect_zh": "按球种建新刚体，速度、角速度为 0，从重生点自由落下；下一帧发出操控和计时开始，再下一帧生效。一直按着的方向键重生后接着推（只测一次）。",
+    "time_zh": "132 fps 下 3000 毫秒计时第 397 次执行到点",
+    "seconds": 3.0,
+    "basis": "READ",
+    "src": "dump"
+   },
+   {
+    "from": "rolling",
+    "to": "rolling",
+    "trigger": "proximity",
+    "condition_zh": "下一个盘点的 6.5 已打开，球心离它的大火焰（盘点原点上方 1.4948）三维 < 6.5。只量玩家球，看上一帧末的位置；不必碰到火盆。",
+    "effect_zh": "重生点换成这个盘点的；拆当前小节、建下一小节；放下一个盘点。同一时刻只放下一个，所以盘点只能按顺序点，跳不过去。",
+    "time_zh": "下一个盘点第 12 个行为帧才生效，复用的盘点再晚 1–9 个；新小节的机关第 7 个行为帧建刚体",
+    "seconds": null,
+    "basis": "READ",
+    "src": "dump"
+   },
+   {
+    "from": "rolling",
+    "to": "dying",
+    "trigger": "contact",
+    "condition_zh": "球的有向盒和某个死亡区的盒子相交：竖直时球心在死亡区顶面上方小于 2（纸球 2.031）就死，转着的最高 3.46（石 3.458、纸 3.525）。N 个死亡区时每个每 N+1 个行为帧查一次。",
+    "effect_zh": "当帧关掉操控、分数表和 SR 计时；2 个行为帧后读生命。球仍是刚体，自由运动 1.0 游戏秒。",
+    "time_zh": "判死当帧",
+    "seconds": 0,
+    "basis": "READ",
+    "src": "dump"
+   },
+   {
+    "from": "dying",
+    "to": "spawning",
+    "trigger": "death",
+    "condition_zh": "判死 2 个行为帧后读到的生命大于 0，等满 1.0 游戏秒。",
+    "effect_zh": "去掉球的刚体，扣一条命，拆掉再建当前小节（机关复位）；重生点和球种不变；7 个行为帧后把球放到重生点。",
+    "time_zh": "132 fps 下判死后第 134 帧（零售实测）",
+    "seconds": null,
+    "basis": "READ",
+    "src": "dump"
+   },
+   {
+    "from": "dying",
+    "to": "game_over",
+    "trigger": "death",
+    "condition_zh": "判死 2 个行为帧后读到的生命不大于 0。开局 3 条命，死 3 次还能继续，第 4 次结束。",
+    "effect_zh": "不扣命、不重建、不重生；约 2 游戏秒后出死亡菜单。",
+    "time_zh": "没有实测",
+    "seconds": null,
+    "basis": "READ",
+    "src": "dump"
+   },
+   {
+    "from": "game_over",
+    "to": "loading",
+    "trigger": "script",
+    "condition_zh": "在死亡菜单里选重开。",
+    "effect_zh": "整关复位：吃掉的分数球回来，各小节放回初始，从第 1 小节和出生点重新开始。",
+    "time_zh": "约 0.5 游戏秒加几个行为帧，没有实测",
+    "seconds": null,
+    "basis": "READ",
+    "src": "dump"
+   },
+   {
+    "from": "paused",
+    "to": "loading",
+    "trigger": "script",
+    "condition_zh": "在暂停菜单里选重开。",
+    "effect_zh": "和死亡菜单的重开相同：整关复位，从出生点重来。",
+    "time_zh": "约 0.5 游戏秒加几个行为帧，没有实测",
+    "seconds": null,
+    "basis": "READ",
+    "src": "dump"
+   },
+   {
+    "from": "rolling",
+    "to": "paused",
+    "trigger": "script",
+    "condition_zh": "按 Esc。判死后按 Esc 无效（零售两次）；变球中、通关后能不能暂停没有数据。",
+    "effect_zh": "下一帧物理冻住、操控关掉，分数表和 SR 计时停。",
+    "time_zh": "按键那一帧物理照跑，下一帧冻结",
+    "seconds": null,
+    "basis": "MEASURED",
+    "src": "answer",
+    "engine": "retail"
+   },
+   {
+    "from": "paused",
+    "to": "rolling",
+    "trigger": "script",
+    "condition_zh": "回到游戏。",
+    "effect_zh": "物理和计时恢复；按着的方向键在继续后第 1 个物理步没有推力、第 2 个物理步恢复，每次暂停少推 1 步。机关的姿态和速度原样保留。",
+    "time_zh": "继续后第 2 个物理步恢复推力",
+    "seconds": null,
+    "basis": "MEASURED",
+    "src": "answer",
+    "engine": "retail"
+   },
+   {
+    "from": "rolling",
+    "to": "finished",
+    "trigger": "level_end",
+    "condition_zh": "最后一个小节：球心先进筐原点水平 70 以内唤醒飞船，再离筐此刻的原点三维 < 1。不看球种；落向筐底途中就算，不要求停稳。",
+    "effect_zh": "发过关消息，桥在筐端断开，飞船带着球移走。直接落进筐的球醒后还要晚 21–30 个 66 Hz 工具帧才通关，原因没查。",
+    "time_zh": "检测成立那一帧；SR 再走 3 个行为帧（132 fps 约 22.7 游戏毫秒）",
+    "seconds": null,
+    "basis": "DERIVED",
+    "how_zh": "两层邻近检测的参数和连线，加第 10 关木球 32 次通关实测归纳"
+   },
+   {
+    "from": "*",
+    "to": "*",
+    "trigger": "sector_enter",
+    "condition_zh": "小节管理器执行：开局、过盘点、死亡、重开。",
+    "effect_zh": "拆掉要停用的小节，隔 4 个行为帧按初始位置建要激活的小节；变球器只隐藏、不移动。机关内部的计数跨重建保留。",
+    "time_zh": "调用后第 1 个行为帧拆、第 5 个建箱子和道具，机关第 2、6 个",
+    "seconds": null,
+    "basis": "READ",
+    "src": "dump"
+   },
+   {
+    "from": "rolling",
+    "to": "transforming",
+    "trigger": "proximity",
+    "condition_zh": "离球最近的变球器三维距离 < 4.3，且种类和当前球不同。不看小节、不看可见性：隐藏的变球器也算。",
+    "effect_zh": "关掉操控，2 个行为帧后旧球去刚体，被拉向变球器上方。",
+    "time_zh": "132 fps 下第 332 个行为帧新刚体、第 333 个能操控（零售实测 7 次）",
+    "seconds": null,
+    "basis": "READ",
+    "src": "dump"
+   },
+   {
+    "from": "transforming",
+    "to": "rolling",
+    "trigger": "timer",
+    "condition_zh": "三段计时 1.35、1.0、0.15 游戏秒依次到点。",
+    "effect_zh": "球种换成变球器的种类；新球在变球器原点正上方 3、静止，朝向沿用旧球。",
+    "time_zh": "合计约 2.5 游戏秒",
+    "seconds": null,
+    "basis": "MEASURED",
+    "src": "measurement",
+    "engine": "rebuilt"
+   },
+   {
+    "from": "dying",
+    "to": "transforming",
+    "trigger": "proximity",
+    "condition_zh": "判死后的 1.0 游戏秒里，球落进异种变球器 4.3 以内。",
+    "effect_zh": "按脚本死亡和变球两条链同时走，交叉的后果没有实测；正常路线不会利用。",
+    "time_zh": "只在判死到第 134 帧之间（132 fps）",
+    "seconds": null,
+    "basis": "DERIVED",
+    "how_zh": "变球器的轮询在判死后不停，死亡链不停用它"
+   }
+  ],
+  "reset": {
+   "on_death_zh": "只重建当前小节：箱子、道具纸球、T 型板、软木桥、沙袋、单摆、生命球实测会复原，其余机关按拆建规则推；吃掉的分数球不回来。球在当前重生点静止重生，球种不变，生命减 1。只有死亡能复位机关（项目主人的回答）。离重生点 50 以内的机关在等待中会醒一次再冻结。",
+   "on_sector_change_zh": "点燃盘点后重生点换成新的，旧小节拆掉、新小节建立（机关建立的行为帧没有实测）。别的小节只有路面和钢轨，碰不到那里的机关、箱子、道具；变球器例外：停在最近一次布置它的那一行，隐藏的也照样变球。飞船只在最后一个小节。",
+   "basis": "DERIVED",
+   "how_zh": "死亡时实测复原的几样，加小节拆建的通则推其余；变球器按布置顺序的规则，有实测"
+  }
+ },
+ "by_ball": {
+  "wood": {
+   "verdict": "depends",
+   "can_zh": "第 1–12 关的出生球种。盘点、飞船的检测只量球心、不看球种，木球能点盘点、能通关（第 10 关实测）。判死：竖直时球心在死亡区顶面上方小于 2，转着最高 3.46（实测到 2.59）。坐进醒着的筐后筐再沉多少没有量。",
+   "basis": "DERIVED",
+   "how_zh": "检测只量球心、脚本不读球种；判死高度按木球网格盒随球转推，竖直的 2 有实测"
+  },
+  "stone": {
+   "verdict": "depends",
+   "can_zh": "第 13 关的出生球种。能点盘点、能通关、能登船；压不断木板桥（关节没有断裂上限），但醒着的筐和桥会沉，石球压着沉多少没有量。判死：竖直 2、上限 3.458，按网格盒推，没有实测。死后重生仍是石球。",
+   "basis": "DERIVED",
+   "how_zh": "检测不看球种，加关节没有断裂上限的规则；判死高度按石球网格盒推"
+  },
+  "paper": {
+   "verdict": "depends",
+   "can_zh": "能点盘点、能通关。纸球是凸包不是球：坐在筐底时球心比筐原点高 0.06–0.28，停在中间一定 < 1；挤在坡沿和侧壁的角上上界约 1.16。判死：竖直 2.031、上限 3.525，按网格盒推，没有实测。",
+   "basis": "DERIVED",
+   "how_zh": "纸球网格的支撑距离加筐的碰撞盒算坐姿；判死高度按纸球网格盒推"
+  }
+ },
+ "route_effects": [
+  {
+   "kind": "one_way",
+   "effect_zh": "盘点只能按顺序点：一条路线必须依次让球心经过每个盘点大火焰 6.5 以内（不必碰到，火盆没有碰撞）。下一个盘点触发后 12 个行为帧才生效，挨得很近时再晚 1–9 个行为帧，估触发时刻要留这几帧。",
+   "basis": "DERIVED",
+   "how_zh": "只放下一个盘点的规则，加盘点链的帧数实测"
+  },
+  {
+   "kind": "opens",
+   "effect_zh": "机关、箱子、道具在不在场看当前小节，不看球在哪：提前跑进后面或回头只有路面和钢轨，借后面小节机关的捷径走不通，别的小节挡路的机关也不挡；变球器停在最近一次布置它的那一行，隐藏的也变球。点燃盘点 2 个行为帧后托着球的旧小节部件就消失，新小节照原位建、不避让球。",
+   "basis": "DERIVED",
+   "how_zh": "小节管理器的拆建规则和帧序"
+  },
+  {
+   "kind": "hazard",
+   "effect_zh": "死亡区整个长方体都是禁区，比的是球的有向盒：不转的球按 2 留余量，转着的按上限（木 3.46、石 3.458、纸 3.525）；原版测到 2.2–3.0（4 个样本）。13 关 53 个死亡区都与世界轴对齐，带缩放的计入缩放。",
+   "basis": "DERIVED",
+   "how_zh": "两个有向盒相交的判法加三种球的网格盒"
+  },
+  {
+   "kind": "timing",
+   "effect_zh": "死亡在 SR 里不花计时、HS 里不扣分：判死那一帧停，新刚体后第 2 个行为帧才走，132 fps 下 538 个行为帧不计。所以故意死一次的代价是从重生点把这一小节重走一遍。死亡不会把球送到更前面；生命 3 条。",
+   "basis": "MEASURED",
+   "src": "record",
+   "engine": "retail"
+  },
+  {
+   "kind": "timing",
+   "effect_zh": "只有死亡能复位机关：机关进了死局（升降机被卡住、板倒错方向），唯一出路是死一次重建当前小节，代价一条命、回到重生点。路线要写明先操作后经过的次序、失手时的后备和代价；死亡复位还会让当前小节的生命球回来。",
+   "basis": "DERIVED",
+   "how_zh": "项目主人的回答加小节拆建的通则"
+  },
+  {
+   "kind": "none",
+   "effect_zh": "每个小节的起点是确定的：球放在重生点（比盘点标记高 2.6–5.3），等 3.0 游戏秒，新刚体静止、自由落下，球种是死前的。重生后的视角朝向没有读到，第一次按键往哪推取决于它。",
+   "basis": "READ",
+   "src": "dump"
+  },
+  {
+   "kind": "carries",
+   "effect_zh": "终点是飞船的筐，只在最后一个小节：木板桥 → 门槛 → 约 18° 斜板 → 0.82 台阶 → 筐底，只从模板 +x 开口。醒后不锁死：第 10 关空船醒后 2.3–2.8 游戏秒筐低 2.06–2.80、桥中间低约 3.5，还在动；球到桥上时的姿态没量，大概是先下后上的坡；原版 DLL 上筐上下晃约 1.4–1.7、周期约 1.5 游戏秒。",
+   "basis": "DERIVED",
+   "how_zh": "筐和木板的碰撞形状尺寸，加重建引擎和原版 DLL 记录里醒后的位置"
+  },
+  {
+   "kind": "none",
+   "effect_zh": "第 1 关路的尽头正对木板桥的外端，缝 0.35、高度和宽度都对上；第 12、13 关桥外端接钢轨，沿钢轨上桥。13 关飞船都只绕竖直轴转 90° 的倍数。",
+   "basis": "DERIVED",
+   "how_zh": "关卡文件里飞船的矩阵和路面的边界对比"
+  },
+  {
+   "kind": "blocks",
+   "effect_zh": "推进筐、停在筐底的道具球会挡住玩家球，关卡无法通关（几何推出，能不能撞出去没有实测）；带着道具球到终点的走法要避免。道具球不触发盘点、飞船和变球器，也不受死亡区和风扇影响。",
+   "basis": "DERIVED",
+   "how_zh": "两个半径约 2 的球心不能同时在筐原点 1 以内；检测一端只认玩家球"
+  },
+  {
+   "kind": "none",
+   "effect_zh": "第 12、13 关通关后飞碟来接球，在过关消息之后，不决定能否通关、不看球种：这两关不必以木球到终点。",
+   "basis": "DERIVED",
+   "how_zh": "飞碟分支接在过关消息之后，通关判定不读球种"
+  },
+  {
+   "kind": "none",
+   "effect_zh": "下方没有死亡区的地方球会一直落下而不死：搜索要自己设“低于周围所有表面就放弃”的界限，这不是游戏规则。",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  {
+   "kind": "timing",
+   "effect_zh": "HS：开局 1000 分，分数表走着时每 500 游戏毫秒扣 1 分；通关分 = 分数 + 生命 × 200 + 100 × 关号。绕路吃分数球（+100 和 6 个各 +20）或生命球（+1 命）要和多花的时间比；跟着的小球在下一个盘点点燃时作废。",
+   "basis": "MEASURED",
+   "src": "record",
+   "engine": "retail"
+  },
+  {
+   "kind": "timing",
+   "effect_zh": "HS：暂停时分数不减，分数球的加分照加。判死后、通关后暂停再继续会不会让表提前走没有实测，不当技巧；判死后零售按 Esc 无效。",
+   "basis": "DERIVED",
+   "how_zh": "分数表收暂停、继续消息停走的规则；Esc 的开关只有判死后的实测"
+  }
+ ],
+ "model": [
+  {
+   "feature": "state_only",
+   "need_zh": "关卡状态：当前小节 S、当前重生点、生命数、已吃的分数球。过盘点 S→S+1、重生点换新；死亡只重建第 S 小节。",
+   "minimal_zh": "一个整数 S 加每个小节有哪些摆放物的表；推演时只把第 S 小节的摆放物放进世界。"
+  },
+  {
+   "feature": "trigger",
+   "need_zh": "盘点触发：球心到当前盘点大火焰的三维距离小于 6.5。",
+   "minimal_zh": "以盘点原点正上方 1.4948 为心、半径 6.5 的球形触发区，量球心；盘点按编号排。触发后 12–21 个行为帧内下一个盘点不可点。火盆不建碰撞。现在的代码取盘点原点附近的路面点，要改。"
+  },
+  {
+   "feature": "trigger",
+   "need_zh": "死亡：球的有向盒和死亡区的盒子相交，每个盒子每 N+1 个行为帧测一次，看上一帧末的位置。",
+   "minimal_zh": "把每个死亡区向上扩判死高度（不转的球 2，不跟踪朝向时用上限）、四周扩网格盒的半宽，再量球心。现在的物理核要球心进盒才判死，比规则晚。"
+  },
+  {
+   "feature": "state_only",
+   "need_zh": "重生：放在重生点、等 3.0 游戏秒、速度 0、球种不变。",
+   "minimal_zh": "每个小节的起点 = 重生点位置、速度 0、当前球种；SR 不计判死后的 538 个行为帧。重生后的视角朝向没有读到。"
+  },
+  {
+   "feature": "shape_only",
+   "need_zh": "飞船的碰撞：筐的六个凸包加八块木板，按占位物体的矩阵放进最后一个小节；13 关都只绕竖直轴转 90° 的倍数。",
+   "minimal_zh": "不能按摆放姿态当固定凸包：按醒后实测的下垂姿态放（筐低 2.06–2.80、朝桥 0.59–0.83；桥中间低约 3.5），再按球种加容错。通关量到筐此刻原点，进到筐底仍然通关。"
+  },
+  {
+   "feature": "hinge",
+   "need_zh": "筐和木板是不固定、开始冻结的刚体（筐 4、木板 0.5），由滑轨、弹簧和九个铰链挂着；和路面、钢轨互相穿过，和玩家球、道具球相碰。",
+   "minimal_zh": "能不能登船用醒后下垂姿态加容错就够；要回答球压上去沉多少、石球冲进去会怎样，才把筐、弹簧、滑轨和铰链做成带关节的刚体。通关后不用模拟。"
+  },
+  {
+   "feature": "none",
+   "need_zh": "世界原点的固定方块碰撞关着，什么都不碰；现在的地图导出把它当固定方块放进了碰撞网格。",
+   "minimal_zh": "从碰撞网格里去掉它（第 4 关粗层计划的起点踩在它上面）。"
+  },
+  {
+   "feature": "state_only",
+   "need_zh": "帧率和各段时长：路线按 132 fps 行为帧评估，每帧 1 个物理步，物理核每步 1/66 物理秒。",
+   "minimal_zh": "以物理步为单位：判死到能操控 539 步、SR 不计 538 步；变球 333 步不能操控、SR 照走；通关后 SR 再走 3 步；暂停每次少推 1 步。"
+  },
+  {
+   "feature": "state_only",
+   "need_zh": "机关时钟的零点：按时间走的机关从哪一帧开始走，重生后已经走了多久。",
+   "minimal_zh": "过盘点：新小节机关在触发后第 7 帧起算；死亡：机关在判死后第 140 帧重建，能操控时已走 399 个物理步（132 fps，约 3.02 游戏秒），±1 帧。带计数的机关跨死亡保留计数。"
+  }
+ ],
+ "unknowns": [
+  {
+   "kind": "measure",
+   "question_zh": "飞船醒后最终停在哪；球滚过桥、坐进筐时筐和桥再沉多少（尤其石球、高速冲进）；纸球在坡沿角上是否 < 1；道具球能否被撞出筐。",
+   "matters_zh": "登船的几何和要多快；石球压得深时进筐方式不同。",
+   "how_zh": "第 10 关激活最后一个小节，三种球分别放进筐、放到桥中间、按住方向键以 5、10、15 的速度滚过桥，逐帧读筐和木板的位置。"
+  },
+  {
+   "kind": "tool",
+   "question_zh": "飞船各关节的目标物体（滑轨、弹簧、铰链）现在是按排除法对上的；实测筐朝桥横挪而滑车不动，和竖直滑轨的读法不合。",
+   "matters_zh": "对应错了，托着筐的约束就不同，下沉的原因也解释不了。",
+   "how_zh": "让工具打印积木的目标参数，再读飞船脚本里三个滑轨、弹簧积木和九个铰链积木的目标。"
+  },
+  {
+   "kind": "tool",
+   "question_zh": "几个开关和格子由谁写：Esc 能不能用的开关、教程冻结的开关、调试通关键、重开时复原的对象。",
+   "matters_zh": "都不改路线的规则；Esc 的开关决定变球中、通关后能不能暂停。",
+   "how_zh": "让工具打印积木的目标和参数连线，再读相关积木。"
+  },
+  {
+   "kind": "measure",
+   "question_zh": "变球中、通关后按 Esc 能不能暂停；能的话，计时停着时暂停再继续会不会让计时和推力提前开始。",
+   "matters_zh": "路线评估里会不会出现这个计时漏洞（不当技巧）。",
+   "how_zh": "第 2 关落到变球器上方，变球后第 10、150 个 66 Hz 工具帧按 Esc 再继续，看暂停和计时；通关后同样按 Esc。"
+  },
+  {
+   "kind": "measure",
+   "question_zh": "暂停中一直按住、松开、新按下方向键或转视角，继续后推力各怎样。",
+   "matters_zh": "只在路线要用暂停（例如等机关相位）时才要知道。",
+   "how_zh": "第 2 关平地按住前进键，暂停中分四种按键情形再继续，逐帧读继续前后的球速。"
+  },
+  {
+   "kind": "measure",
+   "question_zh": "暂停时跟着的分数小球会不会继续飞、到了是否收进去。",
+   "matters_zh": "影响 HS 里暂停收小球的技巧。",
+   "how_zh": "第 2 关吃到分数球后下一帧暂停 2、5 游戏秒再继续，读 6 个小球的位置和分数。"
+  },
+  {
+   "kind": "measure",
+   "question_zh": "判死后 1 秒里落进异种变球器、滚过盘点、变球中吃道具，各算不算数，重生的是哪种球、重生点换不换。",
+   "matters_zh": "正常路线不会主动利用；决定这几种交叉的后果。",
+   "how_zh": "让球落进死亡区判死，判死后 5–60 个 66 Hz 工具帧把它放到异种变球器上方或盘点旁，读去刚体、新刚体、球种和小节。"
+  },
+  {
+   "kind": "measure",
+   "question_zh": "重生和开局时视角朝哪里：保持死前的朝向，还是按重生点复位。",
+   "matters_zh": "决定从重生点出发第一次按键往世界哪个方向推。",
+   "how_zh": "第 2 关开局先转一次视角并确认推力方向变了，然后死一次，重生后再按前进键读速度方向。"
+  },
+  {
+   "kind": "measure",
+   "question_zh": "过关消息由谁发、和通关检测差几帧；开局第一分为什么在球出现之前就扣；直接落进筐为什么醒后还要 21–30 个 66 Hz 工具帧才通关。",
+   "matters_zh": "前两项只差 HS 一两分；落筐的路线可能要多等约 0.3–0.45 游戏秒。",
+   "how_zh": "跟踪通关脚本的消息帧；直接落筐时逐帧读飞船醒后球心到筐原点的三维距离，看是不是筐下沉让它先超过 1。"
+  },
+  {
+   "kind": "host2002",
+   "question_zh": "要原版环境：132 fps 和 2002 DLL 上：下一个盘点生效的 12 个行为帧、复用盘点的节拍；醒着的飞船下沉多少；通关后分数表停的帧。",
+   "matters_zh": "前几项只差几个行为帧；下沉关系到登船几何能否照重建引擎的读数。",
+   "how_zh": "要 132 fps 的环境或 2002 DLL；之前照搬 12 帧，登船处的下沉按重建引擎读数加 ±0.4 的容错。"
+  }
+ ]
+}

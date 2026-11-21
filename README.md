@@ -42,6 +42,13 @@ python -m ballistics coarse --mesh data/Level_01-mesh.npz --map data/Level_01-ma
 python -m ballistics route --map data/Level_01-map.json --results data --level 1 --out data/routes
 ```
 
+查球、机关和关卡规则的目录（只是数据，求解器还不读它）：
+
+```bash
+python -m ballistics things              # 一览
+python -m ballistics things P_Modul_37   # 一条
+```
+
 可选：拿一条录下来的引擎轨迹，量物理核和引擎差多少：
 
 ```bash
@@ -76,6 +83,7 @@ python -m ballistics calibrate --mesh data/Level_01-mesh.npz --run data/runs/<�
 | [docs/solver.md](docs/solver.md) | 求解器怎么工作，有哪些界限和不足 |
 | [docs/level-1.md](docs/level-1.md) | 第 1 关的结果 |
 | [docs/files.md](docs/files.md) | 输入的地图文件、导出的文件和路线文件的格式 |
+| [docs/things.md](docs/things.md) | 目录：三种球、每种机关和关卡规则各一条（刚体和数值、状态机、三种球的结论、对路线的影响），每个事实标了依据 |
 | [docs/design.md](docs/design.md) | 思路：每个决定的理由、放弃过的做法、还没解决的问题 |
 
 关于游戏本身（和这个工具无关的事实，每条标了依据）：

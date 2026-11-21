@@ -1,0 +1,602 @@
+{
+ "id": "P_Extra",
+ "name_zh": "分数球和生命球（P_Extra_Point、P_Extra_Life）",
+ "category": "pickup",
+ "types": [
+  "P_Extra_Life",
+  "P_Extra_Point"
+ ],
+ "summary_zh": "分数球和生命球是道具：没有刚体，不挡球，路线直接穿过。三种球拾取条件相同，只看球心位置、不看球种；道具球吃不到生命球，分数球按推断也吃不到。分数球：球心到它的中心三维小于 3 时同一帧 +100，随后 6 个小球追着球飞，每追上一个 +20，共 220；没追完就过盘点或死亡，剩下的作废，进飞船后照样到达。生命球：球先进它水平 60 以内让它显示，再到它中心三维小于 4.5 时被吃，下一帧生命 +1，没有上限。只在自己的小节是当前小节时生效。吃过的分数球死亡后不回来，生命球死亡后回来。分数球只影响 HS；生命球每条结算 200 分，也决定靠死亡复位机关还能死几次。",
+ "uses": [
+  "proximity_wake",
+  "sector_rebuild",
+  "death_timing",
+  "score_timer",
+  "transform_timing",
+  "finish"
+ ],
+ "bodies": [
+  {
+   "name": "P_Extra_Life_Sphere",
+   "role_zh": "生命球看得见的球体，半径 2，跳动只是外观；拾取按它的摆放点算，不按球体。没有刚体。",
+   "hull": {
+    "kind": "none",
+    "meshes": [],
+    "size": [
+     4.0,
+     4.0,
+     4.0
+    ],
+    "radius": null,
+    "basis": "DERIVED",
+    "how_zh": "由读到和测到的事实推出"
+   },
+   "motion": {
+    "kind": "scripted",
+    "axis": null,
+    "anchor": null,
+    "limits": null,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "mass": {
+    "v": null,
+    "basis": "DERIVED",
+    "how_zh": "由读到和测到的事实推出"
+   },
+   "friction": {
+    "v": null,
+    "basis": "DERIVED",
+    "how_zh": "由读到和测到的事实推出"
+   },
+   "elasticity": {
+    "v": null,
+    "basis": "DERIVED",
+    "how_zh": "由读到和测到的事实推出"
+   },
+   "lin_damp": {
+    "v": null,
+    "basis": "DERIVED",
+    "how_zh": "由读到和测到的事实推出"
+   },
+   "rot_damp": {
+    "v": null,
+    "basis": "DERIVED",
+    "how_zh": "由读到和测到的事实推出"
+   },
+   "group": {
+    "v": null,
+    "basis": "DERIVED",
+    "how_zh": "由读到和测到的事实推出"
+   },
+   "starts": {
+    "v": null,
+    "basis": "DERIVED",
+    "how_zh": "由读到和测到的事实推出"
+   }
+  },
+  {
+   "name": "P_Extra_Point_Ball0",
+   "role_zh": "分数球中心的内核，在摆放点上；6 个追球的小球与它同类。都是贴图，没有刚体。",
+   "hull": {
+    "kind": "none",
+    "meshes": [],
+    "size": null,
+    "radius": null,
+    "basis": "DERIVED",
+    "how_zh": "…"
+   },
+   "motion": {
+    "kind": "scripted",
+    "axis": null,
+    "anchor": null,
+    "limits": null,
+    "basis": "MEASURED",
+    "src": "record",
+    "engine": "retail"
+   },
+   "mass": {
+    "v": null,
+    "basis": "DERIVED",
+    "how_zh": "由读到和测到的事实推出"
+   },
+   "friction": {
+    "v": null,
+    "basis": "DERIVED",
+    "how_zh": "由读到和测到的事实推出"
+   },
+   "elasticity": {
+    "v": null,
+    "basis": "DERIVED",
+    "how_zh": "由读到和测到的事实推出"
+   },
+   "lin_damp": {
+    "v": null,
+    "basis": "DERIVED",
+    "how_zh": "由读到和测到的事实推出"
+   },
+   "rot_damp": {
+    "v": null,
+    "basis": "DERIVED",
+    "how_zh": "由读到和测到的事实推出"
+   },
+   "group": {
+    "v": null,
+    "basis": "DERIVED",
+    "how_zh": "由读到和测到的事实推出"
+   },
+   "starts": {
+    "v": null,
+    "basis": "DERIVED",
+    "how_zh": "由读到和测到的事实推出"
+   }
+  }
+ ],
+ "forces": [],
+ "numbers": {
+  "point_pickup_radius": {
+   "label_zh": "分数球：球心到内核三维小于",
+   "v": 3,
+   "unit": "",
+   "basis": "MEASURED",
+   "src": "record",
+   "engine": "original"
+  },
+  "life_pickup_radius": {
+   "label_zh": "生命球：球心到摆放点三维小于",
+   "v": 4.5,
+   "unit": "",
+   "basis": "MEASURED",
+   "src": "record",
+   "engine": "original"
+  },
+  "life_show_radius": {
+   "label_zh": "生命球显示、拾取打开的距离（世界 X、Y）",
+   "v": 60,
+   "unit": "",
+   "basis": "READ",
+   "src": "dump"
+  },
+  "point_switch_radius": {
+   "label_zh": "分数球检测打开的三维距离",
+   "v": 80,
+   "unit": "",
+   "basis": "READ",
+   "src": "dump"
+  },
+  "point_score": {
+   "label_zh": "分数球的分：内核、每个小球、合计",
+   "v": {
+    "内核": 100,
+    "每个小球": 20,
+    "合计": 220
+   },
+   "unit": "分",
+   "basis": "MEASURED",
+   "src": "record",
+   "engine": "retail"
+  },
+  "followers_rest_seconds": {
+   "label_zh": "球停着时小球陆续到达",
+   "v": [
+    1.7,
+    2.1
+   ],
+   "unit": "游戏秒",
+   "note_zh": "第一个约 1.7，最后一个约 2.1",
+   "basis": "DERIVED",
+   "how_zh": "两处实测，按小球随时间推进换算；若按帧推进，132 fps 下约减半，没定"
+  },
+  "followers_hs03_seconds": {
+   "label_zh": "HS03 一个样本：小球到齐",
+   "v": [
+    4.94,
+    5.09
+   ],
+   "unit": "游戏秒",
+   "note_zh": "只一个样本，球速和路线没记",
+   "basis": "MEASURED",
+   "src": "record",
+   "engine": "retail"
+  },
+  "pause_collect_seconds": {
+   "label_zh": "暂停中小球收齐的实际时间",
+   "v": [
+    0.2,
+    0.81
+   ],
+   "unit": "实际秒",
+   "note_zh": "看小球离球多远；39 次里 31 次收完",
+   "basis": "MEASURED",
+   "src": "record",
+   "engine": "original"
+  },
+  "points_decay_ms": {
+   "label_zh": "Points 每过这么多游戏内时间减 1",
+   "v": 500,
+   "unit": "毫秒",
+   "basis": "READ",
+   "src": "dump"
+  },
+  "life_bonus": {
+   "label_zh": "通关时每条生命的分",
+   "v": 200,
+   "unit": "分",
+   "basis": "READ",
+   "src": "dump"
+  },
+  "detour_break_even_seconds": {
+   "label_zh": "绕路去吃最多值得多少游戏秒",
+   "v": {
+    "分数球": 110,
+    "生命球": 100
+   },
+   "unit": "游戏秒",
+   "basis": "DERIVED",
+   "how_zh": "220 分、200 分除以每秒 2 分"
+  },
+  "life_miss_speed": {
+   "label_zh": "132 fps 下快到可能漏吃生命球的球速",
+   "v": 150,
+   "unit": "每物理秒",
+   "basis": "DERIVED",
+   "how_zh": "按检测节拍逐帧模拟直线穿过；实际球速远低于此"
+  },
+  "l4_trafo_item_distance": {
+   "label_zh": "第 4 关第 2 小节道具到变球器原点",
+   "v": [
+    4.07,
+    4.29
+   ],
+   "unit": "",
+   "basis": "DERIVED",
+   "how_zh": "按摆放行算距离"
+  }
+ },
+ "machine": {
+  "states": [
+   {
+    "name": "absent",
+    "meaning_zh": "所在小节不是当前小节：脚本不跑，吃不到。生命球隐藏；分数球停在世界原点。提前跑进后面的小节或回到前面的小节都碰不到它。"
+   },
+   {
+    "name": "waiting",
+    "meaning_zh": "所在小节是当前小节、还没被吃：在摆放位置等球靠近。没有刚体，不挡球。"
+   },
+   {
+    "name": "followers_out",
+    "meaning_zh": "只有分数球：内核已吃（+100），6 个小球还在追玩家球，追上一个 +20。追逐不受球离多远限制，只会被盘点、死亡打断。"
+   },
+   {
+    "name": "point_spent",
+    "meaning_zh": "只有分数球：这一行已吃过，小球都已到达或作废。死亡重建小节时这一行被跳过，直到重开关卡。"
+   },
+   {
+    "name": "life_taken",
+    "meaning_zh": "只有生命球：已加命并隐藏。死亡重建小节时回到 waiting。"
+   }
+  ],
+  "initial": "absent",
+  "flags": [
+   {
+    "name": "life_shown",
+    "meaning_zh": "只有生命球：显示着，4.5 的拾取检测开着。球进它 60 以内（只看世界 X、Y，不看 Z）时为真，离开 60 时为假；为假时球再近也吃不到。"
+   }
+  ],
+  "transitions": [
+   {
+    "from": "absent",
+    "to": "waiting",
+    "trigger": "sector_enter",
+    "condition_zh": "小节管理器激活它所在的小节（开局、过上一个盘点、死亡后重建当前小节），而且这一行没被吃过；吃过的分数球行被跳过。",
+    "effect_zh": "放到摆放位置，脚本启动。生命球先不显示（life_shown 为假），分数球的检测随后打开。",
+    "time_zh": "小节建好后第 1–2 个行为帧打开检测",
+    "seconds": null,
+    "basis": "READ",
+    "src": "measurement"
+   },
+   {
+    "from": "waiting",
+    "to": "waiting",
+    "trigger": "proximity",
+    "condition_zh": "生命球：球心进入或离开它 60 以内，只看世界 X、Y 两轴，不看 Z，不随它的朝向转。",
+    "effect_zh": "进入：显示、打开 4.5 的拾取（life_shown 为真）。离开：同一帧隐藏、关拾取。离开再回来仍能吃。",
+    "time_zh": "60 以内每 5 个行为帧查一次，70 以外每 20 个",
+    "seconds": null,
+    "basis": "READ",
+    "src": "dump"
+   },
+   {
+    "from": "waiting",
+    "to": "followers_out",
+    "trigger": "proximity",
+    "condition_zh": "分数球：球进它 80 以内后，球心到内核（摆放点）三维严格小于 3；按上一帧末的位置判，近处每帧查。原版记录 193 次吃到时距离 2.416–3.006。",
+    "effect_zh": "同一帧 Points +100、内核消失、这一行记为已吃（死亡后不再出现），6 个小球开始追球。",
+    "time_zh": "即时，检测那一帧",
+    "seconds": 0,
+    "basis": "MEASURED",
+    "src": "record",
+    "engine": "original"
+   },
+   {
+    "from": "followers_out",
+    "to": "point_spent",
+    "trigger": "script",
+    "condition_zh": "6 个小球一个个追上玩家球。",
+    "effect_zh": "每追上一个，那一帧 +20；6 个都到共 +120，连内核合计 220。",
+    "time_zh": "球停着时 1.7–2.1 游戏秒；球在动时原版记录 132 fps 三次 3.96–7.92 游戏秒",
+    "seconds": null,
+    "basis": "DERIVED",
+    "how_zh": "分数照零售录像；球停着的时长是重建引擎两处实测，球在动的时长是原版记录三次，归纳成一句"
+   },
+   {
+    "from": "followers_out",
+    "to": "point_spent",
+    "trigger": "sector_leave",
+    "condition_zh": "小球还没追完时球过了下一个盘点。",
+    "effect_zh": "还在追的小球全部消失，不计分。",
+    "time_zh": "盘点后约 2–3 个行为帧",
+    "seconds": null,
+    "basis": "MEASURED",
+    "src": "record",
+    "engine": "retail"
+   },
+   {
+    "from": "followers_out",
+    "to": "point_spent",
+    "trigger": "death",
+    "condition_zh": "小球还没追完时球死亡。",
+    "effect_zh": "判死到拆小节之间小球照常追、追上照常 +20；拆当前小节时剩下的消失、不计分。这一行不再出现。",
+    "time_zh": "132 fps 下约判死后第 136 帧拆小节",
+    "seconds": null,
+    "basis": "DERIVED",
+    "how_zh": "死亡拆小节走的是和过盘点相同的停用分支，时刻按死亡时序推"
+   },
+   {
+    "from": "followers_out",
+    "to": "point_spent",
+    "trigger": "level_end",
+    "condition_zh": "小球还没追完时球进了飞船。",
+    "effect_zh": "仍在追的小球之后陆续到达并计分。",
+    "time_zh": "",
+    "seconds": null,
+    "basis": "MEASURED",
+    "src": "record",
+    "engine": "retail"
+   },
+   {
+    "from": "waiting",
+    "to": "life_taken",
+    "trigger": "proximity",
+    "condition_zh": "生命球：life_shown 为真，球心到它的摆放点三维严格小于 4.5（不看跳动的球体），按上一帧末的位置，6 以内每个行为帧查。原版记录 43 次吃到时 4.194–4.499。",
+    "effect_zh": "那一帧隐藏、关拾取；下一个行为帧生命 +1，没有上限。",
+    "time_zh": "检测那一帧；+1 晚 1 个行为帧",
+    "seconds": 0,
+    "basis": "MEASURED",
+    "src": "record",
+    "engine": "original"
+   },
+   {
+    "from": "waiting",
+    "to": "waiting",
+    "trigger": "death",
+    "condition_zh": "没吃的分数球、没吃的生命球所在小节里死亡，还有生命。",
+    "effect_zh": "按摆放重新放好，脚本重启；生命球回到未显示。",
+    "time_zh": "死亡重建小节时，拆和建之间 4 个行为帧",
+    "seconds": null,
+    "basis": "READ",
+    "src": "measurement"
+   },
+   {
+    "from": "life_taken",
+    "to": "waiting",
+    "trigger": "death",
+    "condition_zh": "生命球：在它的小节里吃了以后死亡，还有生命。",
+    "effect_zh": "重建当前小节时生命球再次出现，可以再吃。只测过一次（第 7 关）。",
+    "time_zh": "死亡重建小节时",
+    "seconds": null,
+    "basis": "MEASURED",
+    "src": "measurement",
+    "engine": "rebuilt"
+   },
+   {
+    "from": "point_spent",
+    "to": "point_spent",
+    "trigger": "death",
+    "condition_zh": "吃过的分数球所在小节里死亡，还有生命。",
+    "effect_zh": "这一行被跳过，不再放置，直到重开关卡。",
+    "time_zh": "死亡重建小节时",
+    "seconds": null,
+    "basis": "READ",
+    "src": "measurement"
+   },
+   {
+    "from": "waiting",
+    "to": "absent",
+    "trigger": "sector_leave",
+    "condition_zh": "过盘点，所在小节被停用。",
+    "effect_zh": "生命球隐藏；分数球脚本停用、回到世界原点。之后这个小节不会再激活（除非重开关卡）。",
+    "time_zh": "过盘点时",
+    "seconds": null,
+    "basis": "READ",
+    "src": "measurement"
+   },
+   {
+    "from": "life_taken",
+    "to": "absent",
+    "trigger": "sector_leave",
+    "condition_zh": "吃过的生命球所在小节被停用（过盘点）。",
+    "effect_zh": "生命球隐藏，以后不再出现（除非重开关卡）。",
+    "time_zh": "过盘点时",
+    "seconds": null,
+    "basis": "READ",
+    "src": "measurement"
+   },
+   {
+    "from": "*",
+    "to": "absent",
+    "trigger": "death",
+    "condition_zh": "死亡时生命数为 0（扣命之前测）。",
+    "effect_zh": "直接 Game Over，不扣命、不重建小节，只能重开关卡。",
+    "time_zh": "132 fps 下判死后第 2–3 帧",
+    "seconds": null,
+    "basis": "READ",
+    "src": "dump"
+   },
+   {
+    "from": "*",
+    "to": "absent",
+    "trigger": "level_start",
+    "condition_zh": "重开关卡或 Game Over 之后。",
+    "effect_zh": "每一行恢复为没吃过，所有分数球回来；从第 1 小节重新开始，各行在自己的小节激活时出现。",
+    "time_zh": "重开时",
+    "seconds": null,
+    "basis": "READ",
+    "src": "measurement"
+   }
+  ],
+  "reset": {
+   "on_death_zh": "只重建当前小节：没吃的道具、吃过的生命球重新放好；吃过的分数球不回来。生命数为 n 时还能死 n 次；判死后约 1 游戏秒内吃到的生命 +1 被扣命覆盖，不算。死亡等待不扣 Points。",
+   "on_sector_change_zh": "过盘点时旧小节的道具停用，新小节里没吃过的放出来；还在追的分数小球消失、不计分。复用到后面小节的同一个分数球实体在那里照样出现。",
+   "basis": "READ",
+   "src": "measurement"
+  }
+ },
+ "by_ball": {
+  "wood": {
+   "verdict": "passes",
+   "can_zh": "直接穿过并吃到：没有刚体，不挡、不托、不弹开。条件与球种无关（分数球 3、生命球 4.5）。第 4 关第 2 小节两个紧挨木变的分数球木球直接吃；另两个道具旁会先被变成别的球。",
+   "basis": "DERIVED",
+   "how_zh": "检测只读球心位置、不读球种，三种球的拾取条件相同"
+  },
+  "stone": {
+   "verdict": "passes",
+   "can_zh": "直接穿过并吃到，条件与木球相同。只有第 10、11 关 Dome 顶上的两个分数球难：石球要很快、很长的助跑才上得去 Dome 顶。第 4 关第 2 小节紧挨石变的生命球石球直接吃。",
+   "basis": "DERIVED",
+   "how_zh": "检测只读球心位置、不读球种，三种球的拾取条件相同"
+  },
+  "paper": {
+   "verdict": "passes",
+   "can_zh": "直接穿过并吃到，条件与木球相同；纸球也推不动它们（没有刚体）。Dome 顶的两个分数球按 wiki 纸球助跑上得去。第 4 关第 2 小节紧挨纸变的分数球纸球直接吃。",
+   "basis": "DERIVED",
+   "how_zh": "检测只读球心位置、不读球种，三种球的拾取条件相同"
+  }
+ },
+ "route_effects": [
+  {
+   "kind": "none",
+   "effect_zh": "不挡球、不弹开球：分数球和生命球没有刚体，路线可以直接穿过。依据是第 1 关脚本和第 11 关记录。",
+   "basis": "DERIVED",
+   "how_zh": "脚本里不建刚体，记录里也没有它们的建体，模板没有碰撞网格"
+  },
+  {
+   "kind": "pickup",
+   "effect_zh": "分数球给 HS 加分：内核 +100，6 个小球每追上一个 +20，共 220。SR 不需要吃。",
+   "basis": "MEASURED",
+   "src": "record",
+   "engine": "retail"
+  },
+  {
+   "kind": "pickup",
+   "effect_zh": "生命球加一条生命，没有上限；通关时每条生命 200 分。多一条命也多一次死亡不至于 Game Over。",
+   "basis": "READ",
+   "src": "dump"
+  },
+  {
+   "kind": "pickup",
+   "effect_zh": "生命数决定这一关还能死几次（生命数 n 时能死 n 次）。只有死亡能复位机关，SR 也一样，所以靠死亡复位机关的走法要有命可扣。",
+   "basis": "READ",
+   "src": "dump"
+  },
+  {
+   "kind": "pickup",
+   "effect_zh": "生命球随死亡回来：在它的小节里吃了再死，命数不变。靠死亡复位机关时，每次重生先顺路吃它再去死，能死的次数不受起始命数限制；要在判死之前吃到，每次多花吃它的时间。",
+   "basis": "DERIVED",
+   "how_zh": "生命球随小节重建回来、每小节最多一个，加一次死亡扣一条"
+  },
+  {
+   "kind": "timing",
+   "effect_zh": "绕路吃分的得失：Points 每秒减 2，一个分数球最多值得约 110 游戏秒绕路，一个生命球约 100 游戏秒。",
+   "basis": "DERIVED",
+   "how_zh": "220 分、200 分除以每秒 2 分；没算死亡和暂停"
+  },
+  {
+   "kind": "timing",
+   "effect_zh": "吃完分数球到下一个盘点要给小球留时间，没到的每个少 20 分。球停着时约 2.1 游戏秒到齐；球在动时原版记录 3.96–7.92 游戏秒，可能更久。最后一个盘点之后吃的不用留，进飞船后照样计分。",
+   "basis": "DERIVED",
+   "how_zh": "过盘点作废和进飞船后计分是录像实测；到齐的时长取重建引擎球停着的两处和原版记录球在动的三次"
+  },
+  {
+   "kind": "timing",
+   "effect_zh": "盘点前按 Esc 暂停可以收分：暂停中小球照飞、追上照加分，SR 和分数表都停。原版记录收齐要约 0.2–0.8 秒实际时间，停太短收不完；继续后少推 1 个物理步。",
+   "basis": "MEASURED",
+   "src": "record",
+   "engine": "original"
+  },
+  {
+   "kind": "timing",
+   "effect_zh": "道具只在自己的小节是当前小节时生效：不能提前跑到后面的小节去吃，也不能回头吃前面小节的。路线要在对应小节里经过它们。",
+   "basis": "READ",
+   "src": "measurement"
+  },
+  {
+   "kind": "changes_ball",
+   "effect_zh": "第 4 关第 2 小节四个道具各紧挨一个倾斜的变球器：同种的球直接吃；别的球种进了变球器 4.3 以内先被变成那一种，按规则在拉动途中吃到（没有实测），代价 2.51 游戏秒和换了球种。",
+   "basis": "DERIVED",
+   "how_zh": "按摆放行算道具到变球器的距离，加变球的触发规则和悬停点"
+  }
+ ],
+ "model": [
+  {
+   "feature": "trigger",
+   "need_zh": "生命球的拾取：球心到摆放点三维 < 4.5，按上一步末的位置；只在所在小节是当前小节时生效。",
+   "minimal_zh": "每个生命球一个半径 4.5 的球形触发区，不参与碰撞，不中止模拟，只在路线状态里记一次拾取；严格小于，事件记在下一步；生命 +1 再晚 1 步。贴着路面滚过横向偏约 4.47 以内吃得到。"
+  },
+  {
+   "feature": "trigger",
+   "need_zh": "分数球的拾取：球心到内核三维 < 3，近处每步查；只在所在小节是当前小节时生效。",
+   "minimal_zh": "每个分数球一个半径 3 的球形触发区，同生命球一样做成不中止的拾取事件。贴着路面滚过横向偏约 2.96 以内吃得到；悬空的是否也是 3 没量，容错时要求经过 2.9 以内。"
+  },
+  {
+   "feature": "state_only",
+   "need_zh": "拾取状态：哪些分数球行已吃（死亡不恢复、重开恢复）、当前小节、生命数。",
+   "minimal_zh": "路线状态里带已吃分数球的行号、小节号和命数；死亡时命数为 0 即 Game Over、全部恢复，否则 −1，生命球按小节重建；判死后、扣命前吃到的 +1 不算。"
+  },
+  {
+   "feature": "state_only",
+   "need_zh": "分数小球的追赶：吃内核后要一段时间才到齐，过盘点或死亡作废。",
+   "minimal_zh": "吃内核记 +100 和一个计时；保守地给够 2.1 游戏秒记 +120，否则记 0（这是简化）；球在动时按约 5 游戏秒另作假说；最后一个盘点之后的照记 +120。不模拟小球飞行。"
+  },
+  {
+   "feature": "state_only",
+   "need_zh": "HS 计分：Points 每 500 毫秒减 1，通关时 HS = Points + 命数 × 200 + 100 × 关号。",
+   "minimal_zh": "按路线的游戏内时间和拾取记录直接算分：表只在能操控、不暂停时走，死亡等待不扣，变球期间照扣。物理核不用改。"
+  }
+ ],
+ "unknowns": [
+  {
+   "kind": "measure",
+   "question_zh": "下方没有路面的分数球拾取距离是不是也是 3；3 以外每几个行为帧查一次、快速擦过会不会漏。",
+   "matters_zh": "悬空分数球能不能按 3 擦边拿到，以及快速经过的漏检门槛。",
+   "how_zh": "找一个下方没有路面的分数球，把球放到离内核 2.95、3.0、3.95、4.05 处读分数；再以不同速度滚过，读吃到前一帧的距离。"
+  },
+  {
+   "kind": "measure",
+   "question_zh": "球一直跑着时分数小球多久追上，全速时会不会一直追不上；小球按行为帧还是按时间推进。",
+   "matters_zh": "吃完分数球后离下一个盘点多近还能拿满 220，路线要不要为此减速。",
+   "how_zh": "从原版逐帧记录里读每个小球消失的帧和当时的球速；比较三种帧率下的追赶帧数，按时间推进则游戏秒相同。"
+  },
+  {
+   "kind": "measure",
+   "question_zh": "变球拉动途中离道具够近时是不是真的照常拾取；倾斜变球器的悬停点在哪。",
+   "matters_zh": "第 4 关第 2 小节四个道具在异种球被变时何时吃到。",
+   "how_zh": "第 4 关进第 2 小节后，把异种球放进变球器 4.3 以内、离道具 3 以外，逐帧读分数和球心位置，看 +100 在新刚体之前还是之后。"
+  },
+  {
+   "kind": "tool",
+   "question_zh": "247 行道具各自比正下方路面高多少：哪些贴着路面吃不到，其余横向容差多少。",
+   "matters_zh": "规划要知道在路面上滚过去横向偏多少还吃得到。",
+   "how_zh": "不用跑引擎：从每个道具的摆放点向下对静态路面打竖直射线，高差 h 时横向容差是 √(R² − (h − 2)²)，出一张表。"
+  }
+ ]
+}

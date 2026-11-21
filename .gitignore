@@ -1,6 +1,6 @@
 # level data and recorded traces are derived from the game and stay local
-data/
-out/
+/data/
+/out/
 
 __pycache__/
 *.pyc

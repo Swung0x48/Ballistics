@@ -1,0 +1,1134 @@
+{
+ "id": "P_Modul_03",
+ "name_zh": "升降机",
+ "category": "mechanism",
+ "types": [
+  "P_Modul_03"
+ ],
+ "summary_zh": "第 7、9、10、12 关较后小节里的升降机：竖直滑轨上由弹簧托着的圆形平台（半径约 10），上面立着七面墙和一个门，都不和平台相连。球从门洞进去，把八块墙门一块块推下平台，平台按上面剩下的质量升高，球随平台上到出口。平衡顶面相对摆放点 = −10.74 + 2.667 × 推掉的块数 − 1.333 × 球质量。木球是标准用球，推得下八块；石球太重，全推掉只到 −2.74，只够第 9 关前两个出口；纸球按粗估推不动墙门。球进水平 35 才唤醒。推掉一块后离开平台、门卡住、掉下平台都只能死亡复位。",
+ "uses": [
+  "proximity_wake",
+  "freeze_wake",
+  "sector_rebuild",
+  "death_timing",
+  "springs",
+  "joints",
+  "contact",
+  "ball_limits"
+ ],
+ "bodies": [
+  {
+   "name": "P_Modul_03_Floor",
+   "role_zh": "地板：20 边形平台，在竖直滑轨上由弹簧托着上下移动，墙门都压在它上面；唯一有关节的部分。",
+   "hull": {
+    "kind": "convex_hulls",
+    "meshes": [
+     "P_Modul_03_Floor_Mesh"
+    ],
+    "size": [
+     20.0,
+     1.04,
+     20.0
+    ],
+    "radius": null,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "motion": {
+    "kind": "slider",
+    "axis": [
+     0,
+     1,
+     0
+    ],
+    "anchor": [
+     0,
+     -6.117,
+     0
+    ],
+    "limits": "…",
+    "basis": "READ",
+    "src": "dump"
+   },
+   "mass": {
+    "v": 3,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "friction": {
+    "v": 0.7,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "elasticity": {
+    "v": 0,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "lin_damp": {
+    "v": 1,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "rot_damp": {
+    "v": 3,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "group": {
+    "v": "",
+    "basis": "READ",
+    "src": "dump"
+   },
+   "starts": {
+    "v": "frozen",
+    "basis": "READ",
+    "src": "dump"
+   }
+  },
+  {
+   "name": "P_Modul_03_Gate",
+   "role_zh": "门：围墙里朝门洞方向的一面，中间开着球能进的门洞；没有关节，推下平台后平台变轻。",
+   "hull": {
+    "kind": "convex_hulls",
+    "meshes": [
+     "P_Modul_03_Gate_Coll01_Mesh",
+     "P_Modul_03_Gate_Coll02_Mesh",
+     "P_Modul_03_Gate_Coll03_Mesh"
+    ],
+    "size": [
+     7.21,
+     7.36,
+     1.32
+    ],
+    "radius": null,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "motion": {
+    "kind": "free",
+    "axis": null,
+    "anchor": null,
+    "limits": "",
+    "basis": "DERIVED",
+    "how_zh": "P_Modul03_MF Script 里只有一个 Set Physics Slider和一个 Set Physics Spring，目标都是地板，没有别的关节积木；"
+   },
+   "mass": {
+    "v": 2,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "friction": {
+    "v": 0.4,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "elasticity": {
+    "v": 0,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "lin_damp": {
+    "v": 0.5,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "rot_damp": {
+    "v": 1,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "group": {
+    "v": "",
+    "basis": "READ",
+    "src": "dump"
+   },
+   "starts": {
+    "v": "frozen",
+    "basis": "READ",
+    "src": "dump"
+   }
+  },
+  {
+   "name": "P_Modul_03_Wall01",
+   "role_zh": "围墙的一面：放在平台边上的实心盒子，没有关节，要被球推下平台。",
+   "hull": {
+    "kind": "convex_hulls",
+    "meshes": [
+     "P_Modul_03_Wall_Coll_Mesh"
+    ],
+    "size": [
+     7.24,
+     7.28,
+     0.88
+    ],
+    "radius": null,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "motion": {
+    "kind": "free",
+    "axis": null,
+    "anchor": null,
+    "limits": "",
+    "basis": "DERIVED",
+    "how_zh": "P_Modul03_MF Script 里只有一个 Set Physics Slider和一个 Set Physics Spring，目标都是地板，没有别的关节积木；"
+   },
+   "mass": {
+    "v": 2,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "friction": {
+    "v": 0.4,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "elasticity": {
+    "v": 0.01,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "lin_damp": {
+    "v": 0.5,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "rot_damp": {
+    "v": 1.5,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "group": {
+    "v": "",
+    "basis": "READ",
+    "src": "dump"
+   },
+   "starts": {
+    "v": "frozen",
+    "basis": "READ",
+    "src": "dump"
+   }
+  },
+  {
+   "name": "P_Modul_03_Wall02",
+   "role_zh": "围墙的一面：没有关节；第 9 关第二个和第 12 关最高一个升降机挡在出口前，必须推掉。",
+   "hull": {
+    "kind": "convex_hulls",
+    "meshes": [
+     "P_Modul_03_Wall_Coll_Mesh"
+    ],
+    "size": [
+     7.24,
+     7.28,
+     0.88
+    ],
+    "radius": null,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "motion": {
+    "kind": "free",
+    "axis": null,
+    "anchor": null,
+    "limits": "",
+    "basis": "DERIVED",
+    "how_zh": "P_Modul03_MF Script 里只有一个 Set Physics Slider和一个 Set Physics Spring，目标都是地板，没有别的关节积木；"
+   },
+   "mass": {
+    "v": 2,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "friction": {
+    "v": 0.4,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "elasticity": {
+    "v": 0.01,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "lin_damp": {
+    "v": 0.5,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "rot_damp": {
+    "v": 1.5,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "group": {
+    "v": "",
+    "basis": "READ",
+    "src": "dump"
+   },
+   "starts": {
+    "v": "frozen",
+    "basis": "READ",
+    "src": "dump"
+   }
+  },
+  {
+   "name": "P_Modul_03_Wall03",
+   "role_zh": "围墙的一面：放在平台边上的实心盒子，没有关节，要被球推下平台。",
+   "hull": {
+    "kind": "convex_hulls",
+    "meshes": [
+     "P_Modul_03_Wall_Coll_Mesh"
+    ],
+    "size": [
+     7.24,
+     7.28,
+     0.88
+    ],
+    "radius": null,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "motion": {
+    "kind": "free",
+    "axis": null,
+    "anchor": null,
+    "limits": "",
+    "basis": "DERIVED",
+    "how_zh": "P_Modul03_MF Script 里只有一个 Set Physics Slider和一个 Set Physics Spring，目标都是地板，没有别的关节积木；"
+   },
+   "mass": {
+    "v": 2,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "friction": {
+    "v": 0.4,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "elasticity": {
+    "v": 0.01,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "lin_damp": {
+    "v": 0.5,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "rot_damp": {
+    "v": 1.5,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "group": {
+    "v": "",
+    "basis": "READ",
+    "src": "dump"
+   },
+   "starts": {
+    "v": "frozen",
+    "basis": "READ",
+    "src": "dump"
+   }
+  },
+  {
+   "name": "P_Modul_03_Wall04",
+   "role_zh": "围墙的一面，正对门洞：第 7、10 关和第 9 关第一、第三个升降机挡在出口前，必须推掉。",
+   "hull": {
+    "kind": "convex_hulls",
+    "meshes": [
+     "P_Modul_03_Wall_Coll_Mesh"
+    ],
+    "size": [
+     7.24,
+     7.28,
+     0.88
+    ],
+    "radius": null,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "motion": {
+    "kind": "free",
+    "axis": null,
+    "anchor": null,
+    "limits": "",
+    "basis": "DERIVED",
+    "how_zh": "P_Modul03_MF Script 里只有一个 Set Physics Slider和一个 Set Physics Spring，目标都是地板，没有别的关节积木；"
+   },
+   "mass": {
+    "v": 2,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "friction": {
+    "v": 0.4,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "elasticity": {
+    "v": 0.01,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "lin_damp": {
+    "v": 0.5,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "rot_damp": {
+    "v": 1.5,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "group": {
+    "v": "",
+    "basis": "READ",
+    "src": "dump"
+   },
+   "starts": {
+    "v": "frozen",
+    "basis": "READ",
+    "src": "dump"
+   }
+  },
+  {
+   "name": "P_Modul_03_Wall05",
+   "role_zh": "围墙的一面：放在平台边上的实心盒子，没有关节，要被球推下平台。",
+   "hull": {
+    "kind": "convex_hulls",
+    "meshes": [
+     "P_Modul_03_Wall_Coll_Mesh"
+    ],
+    "size": [
+     7.24,
+     7.28,
+     0.88
+    ],
+    "radius": null,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "motion": {
+    "kind": "free",
+    "axis": null,
+    "anchor": null,
+    "limits": "",
+    "basis": "DERIVED",
+    "how_zh": "P_Modul03_MF Script 里只有一个 Set Physics Slider和一个 Set Physics Spring，目标都是地板，没有别的关节积木；"
+   },
+   "mass": {
+    "v": 2,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "friction": {
+    "v": 0.4,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "elasticity": {
+    "v": 0.01,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "lin_damp": {
+    "v": 0.5,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "rot_damp": {
+    "v": 1.5,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "group": {
+    "v": "",
+    "basis": "READ",
+    "src": "dump"
+   },
+   "starts": {
+    "v": "frozen",
+    "basis": "READ",
+    "src": "dump"
+   }
+  },
+  {
+   "name": "P_Modul_03_Wall06",
+   "role_zh": "围墙的一面：放在平台边上的实心盒子，没有关节，要被球推下平台。",
+   "hull": {
+    "kind": "convex_hulls",
+    "meshes": [
+     "P_Modul_03_Wall_Coll_Mesh"
+    ],
+    "size": [
+     7.24,
+     7.28,
+     0.88
+    ],
+    "radius": null,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "motion": {
+    "kind": "free",
+    "axis": null,
+    "anchor": null,
+    "limits": "",
+    "basis": "DERIVED",
+    "how_zh": "P_Modul03_MF Script 里只有一个 Set Physics Slider和一个 Set Physics Spring，目标都是地板，没有别的关节积木；"
+   },
+   "mass": {
+    "v": 2,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "friction": {
+    "v": 0.4,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "elasticity": {
+    "v": 0.01,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "lin_damp": {
+    "v": 0.5,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "rot_damp": {
+    "v": 1.5,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "group": {
+    "v": "",
+    "basis": "READ",
+    "src": "dump"
+   },
+   "starts": {
+    "v": "frozen",
+    "basis": "READ",
+    "src": "dump"
+   }
+  },
+  {
+   "name": "P_Modul_03_Wall07",
+   "role_zh": "围墙的一面：放在平台边上的实心盒子，没有关节，要被球推下平台。",
+   "hull": {
+    "kind": "convex_hulls",
+    "meshes": [
+     "P_Modul_03_Wall_Coll_Mesh"
+    ],
+    "size": [
+     7.24,
+     7.28,
+     0.88
+    ],
+    "radius": null,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "motion": {
+    "kind": "free",
+    "axis": null,
+    "anchor": null,
+    "limits": "",
+    "basis": "DERIVED",
+    "how_zh": "P_Modul03_MF Script 里只有一个 Set Physics Slider和一个 Set Physics Spring，目标都是地板，没有别的关节积木；"
+   },
+   "mass": {
+    "v": 2,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "friction": {
+    "v": 0.4,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "elasticity": {
+    "v": 0.01,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "lin_damp": {
+    "v": 0.5,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "rot_damp": {
+    "v": 1.5,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "group": {
+    "v": "",
+    "basis": "READ",
+    "src": "dump"
+   },
+   "starts": {
+    "v": "frozen",
+    "basis": "READ",
+    "src": "dump"
+   }
+  }
+ ],
+ "forces": [
+  {
+   "name": "spring",
+   "kind": "spring",
+   "law_zh": "把地板上的挂点拉向上方固定点：拉力 = 15 × 两点距离（静长 0），另有阻尼（整体 1、沿弹簧 0.1）。地板冻结时不出力。建好时伸长 23.196、拉力 348，小于满载重量 380，醒后下沉到满载平衡。不作用在球上，球只靠重量压低平台。",
+   "region_zh": "只作用在地板上；另一端是地板上方 23.196 处世界里不动的点，连线竖直、和滑轨同向。",
+   "basis": "READ",
+   "src": "dump"
+  }
+ ],
+ "numbers": {
+  "wake_radius": {
+   "label_zh": "唤醒：球心到摆放点的水平距离小于",
+   "v": 35,
+   "unit": "",
+   "basis": "READ",
+   "src": "dump"
+  },
+  "full_load_rest_original": {
+   "label_zh": "原版记录里满载不带球停住的顶面",
+   "v": [
+    -10.53,
+    -10.52
+   ],
+   "unit": "",
+   "note_zh": "第 12 关、240 fps；和重建引擎的 −10.527 相同，另一次停在别的转折点",
+   "basis": "MEASURED",
+   "src": "record",
+   "engine": "original"
+  },
+  "full_load_eq": {
+   "label_zh": "满载不带球的平衡顶面",
+   "v": -10.736,
+   "unit": "",
+   "basis": "DERIVED",
+   "how_zh": "满载不带球的平衡高度实测"
+  },
+  "per_block": {
+   "label_zh": "每推掉一块平衡顶面升",
+   "v": 2.667,
+   "unit": "",
+   "basis": "DERIVED",
+   "how_zh": "两种推法各段平衡高度的回归值"
+  },
+  "ball_sink": {
+   "label_zh": "球站在平台上时平衡顶面再低",
+   "v": {
+    "wood": 2.533,
+    "stone": 13.337,
+    "paper": 0.266
+   },
+   "unit": "",
+   "basis": "DERIVED",
+   "how_zh": "满载加球的平衡减满载平衡，实测"
+  },
+  "all_off_top_by_ball": {
+   "label_zh": "全推掉、球在上时的平衡顶面",
+   "v": {
+    "wood": 8.07,
+    "stone": -2.74,
+    "paper": 10.33
+   },
+   "unit": "",
+   "basis": "DERIVED",
+   "how_zh": "木球是实测；石球、纸球用每块 2.667 和各自的下沉量推"
+  },
+  "rest_band": {
+   "label_zh": "停住和平衡的差（重建引擎，取作容错）",
+   "v": 0.4,
+   "unit": "",
+   "note_zh": "不是上界：原版记录有一次停在更低的转折点，差得更多；球在上面动着时不冻结",
+   "basis": "DERIVED",
+   "how_zh": "球静止或没有球时停住和平衡差 0.015–0.34（实测），取 0.4 作容错"
+  },
+  "periods": {
+   "label_zh": "平台振动周期",
+   "v": {
+    "full": 3.79,
+    "full_wood": 4.02,
+    "full_stone": 4.68,
+    "empty_undamped": 1.4
+   },
+   "unit": "游戏秒",
+   "note_zh": "阻尼比满载 0.36、加木球 0.39、空载 0.31",
+   "basis": "DERIVED",
+   "how_zh": "实测振动的极值或回归读出"
+  },
+  "wake_to_gate": {
+   "label_zh": "按着键滚来时地板醒到球到门口",
+   "v": [
+    0.76,
+    0.94
+   ],
+   "unit": "游戏秒",
+   "note_zh": "只在第 10 关、木球每物理秒约 13–14 量过，4 次",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  "wall_off_seconds": {
+   "label_zh": "一种推法里按键到这块重量离开地板",
+   "v": [
+    0.86,
+    1.89
+   ],
+   "unit": "游戏秒",
+   "note_zh": "不是门槛，也不是最短",
+   "basis": "DERIVED",
+   "how_zh": "两次按着键推八块的实际时刻；每块都从平台中心附近起步"
+  },
+  "exit_tops": {
+   "label_zh": "各处出口面的高度（相对摆放点）",
+   "v": {
+    "L7": 6.88,
+    "L9_01": -2.42,
+    "L9_02_rail_from": -4.84,
+    "L9_03": 7.38,
+    "L10": 6.88,
+    "L12_04_rail_from": 8.64
+   },
+   "unit": "",
+   "note_zh": "钢轨是轨管表面，从这个高度往上；第 12 关下面三个的出口是下一个升降机",
+   "basis": "DERIVED",
+   "how_zh": "地图网格里离平台中心最近的出口路面和钢轨"
+  },
+  "wood_blocks_needed": {
+   "label_zh": "木球上各出口要推掉几块 [从静止, 带速度]",
+   "v": {
+    "L7": [
+     8,
+     8
+    ],
+    "L9_01": [
+     4,
+     4
+    ],
+    "L9_02_rail": [
+     4,
+     3
+    ],
+    "L9_03": [
+     8,
+     8
+    ],
+    "L10": [
+     "needs_flight",
+     "needs_flight"
+    ],
+    "L12_04_rail": [
+     null,
+     8
+    ]
+   },
+   "unit": "块",
+   "note_zh": "null 是八块全推掉也不够；第 10 关高度够但要飞过空档",
+   "basis": "DERIVED",
+   "how_zh": "平衡高度的规律对各出口高度和球能上的台阶，不算冲高"
+  },
+  "l10_exit_gap": {
+   "label_zh": "第 10 关平台边到出口路面的水平空档",
+   "v": 6.06,
+   "unit": "",
+   "basis": "DERIVED",
+   "how_zh": "平台边 9.88 到路边 15.94，按地图网格"
+  },
+  "chain_gap_wood": {
+   "label_zh": "第 12 关木球全推掉后比下一个停住的地板高出",
+   "v": [
+    -0.55,
+    -0.55,
+    -1.55
+   ],
+   "unit": "",
+   "note_zh": "负数是低于下一个；带速度能上约 1.4",
+   "basis": "DERIVED",
+   "how_zh": "摆放点高差加实测的平衡和停住高度"
+  }
+ },
+ "machine": {
+  "states": [
+   {
+    "name": "sector_off",
+    "meaning_zh": "所在小节不是当前小节：没有刚体，机关在世界原点。平台不在，来路到平台边就断了，出口够不到。"
+   },
+   {
+    "name": "full_load",
+    "meaning_zh": "八块墙门都在平台上。唤醒前冻结在模板姿态（顶面在摆放点下方 8.60）；醒后平衡顶面 −10.74，和来路齐平，球能从门洞进去。"
+   },
+   {
+    "name": "unloading",
+    "meaning_zh": "球在平台上，已推掉 n 块（1–8）。平衡顶面 = −10.74 + 2.667 × n − 1.333 × 球质量；平台按振子趋向它，停在转折点附近。全推掉后平台没有围边。"
+   },
+   {
+    "name": "jammed",
+    "meaning_zh": "门被推下时一边卡在平台上，平台升不上去（wiki 的说法）。按弹簧规律给不出高度，规划时当失败分支。"
+   },
+   {
+    "name": "dead_end",
+    "meaning_zh": "推掉至少一块后球离开了平台：不带球的平台升到 −8.07 以上，门槛高过来路约 2.7，从门洞再进不去，这个升降机用不了了。"
+   }
+  ],
+  "initial": "sector_off",
+  "flags": [
+   {
+    "name": "frozen",
+    "meaning_zh": "地板冻结着：弹簧和重力都不作用，停在当时的高度。小节建好时为真；醒后单元静止又会冻结，被撞或单元里的球醒来再醒。各状态里都可能为真。"
+   },
+   {
+    "name": "proximity_armed",
+    "meaning_zh": "水平 35 的邻近检测开着。小节建好时为真，第一次触发后关掉，到小节重建前不再打开。"
+   },
+   {
+    "name": "ball_on",
+    "meaning_zh": "球站在平台上：平衡顶面再低 1.333 × 球质量（木 2.53、石 13.34、纸 0.27）。球在上面滚着时地板不冻结。"
+   }
+  ],
+  "transitions": [
+   {
+    "from": "*",
+    "to": "sector_off",
+    "trigger": "level_start",
+    "condition_zh": "关卡载入，或重开本关、游戏结束：拆掉当前小节，只建第 1 小节；升降机从来不在第 1 小节。",
+    "effect_zh": "没有刚体，机关在世界原点。载入时每个小节建一次再拆掉，对路线没有影响。",
+    "time_zh": "载入时；重开时调用小节管理器后第 2 个行为帧拆",
+    "seconds": null,
+    "basis": "DERIVED",
+    "how_zh": "载入后不存在是实测；重开时的拆除按小节拆建的规则和本机关的拆除分支推出"
+   },
+   {
+    "from": "sector_off",
+    "to": "full_load",
+    "trigger": "sector_enter",
+    "condition_zh": "过前一个盘点，小节管理器激活它所在的小节（第 10 关是第 3 小节，其余各关第 5 小节）。",
+    "effect_zh": "九个刚体在模板姿态建出、全部冻结（顶面在摆放点下方 8.60），建出滑轨和弹簧，打开水平 35 的检测。冻结时弹簧不出力。",
+    "time_zh": "调用小节管理器后第 6 个行为帧；这个机关没有单独测",
+    "seconds": null,
+    "basis": "READ",
+    "src": "measurement"
+   },
+   {
+    "from": "full_load",
+    "to": "full_load",
+    "trigger": "proximity",
+    "condition_zh": "proximity_armed 为真，某次检查时球心到摆放点的水平距离严格小于 35（实测阈值；原版记录里醒时 34.06–34.80）。只有玩家球触发。",
+    "effect_zh": "唤醒地板、关掉检测；墙门晚 1–5 个物理步被地板撞醒。不带球满载：先顶到 −8.35，1.38 游戏秒过平衡 −10.74，2.09 到最低 −11.45，4.11 冻结在 −10.527。",
+    "time_zh": "132 fps 下球速不超过每物理秒 20 时比跨过 35 晚 0–10 个行为帧（0.076 游戏秒），30 时最多 26 个行为帧",
+    "seconds": null,
+    "basis": "READ",
+    "src": "dump"
+   },
+   {
+    "from": "full_load",
+    "to": "full_load",
+    "trigger": "contact",
+    "condition_zh": "球滚上或滚下平台。第 10 关按住方向键以每物理秒 13.37–14.12 滚来时，地板醒后 0.76–0.94 游戏秒到门口，平台还在下沉、门槛比路面高 1.1–1.5，球照样跳进去。",
+    "effect_zh": "球上来时平衡顶面低 1.333 × 球质量：木 −13.27、石 −24.07、纸 −11.00；落上去先冲过（木最低 −14.56，石 −28.68）。球离开后回到 −10.74。",
+    "time_zh": "振荡周期：满载加木球 4.02 游戏秒、阻尼比 0.39，加石球 4.68、0.36",
+    "seconds": null,
+    "basis": "MEASURED",
+    "src": "measurement",
+    "engine": "rebuilt"
+   },
+   {
+    "from": "*",
+    "to": "*",
+    "trigger": "contact",
+    "condition_zh": "frozen 为真，被正在模拟、碰撞组相容的刚体撞到（球落上平台、推墙门、墙门掉下），或同一单元里站着的球醒来（松键、改键）。按住不变的键不唤醒。",
+    "effect_zh": "地板当帧醒，从冻结的高度按弹簧振子走向当时载荷的平衡高度。邻近检测用掉后只能这样醒。",
+    "time_zh": "撞到的那一个物理步",
+    "seconds": 0,
+    "basis": "DERIVED",
+    "how_zh": "冻结和撞醒的通则；球落到冻结的地板上撞醒、推墙门时地板一直醒着都是实测"
+   },
+   {
+    "from": "*",
+    "to": "*",
+    "trigger": "timer",
+    "condition_zh": "frozen 为假，地板所在的单元静止（球在平台上滚着时不算）。",
+    "effect_zh": "地板连同站着不动的球、压着的墙门一起冻结，弹簧不再推。停在某个转折点附近而不在平衡点：满载不带球 −10.527，木球在上 −13.351 或 −12.93。",
+    "time_zh": "满载不带球唤醒后 4.1 游戏秒；原版和 132 fps 下可能停在别的转折点",
+    "seconds": null,
+    "basis": "MEASURED",
+    "src": "measurement",
+    "engine": "rebuilt"
+   },
+   {
+    "from": "full_load",
+    "to": "unloading",
+    "trigger": "contact",
+    "condition_zh": "球在平台里从里往外把一块墙或门推出平台边。木球按着键推得下（两种推法都推掉了全部八块）；最小球速没有量，石球、纸球没有试。",
+    "effect_zh": "平台上少 2 的质量，平衡顶面升 2.667。不带球时：满载 −10.74 → 剩一块 +7.93 → 全推掉 +10.60。",
+    "time_zh": "那种推法里按键到这块重量离开地板 0.86–1.89 游戏秒，撞前球速每物理秒 6.5–10.8；不是门槛也不是最短",
+    "seconds": null,
+    "basis": "DERIVED",
+    "how_zh": "两种按着键的推法各段平衡高度的实测回归，合成每块 2.667 的规律；每块的时刻从同两次推法读出"
+   },
+   {
+    "from": "unloading",
+    "to": "unloading",
+    "trigger": "contact",
+    "condition_zh": "继续推下一块，直到八块全推掉。",
+    "effect_zh": "每块再升 2.667。木球在上：剩一块 +5.40、全推掉 +8.07（实测）；石球 −5.40、−2.74；纸球 +7.66、+10.33（石、纸按规律推）。",
+    "time_zh": "平台按欠阻尼振子趋向新平衡：满载周期 3.79 游戏秒，空载无阻尼 1.40",
+    "seconds": null,
+    "basis": "DERIVED",
+    "how_zh": "木球在上的高度是实测；石球、纸球用每块 2.667 和各自的下沉量推"
+   },
+   {
+    "from": "unloading",
+    "to": "unloading",
+    "trigger": "contact",
+    "condition_zh": "墙门在短时间里接连离开地板，平台还在向上运动时载荷又减小。",
+    "effect_zh": "平台因惯性冲过平衡；竞速里在还剩一块墙时借这一下冲上前方路面。冲多高没有实测：八块一下子全掉的粗估是空载多冲 7.8，木球顶点约 14.9。",
+    "time_zh": "粗估：空载约 0.74 游戏秒到最高点",
+    "seconds": null,
+    "basis": "WIKI",
+    "src": "wiki"
+   },
+   {
+    "from": "*",
+    "to": "jammed",
+    "trigger": "contact",
+    "condition_zh": "偏心推门时门一边先滑出平台边、另一边还压在平台上。木球的 5 次推法都没有出现，卡住的条件没有量。",
+    "effect_zh": "按 wiki 平台升不上去。按弹簧规律最多少升一块的 2.667，真卡死要有静态几何卡住，没有读到。规划时当失败分支，不给高度。",
+    "time_zh": "推门的那一下；之后一直卡着，直到死亡",
+    "seconds": null,
+    "basis": "WIKI",
+    "src": "wiki"
+   },
+   {
+    "from": "unloading",
+    "to": "dead_end",
+    "trigger": "force",
+    "condition_zh": "推掉至少一块后，球从门洞滚出平台、没有上出口。",
+    "effect_zh": "不带球的平台升到 −8.07 以上（每少一块再高 2.667），门槛比来路 −10.76 高约 2.69，超过带速度能上的约 1.4–1.9，从门洞再进不去。",
+    "time_zh": "平台升到新平衡约 1.4–3.8 游戏秒（不带球，看剩几块）",
+    "seconds": null,
+    "basis": "DERIVED",
+    "how_zh": "剩 7 块不带球的平衡高度是实测，对来路高度和球能上的台阶上限"
+   },
+   {
+    "from": "*",
+    "to": "full_load",
+    "trigger": "death",
+    "condition_zh": "球在升降机所在的当前小节里死亡；别的小节里死亡不碰它。",
+    "effect_zh": "小节拆了重建：九个刚体回到冻结的模板姿态，推下的墙门回到平台上，卡住的门解开，检测重新打开。重生点离升降机水平 97–369，在 35 以外。这个机关的死亡没有实际跑过。",
+    "time_zh": "132 fps 下判死后 4.08 游戏秒能操控",
+    "seconds": null,
+    "basis": "DERIVED",
+    "how_zh": "小节拆建的通则加本机关脚本里读到的拆除、建立分支"
+   },
+   {
+    "from": "*",
+    "to": "sector_off",
+    "trigger": "sector_leave",
+    "condition_zh": "过下一个盘点，它所在的小节被拆掉。",
+    "effect_zh": "刚体删除，机关放回世界原点；回头走回去那里只有静态路面。",
+    "time_zh": "调用小节管理器后第 2 个行为帧，一帧做完",
+    "seconds": null,
+    "basis": "DERIVED",
+    "how_zh": "小节拆建的通则加本机关脚本里读到的拆除分支；活着的升降机被拆没有单独测"
+   }
+  ],
+  "reset": {
+   "on_death_zh": "当前小节拆了重建：回到刚激活时的样子，冻结在模板姿态、八块墙门全在（掉到深处被收走的也回来），卡门解开。这是唯一的复位办法，代价一条命、回到重生点和 4.08 游戏秒；没有实际跑过。",
+   "on_sector_change_zh": "离开它的小节后它被拆掉，没有刚体；回头走进那个小节也碰不到它。它的小节激活之前、重开本关之后同样不存在。",
+   "basis": "DERIVED",
+   "how_zh": "小节拆建的通则加本机关脚本里读到的拆除、建立分支；载入后不存在是实测"
+  }
+ },
+ "by_ball": {
+  "wood": {
+   "verdict": "pushes",
+   "can_zh": "标准用球：按着键推得下全部八块墙门（两种推法都做到，门没卡住），最小球速和最省时的推法没有量。在上平台低 2.53，剩一块 +5.40、全推掉 +8.07。第 7、10 关和第 9 关第三个要推掉八块，第 9 关前两个 3–4 块；第 10 关还要飞过 6.06 的空档。",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  "stone": {
+   "verdict": "pushes",
+   "can_zh": "推墙门没有实测，粗估最容易（按键推力 60.7 是翻墙门槛 8.8 的约 7 倍）。太重：在上平台低 13.34，全推掉只到 −2.74，只够第 9 关前两个出口，还要带速度上最后一级；别处冲高粗估约 6.6，到不到 6.88 未定。",
+   "basis": "DERIVED",
+   "how_zh": "按键推力对墙门翻倒的力的准静态粗估，加平衡高度的规律对各出口"
+  },
+  "paper": {
+   "verdict": "blocked",
+   "can_zh": "按粗估推不下墙门：按键推力 4.3 只有翻墙门槛 8.8 的一半，一次撞击要约每物理秒 20，围墙里助跑到不了。wiki 说用力助跑能推开，和粗估不合，没有实测。高度上最有利（在上只低 0.27），推得掉的话多数出口推 7 块就够。",
+   "basis": "DERIVED",
+   "how_zh": "按键推力和撞击速度对墙门翻倒门槛的粗估"
+  }
+ },
+ "route_effects": [
+  {
+   "kind": "carries",
+   "effect_zh": "把球从低处送到高处：从门洞进平台，推掉墙门让平台升起，随平台上出口。满载平衡顶面 −10.74 和来路齐平（第 12 关最低一个来路低约 1.0）。只靠路面和钢轨这四个小节接不上终点；按必经建模但不写死。",
+   "basis": "DERIVED",
+   "how_zh": "实测的平衡高度规律对地图网格里的来路和出口；必经而不写死是项目主人的回答"
+  },
+  {
+   "kind": "blocks",
+   "effect_zh": "平台这一层只有门洞能进（宽 5.2、高约 6.29）：墙是实心盒子，墙顶比平台高 7.41，球滚不过、窗户穿不过；围墙顶上敞开。墙门是没有关节的自由刚体，从外面撞也会动，往哪倒没有量。",
+   "basis": "DERIVED",
+   "how_zh": "墙门的碰撞形状和模板矩阵；从外面推得动按撞醒和碰撞组的规则推"
+  },
+  {
+   "kind": "blocks",
+   "effect_zh": "挡在出口前面的那块必须推掉：第 7、10 关和第 9 关第一、第三个是正对门洞的 Wall04，第 9 关第二个和第 12 关最高一个是 Wall02。少推一块时，留下的不能是它。",
+   "basis": "DERIVED",
+   "how_zh": "各墙门的模板位置乘摆放的轴，和出口面的方位比"
+  },
+  {
+   "kind": "requires_ball",
+   "effect_zh": "木球：第 7、10 关和第 9 关第三个要推掉八块，第 9 关前两个 3–4 块。石球全推掉只到 −2.74，只够第 9 关前两个，还要带速度。纸球高度最有利（多数出口推 7 块就够），但按粗估推不动墙门。第 7 关、第 9 关第二个、第 12 关最低一个的来路上离升降机 23–40 处各有一个木球变球器。",
+   "basis": "DERIVED",
+   "how_zh": "平衡高度的规律对各出口高度和各球能上的台阶，不算冲高"
+  },
+  {
+   "kind": "blocks",
+   "effect_zh": "第 10 关出口路面在平台边外 6.06：全推掉后高度够（高 1.19），按偏保守的球心判据平台边要每物理秒 16.6–17.8，静止高度上平台内助跑只到 12.8–16.5，要借冲高（只要约 6.8）或带速度离开；没有实测。",
+   "basis": "DERIVED",
+   "how_zh": "只按球心的飞行判据，空中按键推力照样算；平台上助跑按球的极速和时间常数"
+  },
+  {
+   "kind": "carries",
+   "effect_zh": "第 12 关四个连成一串，每个高约 19 到 20，逐个乘。木球全推掉后比下一个停住的地板低 0.55、0.55、1.55：前两级带速度跨得上（约 1.4），最后一级加停住偏差最坏约 2，要借冲高。最低一个的来路比满载门槛低 1.02、比停住的平台低 1.23，从静止上不去，要带速度进门。都没有在引擎里试。",
+   "basis": "DERIVED",
+   "how_zh": "摆放点的高差加第 10 关实测的平衡和停住高度；逐个乘是项目主人的回答"
+  },
+  {
+   "kind": "timing",
+   "effect_zh": "清得快时平台冲过平衡；竞速里剩一块墙就借这一下冲上前方路面。标准用法推掉八块，少推一块借冲高只作备选路线。冲高没有实测，现有的数都是八块一下子全掉的粗估。",
+   "basis": "WIKI",
+   "src": "wiki"
+  },
+  {
+   "kind": "launches",
+   "effect_zh": "清得快时平台把球抛起（粗估）：木球在顶面约 13.95、纸球约 15.11 和平台分开，球底最高约 14.94、18.36，木球约 1.2 游戏秒后落回。可借这一下飞向出口，也可能被抛出平台边。石球不分开。",
+   "basis": "DERIVED",
+   "how_zh": "弹簧规律和球的质量、阻尼逐物理步递推，从八块一下子全离开、平台静止算起"
+  },
+  {
+   "kind": "hazard",
+   "effect_zh": "门被推下时一边卡在平台上，平台就升不上去（wiki；5 次推法都没有出现）。游戏没有复位机关的操作，只能死亡：一条命、回到重生点（离升降机 97–369）、4.08 游戏秒，再走回来。",
+   "basis": "WIKI",
+   "src": "wiki"
+  },
+  {
+   "kind": "hazard",
+   "effect_zh": "墙门推掉后平台没有围边：球在振动的平台上滑出去、或跟着推翻的墙冲出边，就掉进下面的死亡区（顶面在摆放点下方 36–95），这次升降机作废。推墙时按住键别冲过头。",
+   "basis": "DERIVED",
+   "how_zh": "地图网格里平台周围水平 16 以内往下没有路面和钢轨，加死亡区的位置"
+  },
+  {
+   "kind": "hazard",
+   "effect_zh": "推掉一块以后不能离开平台再回来：不带球的平台升到 −8.07 以上，门槛高过来路约 2.7，门洞再进不去，只能死亡复位。进了平台要一口气推完、上出口。",
+   "basis": "DERIVED",
+   "how_zh": "剩 7 块不带球的平衡高度实测，对来路高度和球能上的台阶上限"
+  },
+  {
+   "kind": "one_way",
+   "effect_zh": "一般只能用一次：推下去的墙门不会自己回来，只有死亡重建才放回平台。掉在下面路面、钢轨上的墙门留在那里当障碍。",
+   "basis": "DERIVED",
+   "how_zh": "脚本里只有建立分支把墙门放回平台；掉下的墙门和路面相碰"
+  },
+  {
+   "kind": "hazard",
+   "effect_zh": "只在它的小节活着时存在：小节激活前实测没有刚体；离开后按拆除分支同样不在。提前跑到或回头走回去，那里没有平台，来路到平台边就断了。",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  {
+   "kind": "timing",
+   "effect_zh": "路线假说（都没在引擎里整段跑过；从球心进 35 到上出口，132 fps）：木球推八块、等平台升、上出口，第 7 关、第 9 关第三个 7–10 游戏秒，第 10 关 8–12；第 9 关前两个木球推 3–4 块，4–6。",
+   "basis": "DERIVED",
+   "how_zh": "进门实测加每块推墙门的实测时刻、半个到四分之一个振动周期的升起和上出口"
+  },
+  {
+   "kind": "timing",
+   "effect_zh": "备选假说：木球留一块不挡出口的墙、连着快推借冲高，6–9 游戏秒，可行性未定（原版的竞速记录里有两个平台停住时还留着一块墙）；石球只在第 9 关前两个，7–11，第二个的来路上有木球变球器，先不提；第 12 关木球逐个乘四个，28–40。纸球不列。",
+   "basis": "DERIVED",
+   "how_zh": "同一套用时估法；冲高按粗估，没有剩一块时的数"
+  }
+ ],
+ "model": [
+  {
+   "feature": "slider",
+   "need_zh": "地板在竖直滑轨上，没有限位、没有门槛；平台高度随上面的总质量（墙门、球）变。",
+   "minimal_zh": "离散事件：平衡顶面 = −10.74 + 2.667 × 推掉块数 − 1.333 × 球质量，按欠阻尼振子趋向（满载周期 3.79 游戏秒），停住处按 ±0.4 给容错（原版可能停在别的转折点）。物理核要把顶面当成随时间变的面，上升时把速度传给球。"
+  },
+  {
+   "feature": "spring",
+   "need_zh": "静长 0、常数 15、两种阻尼的弹簧拉着地板。",
+   "minimal_zh": "查高度用平衡公式就不用模拟弹簧；要算冲高、剩一块能不能冲上路面，才逐物理步模拟地板，球要单独算，清得快时会和平台分开。"
+  },
+  {
+   "feature": "rigid_body",
+   "need_zh": "七面墙和门是自由盒子刚体，围成八边形只在门洞开口、顶上敞开；球要把它们一块块推出平台边，门可能卡住，从外面也推得动。",
+   "minimal_zh": "路线层面：每推出一块平台升 2.667，卡门当失败分支。物理核要可动的凸包、墙门与地板的接触、冻结和撞醒；把墙门当静止障碍只是近似，要注明。"
+  },
+  {
+   "feature": "state_only",
+   "need_zh": "只在所在小节是当前小节时存在，死亡后复原。",
+   "minimal_zh": "按当前小节开关，不是当前小节时网格里没有它的面；在它的小节里死亡就回到冻结的模板姿态、墙门全在。重开本关后不存在。"
+  },
+  {
+   "feature": "trigger",
+   "need_zh": "唤醒：球心到摆放点的水平距离严格小于 35，只触发一次，检查有间隔。",
+   "minimal_zh": "一个“醒过”的布尔量加水平半径 35 的圆柱和检查节拍：距离 35 以内隔 10 个行为帧查一次，50 以外隔 60 个行为帧；墙门比地板晚醒 1–5 个物理步。"
+  },
+  {
+   "feature": "state_only",
+   "need_zh": "冻结：平台停在转折点、球和地板一起冻结一起醒，都靠它才重现；物理核不冻结。",
+   "minimal_zh": "单元静止就冻结（弹簧、重力都停），被撞或单元里的球醒来就醒。要重现：满载不带球停在 −10.527；推墙门期间地板一直醒着。"
+  }
+ ],
+ "unknowns": [
+  {
+   "kind": "measure",
+   "question_zh": "推下一块墙门最小要多大球速、从哪个方向最省时；石球、纸球推不推得下；门在什么条件下卡住；石球在上时门为什么自己挪下平台。",
+   "matters_zh": "决定石球、纸球能不能用升降机，推八块最少多久，卡门这一失败分支多常见。",
+   "how_zh": "在第 10 关按着键从静止推最近的轴向墙、斜向墙和门柱，逐档改按键时长，读墙门离开地板的时刻和球速；纸球、石球变好后再推一遍。"
+  },
+  {
+   "kind": "measure",
+   "question_zh": "连着快推时平台冲多高、球在哪里分开，剩一块墙能不能借冲高上出口；第 9、12 关能不能照第 10 关的规律走通。",
+   "matters_zh": "决定少推一块、第 9 关少推、石球、第 12 关逐级这几条假说成不成立和它们的容错。",
+   "how_zh": "把推墙门的间隔缩到约一个满载周期的几分之一，连着推掉最后几块，逐帧（66 Hz 工具帧）读地板和球的高度；再在第 9、12 关各乘一次。"
+  },
+  {
+   "kind": "measure",
+   "question_zh": "死亡复位有没有实际发生：推下的墙门、卡住的门是否回到平台上，重建后的地板何时醒。",
+   "matters_zh": "卡门、掉下平台后只能死亡复位；复位不成立的话升降机用坏就过不去。",
+   "how_zh": "在第 7 关激活升降机的小节，让地板醒、把一面墙砸下平台，再让球判死，逐帧看九个刚体在拆、建时的有无和位置。"
+  },
+  {
+   "kind": "measure",
+   "question_zh": "平台已经冻结之后球才进门（慢慢滚上去）时平台什么时候醒；别的进门速度下能不能进。",
+   "matters_zh": "慢慢进门时平台若不醒，推墙门也不升；进门只量了每物理秒 13–14 一种速度。",
+   "how_zh": "球放在来路上不按键等平台冻结，再按住方向键或只按很短让球慢慢滚上去，读地板醒的时刻和球的位置。"
+  },
+  {
+   "kind": "tool",
+   "question_zh": "死亡复位那一步和唤醒那一步作用在哪些刚体上（脚本不印这两个积木的目标）。",
+   "matters_zh": "前者定了死亡后整个升降机是否复原；后者只把推论换成读数。",
+   "how_zh": "要工具能打印积木的目标参数；在那之前按脚本本地参数的计数推：唤醒的是地板，复位作用于整个机关。"
+  },
+  {
+   "kind": "host2002",
+   "question_zh": "132 fps、原版 DLL 上平台停在哪个转折点，墙门比地板晚醒几个物理步。",
+   "matters_zh": "132 fps 评估时平台停住的高度和平衡差多少。",
+   "how_zh": "现有两条 132 fps 的原版记录里没有升降机；要 132 fps 的第 7、10、12 关记录，晚醒几步可以先从 240 / 264 fps 的记录读。"
+  }
+ ]
+}

@@ -1,0 +1,702 @@
+{
+ "id": "P_Modul_01",
+ "name_zh": "活式木栅栏",
+ "category": "mechanism",
+ "types": [
+  "P_Modul_01"
+ ],
+ "summary_zh": "立在上层路口上的栅栏。栅栏、横杆和靶子是一个刚体（滑块），底座卡在凹槽里，只能沿本地 X 滑动，满程约 5.0。操作处和通过处分开：球在较低的路上、靶子外侧沿本地 +X 顶靶子把栅栏推开，再回到上层路口从让出的缝里过。石球贴着靶子按住方向键就推满；木球一次撞击推不满，推多少随撞前速度增大；纸球推不动。滑块以冻结开始，球到它水平 50 以内醒一次，静止后再冻结，之后被撞才醒。只有死亡能把它复位；离开它的小节后它不存在。",
+ "uses": [
+  "proximity_wake",
+  "freeze_wake",
+  "sector_rebuild",
+  "death_timing",
+  "contact"
+ ],
+ "bodies": [
+  {
+   "name": "P_Modul_01_Pusher",
+   "role_zh": "滑块：靶子、横杆和栅栏连成的一个刚体，机关里唯一会动的部分。",
+   "hull": {
+    "kind": "convex_hulls",
+    "meshes": [
+     "P_Modul_01_Col01_Mesh",
+     "P_Modul_01_Col02_Mesh",
+     "P_Modul_01_Col03_Mesh"
+    ],
+    "size": [
+     11.47,
+     6.85,
+     3.96
+    ],
+    "radius": null,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "motion": {
+    "kind": "free",
+    "axis": null,
+    "anchor": null,
+    "limits": "脚本里没有关节，也就没有关节限位；…",
+    "basis": "READ",
+    "src": "table"
+   },
+   "mass": {
+    "v": 3,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "friction": {
+    "v": 0.6,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "elasticity": {
+    "v": 0.4,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "lin_damp": {
+    "v": 0.1,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "rot_damp": {
+    "v": 1,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "group": {
+    "v": "Floor",
+    "basis": "READ",
+    "src": "dump"
+   },
+   "starts": {
+    "v": "frozen",
+    "basis": "READ",
+    "src": "dump"
+   }
+  },
+  {
+   "name": "P_Modul_01_Rinne",
+   "role_zh": "凹槽：固定，只给滑块导向；和玩家球同组，玩家球穿过它。",
+   "hull": {
+    "kind": "convex_hulls",
+    "meshes": [
+     "P_Modul_01_Rinne_01_Mesh",
+     "P_Modul_01_Rinne_02_Mesh",
+     "P_Modul_01_Rinne_03_Mesh"
+    ],
+    "size": [
+     13.73,
+     2.91,
+     3.02
+    ],
+    "radius": null,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "motion": {
+    "kind": "fixed",
+    "axis": null,
+    "anchor": null,
+    "limits": "",
+    "basis": "READ",
+    "src": "dump"
+   },
+   "mass": {
+    "v": 1,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "friction": {
+    "v": 0.7,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "elasticity": {
+    "v": 0.4,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "lin_damp": {
+    "v": 0.1,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "rot_damp": {
+    "v": 0.1,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "group": {
+    "v": "Ball",
+    "basis": "READ",
+    "src": "dump"
+   },
+   "starts": {
+    "v": "fixed",
+    "basis": "READ",
+    "src": "dump"
+   }
+  },
+  {
+   "name": "P_Modul_01_Filler",
+   "role_zh": "填充块：固定的薄板，补上路口处凹槽的缺口，球从它上面滚过。",
+   "hull": {
+    "kind": "convex_hulls",
+    "meshes": [
+     "P_Modul_01_Filler_Mesh"
+    ],
+    "size": [
+     5.0,
+     0.41,
+     0.63
+    ],
+    "radius": null,
+    "basis": "READ",
+    "src": "template"
+   },
+   "motion": {
+    "kind": "fixed",
+    "axis": null,
+    "anchor": null,
+    "limits": "",
+    "basis": "READ",
+    "src": "dump"
+   },
+   "mass": {
+    "v": 1,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "friction": {
+    "v": 0.7,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "elasticity": {
+    "v": 0.4,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "lin_damp": {
+    "v": 0.1,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "rot_damp": {
+    "v": 0.1,
+    "basis": "READ",
+    "src": "dump"
+   },
+   "group": {
+    "v": "Floor",
+    "basis": "READ",
+    "src": "dump"
+   },
+   "starts": {
+    "v": "fixed",
+    "basis": "READ",
+    "src": "dump"
+   }
+  }
+ ],
+ "forces": [],
+ "numbers": {
+  "wake_radius": {
+   "label_zh": "唤醒：球心到滑块静止位置的水平距离小于",
+   "v": 50,
+   "unit": "",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  "stroke": {
+   "label_zh": "满程（实测停住的位置）",
+   "v": [
+    4.97,
+    4.98
+   ],
+   "unit": "",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  "gap_opens_from": {
+   "label_zh": "推开量大于这个数路口才开",
+   "v": 2.5,
+   "unit": "",
+   "basis": "DERIVED",
+   "how_zh": "栅栏斜边的截面按几何算"
+  },
+  "gap_full_from": {
+   "label_zh": "推开量大于这个数缝到整宽",
+   "v": 3.07,
+   "unit": "",
+   "basis": "DERIVED",
+   "how_zh": "靶子板进到路边的位置按几何算"
+  },
+  "gap_width": {
+   "label_zh": "缝的整宽（球心能走的范围）",
+   "v": 0.57,
+   "unit": "",
+   "basis": "DERIVED",
+   "how_zh": "3.07 − 2.5"
+  },
+  "stone_full_seconds": {
+   "label_zh": "石球按键到推满",
+   "v": [
+    1.2,
+    1.39
+   ],
+   "unit": "游戏秒",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  "wood_push_by_speed": {
+   "label_zh": "木球一次撞击：撞前速度 → 推开量",
+   "v": {
+    "0.95": [
+     0.056,
+     0.072
+    ],
+    "6.55": [
+     1.44,
+     1.49
+    ],
+    "8.73": [
+     2.19,
+     2.28
+    ],
+    "10.40": [
+     2.94,
+     3.01
+    ],
+    "11.04": [
+     3.25,
+     3.42
+    ]
+   },
+   "unit": "每物理秒 → 长度",
+   "note_zh": "按着键撞，每个撞前速度两次",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  "refreeze_seconds": {
+   "label_zh": "停住到再冻结（木、石球推过以后）",
+   "v": [
+    0.14,
+    1.35
+   ],
+   "unit": "游戏秒",
+   "basis": "DERIVED",
+   "how_zh": "冻结规则的范围和本机关实测的并集"
+  },
+  "wake_to_freeze_original": {
+   "label_zh": "原版 DLL 上没被碰过的滑块醒到冻结",
+   "v": [
+    0.7,
+    0.88
+   ],
+   "unit": "游戏秒",
+   "note_zh": "132 fps 的 4 处",
+   "basis": "MEASURED",
+   "src": "record",
+   "engine": "original"
+  },
+  "fall_off_travel": {
+   "label_zh": "沿本地 −X 推多远滑块离开凹槽底板",
+   "v": 6.7,
+   "unit": "",
+   "basis": "DERIVED",
+   "how_zh": "凹槽底板 −X 端的几何，没有实测"
+  },
+  "respawn_distance_min": {
+   "label_zh": "24 处里重生点到滑块最近的水平距离",
+   "v": 94.6,
+   "unit": "",
+   "basis": "DERIVED",
+   "how_zh": "按地图上的重生点和摆放位置算"
+  }
+ },
+ "machine": {
+  "states": [
+   {
+    "name": "sector_off",
+    "meaning_zh": "所在小节不是当前小节：三个部件都没有刚体，不挡球也推不动，上层路口是敞开的。"
+   },
+   {
+    "name": "at_rest",
+    "meaning_zh": "小节已激活，滑块在原位（推开量 d = 0），栅栏挡着上层路口。"
+   },
+   {
+    "name": "pushed",
+    "meaning_zh": "滑块沿本地 +X 推开了 d（0 < d < 4.95）。上层路口的球心窗口是 [max(0, d − 3.07), d − 2.5]：d ≤ 2.5 不开，d ≥ 3.07 时宽 0.57。"
+   },
+   {
+    "name": "at_stop",
+    "meaning_zh": "滑块到了满程（d ≥ 4.95，实测停在 4.970–4.981），靶子板顶在凹槽侧壁上。路口留一条约 0.57 宽的缝，两侧都还有路面。"
+   },
+   {
+    "name": "fallen",
+    "meaning_zh": "滑块被推离凹槽底板，穿过路面掉下去，栅栏不再挡路。"
+   }
+  ],
+  "initial": "sector_off",
+  "flags": [
+   {
+    "name": "frozen",
+    "meaning_zh": "滑块冻结着：不受重力和推力，照样挡球；被正在模拟、碰撞组相容的刚体撞到当帧醒。和 d 无关，at_rest、pushed、at_stop 里都可能为真；小节建好时为真。"
+   },
+   {
+    "name": "proximity_armed",
+    "meaning_zh": "邻近检测开着。小节建好时为真，第一次触发后关掉，到小节重建前不再打开。"
+   }
+  ],
+  "transitions": [
+   {
+    "from": "sector_off",
+    "to": "at_rest",
+    "trigger": "sector_enter",
+    "condition_zh": "小节管理器激活它所在的小节：开局、过上一个盘点、死亡后重建当前小节。",
+    "effect_zh": "凹槽、填充块、滑块在摆放位置建出刚体，滑块冻结（frozen 为真），邻近检测打开。",
+    "time_zh": "调用小节管理器后第 6 个行为帧",
+    "seconds": null,
+    "basis": "READ",
+    "src": "dump"
+   },
+   {
+    "from": "at_rest",
+    "to": "at_rest",
+    "trigger": "proximity",
+    "condition_zh": "proximity_armed 为真，这一帧是检查帧，球心到滑块静止位置的水平距离（只看 X、Z）严格小于 50。圆心是滑块，不是摆放点。",
+    "effect_zh": "唤醒滑块（frozen 变假），同时关掉邻近检测。滑块下沉约 0.085 停住。",
+    "time_zh": "132 fps 下最多比跨过 50 晚 10 个行为帧（0.076 游戏秒）",
+    "seconds": null,
+    "basis": "MEASURED",
+    "src": "measurement",
+    "engine": "rebuilt"
+   },
+   {
+    "from": "*",
+    "to": "*",
+    "trigger": "contact",
+    "condition_zh": "frozen 为真，滑块被正在模拟、碰撞组相容的刚体撞到：玩家球、碎片、道具球、箱子。别的机关和它同组，碰不到它。",
+    "effect_zh": "撞击那一帧醒（frozen 变假），再按滑块自己的质量受这次撞击：它不是固定墙。推的转移可以在同一帧接着发生。",
+    "time_zh": "撞击当帧",
+    "seconds": 0,
+    "basis": "MEASURED",
+    "src": "measurement",
+    "engine": "rebuilt"
+   },
+   {
+    "from": "*",
+    "to": "*",
+    "trigger": "timer",
+    "condition_zh": "frozen 为假，滑块静止下来。",
+    "effect_zh": "滑块再冻结（frozen 变真），d 不变，缝不变。",
+    "time_zh": "停住后 0.14–1.35 游戏秒（木、石球的实测范围）；没被碰过的滑块醒后 0.71 游戏秒",
+    "seconds": null,
+    "basis": "DERIVED",
+    "how_zh": "冻结的规则加本机关 38 次推动的实测归纳"
+   },
+   {
+    "from": "at_rest",
+    "to": "pushed",
+    "trigger": "contact",
+    "condition_zh": "球在较低的路上、靶子外侧，沿本地 +X 顶靶子板。木球一次撞击：撞前 0.95 / 6.55 / 8.73 / 10.40 / 11.04 每物理秒推开 0.06–0.07 / 1.44–1.49 / 2.19–2.28 / 2.94–3.01 / 3.25–3.42。",
+    "effect_zh": "滑块沿本地 +X 滑动 d，转动很小；推完继续按住方向键不再动。d 保持到下一次被推或小节重建。",
+    "time_zh": "撞击到停下 0.47–0.70 游戏秒（撞前 6.55–11.04）",
+    "seconds": null,
+    "basis": "MEASURED",
+    "src": "measurement",
+    "engine": "rebuilt"
+   },
+   {
+    "from": "at_rest",
+    "to": "at_stop",
+    "trigger": "contact",
+    "condition_zh": "石球顶靶子板并按住方向键：从贴着起推到助跑 6（撞前 6.2）都推满，不需要助跑。",
+    "effect_zh": "滑块走满 4.97–4.98，停在靶子板顶住凹槽侧壁的位置。按键短于推满所需时，滑块停在中间的 d（pushed）。",
+    "time_zh": "按键到推满 1.20–1.39 游戏秒",
+    "seconds": 1.3,
+    "basis": "MEASURED",
+    "src": "measurement",
+    "engine": "rebuilt"
+   },
+   {
+    "from": "pushed",
+    "to": "at_stop",
+    "trigger": "contact",
+    "condition_zh": "继续沿本地 +X 推到 d ≥ 4.95。木球多次撞击能不能累加到满程没有测。",
+    "effect_zh": "滑块停在满程。",
+    "time_zh": "",
+    "seconds": null,
+    "basis": "DERIVED",
+    "how_zh": "滑块是没有回位力的自由刚体，推开的位移保持，再推从当前位置继续"
+   },
+   {
+    "from": "at_stop",
+    "to": "pushed",
+    "trigger": "contact",
+    "condition_zh": "滑块被沿本地 −X 推回：从栅栏 +X 一侧顶它，或横着顶栅栏时把它带回一点（实测带回 0.01–0.16）。没有找到球到 +X 一侧的路。",
+    "effect_zh": "d 减小，栅栏让出得少；−X 方向没有挡头。",
+    "time_zh": "没有实测",
+    "seconds": null,
+    "basis": "DERIVED",
+    "how_zh": "满程位置不锁住：导向只来自凹槽，+X 有挡头、−X 没有"
+   },
+   {
+    "from": "*",
+    "to": "fallen",
+    "trigger": "contact",
+    "condition_zh": "滑块被沿本地 −X 推到质心越过凹槽底板的 −X 端（从原位约 6.7）。球能不能把它推到那里没有实测。",
+    "effect_zh": "滑块和路面、钢轨不碰撞，失去凹槽支撑后一直落下去；栅栏不再挡路。",
+    "time_zh": "没有实测",
+    "seconds": null,
+    "basis": "DERIVED",
+    "how_zh": "碰撞组的规则加凹槽的几何：−X 没有挡头"
+   },
+   {
+    "from": "*",
+    "to": "at_rest",
+    "trigger": "death",
+    "condition_zh": "球在它所在的当前小节判死。别的小节的实例不受影响。",
+    "effect_zh": "当前小节拆掉再建：滑块回到原位并冻结，推开的位移作废，栅栏重新挡路，邻近检测重新打开（节拍接着上次的）。24 处的重生点离滑块都在水平 94 以上，等待中不会醒。",
+    "time_zh": "132 fps 下判死后第 136 帧拆、第 140 帧建",
+    "seconds": null,
+    "basis": "DERIVED",
+    "how_zh": "小节拆建的时序加本机关脚本的拆除、建立分支；推开后死一次的位置复位没有单独测过"
+   },
+   {
+    "from": "*",
+    "to": "sector_off",
+    "trigger": "sector_leave",
+    "condition_zh": "过下一个盘点，小节管理器拆掉它所在的小节。",
+    "effect_zh": "三个刚体删除，邻近检测关掉，部件放回初始状态。",
+    "time_zh": "调用小节管理器后第 2 个行为帧",
+    "seconds": null,
+    "basis": "READ",
+    "src": "dump"
+   }
+  ],
+  "reset": {
+   "on_death_zh": "当前小节整个拆除再重建：滑块回到原位并冻结，推开的栅栏重新挡住路口，要再推一次。只有死亡能复位它，代价一条命、回到重生点和 4.08 游戏秒。",
+   "on_sector_change_zh": "离开它所在的小节后三个刚体被删除，不挡球也推不动；回到这一小节的地方或提前跑进后面的小节都碰不到它。",
+   "basis": "DERIVED",
+   "how_zh": "小节拆建的通则加本机关脚本的拆除分支"
+  }
+ },
+ "by_ball": {
+  "wood": {
+   "verdict": "pushes",
+   "can_zh": "能推动，一次撞击推不满。撞前 11.04 每物理秒（助跑 12）推开 3.25–3.42，开出整条 0.57 宽的缝；撞前 10.40 只留贴着路边的 0.44–0.51；撞前 8.73 及以下不开。对助跑长度敏感。多次撞击能不能累加没有测。",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  "stone": {
+   "verdict": "pushes",
+   "can_zh": "不需要助跑：贴着靶子按住方向键就把滑块推满 4.97–4.98，按键到推满 1.20–1.39 游戏秒。满程时路口留一条 0.57 宽的缝，要对准了过。",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  "paper": {
+   "verdict": "blocked",
+   "can_zh": "推不动：撞前 1.6–10.6 每物理秒，滑块只动 −0.002 到 0.03，纸球被弹回。只靠推开栅栏才能过的路口纸球过不去，要先变成石球或木球。",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  }
+ },
+ "route_effects": [
+  {
+   "kind": "blocks",
+   "effect_zh": "没推开之前栅栏挡住上层路口：上层路上三种球横着顶它都停在离滑块原点 2.1–2.3 处，推不开。",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  {
+   "kind": "opens",
+   "effect_zh": "操作处：在比上层低的路上、靶子外侧，沿本地 +X 顶靶子把栅栏推开。推完球还在操作处，要另走回上层路口。",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  {
+   "kind": "opens",
+   "effect_zh": "通过处：上层路口。推开 d 后球心要在 [max(0, d − 3.07), d − 2.5] 里才两边都碰不到；被推过的滑块下沉过，按 [d − 3.10, d − 2.52] 算，满程时约 x 1.87–2.46，再扣倾斜两边都躲得开的约 2.0–2.3。贴着窄缝滚过去没有在引擎里试过。",
+   "basis": "DERIVED",
+   "how_zh": "碰撞凸包的截面加路口的宽度按几何算"
+  },
+  {
+   "kind": "forbids_ball",
+   "effect_zh": "纸球推不动栅栏：只靠推开才能通过的路口，纸球过不去。",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  {
+   "kind": "requires_ball",
+   "effect_zh": "石球最可靠（贴着就推满）。木球要撞前约 10.6 每物理秒以上缝才到整宽。",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  {
+   "kind": "blocks",
+   "effect_zh": "推栅栏和过栅栏必须在同一条命里、同一小节内完成：死亡后栅栏回到原位要重新推，没有别的复位办法。",
+   "basis": "DERIVED",
+   "how_zh": "死亡转移和小节拆建的通则"
+  },
+  {
+   "kind": "none",
+   "effect_zh": "凹槽（含看不见的侧壁）对玩家球不存在，球从它里面穿过，托球的是路面和填充块。箱子和道具球会被凹槽挡住。",
+   "basis": "DERIVED",
+   "how_zh": "碰撞组的规则：凹槽和三种玩家球同组，互不碰撞；箱子、道具球没有组，和它相碰"
+  },
+  {
+   "kind": "opens",
+   "effect_zh": "“超”：木球或纸球不去推靶子，从上层这一侧直接跨到靶子板或横杆上，从栅栏旁边绕过去。项目主人确认是在用的捷径，第 9、10 关有例子；不用回程也不用变球，但容错低，从哪上杆、要多快都没有量。栅栏顶比路面高约 4.45，不是跳过去。",
+   "basis": "WIKI",
+   "src": "wiki"
+  },
+  {
+   "kind": "blocks",
+   "effect_zh": "骑在横杆上沿滑动方向顶栅栏推不开：木球只推动 0.07、石球 0.15，纸球从横杆上掉下去（各只测一次）。横杆上横向移动能不能带开栅栏没有测。",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  {
+   "kind": "opens",
+   "effect_zh": "滑块被沿本地 −X 推离凹槽后会穿过路面掉下去，下面没有东西接住，路口一直开着直到死亡或换小节。能不能推到那里（约 6.7）没有实测。推动的栅栏也能推动道具球。",
+   "basis": "DERIVED",
+   "how_zh": "碰撞组的规则：滑块和路面、钢轨、填充块互不碰撞，只有凹槽托着它；道具球、箱子和它相碰"
+  },
+  {
+   "kind": "carries",
+   "effect_zh": "栅栏顶是一条平的长条（宽 0.627），比上层路面高约 4.45，按形状能托住球。只有第 11 关第 6 小节那一处附近有差不多高的路面，能不能上去没查，没在引擎里试。",
+   "basis": "DERIVED",
+   "how_zh": "碰撞凸包的顶点和附近路面的高度取样"
+  },
+  {
+   "kind": "timing",
+   "effect_zh": "回程：按地图格点搜索，24 处里只有 6 处找到从操作处回到上层路口的路，长约 44.5、54.5、74.5、94.0、197.5、304.5；其余 18 处（含实测的第 11 关第 1 小节栅栏 A）没找到，那条命推开了也过不了。不计球半径和速度，没在引擎里跑。",
+   "basis": "DERIVED",
+   "how_zh": "地图路面栅格化成多层高度，限坡度和下落高度做广度优先搜索"
+  },
+  {
+   "kind": "timing",
+   "effect_zh": "假说 1 石球：贴靶按键 1.20–1.39 游戏秒推满，走回程，对准球心 x 约 1.87–2.46 过缝；扣倾斜后可靠的只有中心约 ±0.13。假说 2 木球：直线助跑 12 撞靶（撞前约 11），按键到推完 1.55–1.58 游戏秒，推 3.25–3.42（两次），两次都能过的球心带只有 x 0.35–0.75；助跑 10 只剩路边一条。",
+   "basis": "DERIVED",
+   "how_zh": "三种球的实测时长和推动量，加缝的窗口几何和回程"
+  },
+  {
+   "kind": "timing",
+   "effect_zh": "假说 3 木球多次撞击累加到满程：没有测，只是待验的备选。假说 4 “超”：不推靶子、不用回程，容错低、时间没量。纸球过不去，要先变球。推开后死亡前功尽弃：4.08 游戏秒、一条命，栅栏复位。",
+   "basis": "DERIVED",
+   "how_zh": "同一条路线假说的后半，按死亡代价和实测缺口归纳"
+  },
+  {
+   "kind": "opens",
+   "effect_zh": "路线假说：第 5 关第 2 小节有颗道具石球正对栅栏 P_Modul_01_06 的靶子一侧（离 41.6、高 10.3），像是让它滚下去撞靶。推不推得满、会不会自己滚过去都没查；成立的话不用玩家球下去推，也没有回程问题。",
+   "basis": "DERIVED",
+   "how_zh": "摆放位置换到栅栏的坐标系，加道具石球能撞醒滑块的实测"
+  }
+ ],
+ "model": [
+  {
+   "feature": "slider",
+   "need_zh": "滑块当沿本地 X 的一维滑动体，状态是推开量 d 和冻结与否：上限 5.0，下限没有（约 −6.7 失去支撑算掉落），没有回位力。",
+   "minimal_zh": "石球贴靶按 +X 键 d 到 5.0，1.20–1.39 游戏秒；木球按撞前速度查表插值，表外不外推；纸球 d 不变。路口窗口 [max(0, d − 3.07), d − 2.5]。推完球要走回程到路口，不能默认从它身上过。"
+  },
+  {
+   "feature": "shape_only",
+   "need_zh": "碰撞用三个看不见的凸包，不是显示网格；凹槽对玩家球不碰，填充块碰。现在的地图导出把滑块显示网格和凹槽底板当固定三角面，几处多出一块假地面。",
+   "minimal_zh": "栅栏当梯形棱柱、靶子板和横杆一起按 d 平移当障碍；填充块当路面；去掉凹槽。滑块摩擦 0.6、弹性 0.4，填充块 0.7 / 0.4。"
+  },
+  {
+   "feature": "trigger",
+   "need_zh": "水平 50 以内唤醒一次；被正在模拟、碰撞组相容的刚体撞到当帧醒；停住约 0.64 游戏秒后再冻结。",
+   "minimal_zh": "推靶子时一律当可动处理：球贴上靶子前唤醒一定已发过，再冻结后被撞当场醒，推动量相同。物理核不冻结，不用另做唤醒。"
+  },
+  {
+   "feature": "state_only",
+   "need_zh": "d 跟着命和小节走：死亡、小节重建时归零；不是当前小节时机关不存在。",
+   "minimal_zh": "新的一条命或小节重新激活时 d = 0；离开小节后整个机关去掉。"
+  },
+  {
+   "feature": "rigid_body",
+   "need_zh": "要回答累加撞击、贴边过缝，需要完整刚体：质量 3、摩擦 0.6、阻尼 0.1 / 1、三个凸包、碰撞组过滤；运动的滑块推球时接触要算表面速度。",
+   "minimal_zh": "先不做；用推动表和窗口几何，等累加撞击和过缝实测后再定。"
+  }
+ ],
+ "unknowns": [
+  {
+   "kind": "measure",
+   "question_zh": "木球多次撞击能不能累加推到满程；撞前 11.04 每物理秒以上能推多少。",
+   "matters_zh": "能的话木球也能开出两侧都有路面的缝。",
+   "how_zh": "原版脚本下在第 11 关第 1 小节栅栏 A 撞、退回约 6、再撞，重复 3 次，逐帧记 d；另在低层路够长的几处以 12–16 每物理秒撞靶。"
+  },
+  {
+   "kind": "measure",
+   "question_zh": "推开后球能不能贴着 0.57 以内的窄缝从上层路口滚过去。",
+   "matters_zh": "路线假说 1、2 的最后一步，会不会擦到或从路边掉下去要看动态。",
+   "how_zh": "在找到回程的第 10 关第 1 小节推开后沿回程上到路口，对准窗口中点和两端穿过，记最小间隙和结局。"
+  },
+  {
+   "kind": "measure",
+   "question_zh": "球能不能把滑块沿 −X 推离凹槽让它掉下去，从哪推、要多快。",
+   "matters_zh": "推掉后路口一直开着；低层横着顶时只带动 0.16。",
+   "how_zh": "第 1 关第 3 小节或第 11 关第 1 小节，石球从 +X 一侧顶横杆端，起点 0、6、10，读最大 −X 位移。"
+  },
+  {
+   "kind": "measure",
+   "question_zh": "木球骑上横杆后横向移动能不能把栅栏带开；横顶时滑块斜约 2.9°，松键后会不会回正。",
+   "matters_zh": "可能就是“超”，成立的话木球不用长助跑。",
+   "how_zh": "第 11 关第 1 小节栅栏 A，木球放在横杆顶上横向按住几秒，读滑块位移、倾角和球的去向；另测横顶后松键时的倾角。"
+  },
+  {
+   "kind": "measure",
+   "question_zh": "推动表和时长在原版脚本下是否相同。",
+   "matters_zh": "现在的表全在重建引擎、改过的脚本下量。",
+   "how_zh": "原版脚本、出生木球，第 11 关第 1 小节栅栏 A 起点 16 和 22 撞靶，读撞前速度和 d 与表比。"
+  },
+  {
+   "kind": "measure",
+   "question_zh": "推开后死一次，滑块是否回到原位并重新冻结。",
+   "matters_zh": "“死一次让栅栏复原”的路线靠它，现在是推出来的。",
+   "how_zh": "第 11 关第 1 小节木球起点 22 推开，再掉进死亡区，从判死起逐帧读滑块的位置和状态。"
+  },
+  {
+   "kind": "measure",
+   "question_zh": "冻结的滑块哪些接触能叫醒它：贴着从静止起推、箱子撞上、原版引擎里球撞上是否当帧醒。",
+   "matters_zh": "决定“顶着等一会再推”和晚到的球能不能推。",
+   "how_zh": "石球贴靶等滑块再冻结后才按键，读状态和位移；箱子落到滑块上；在 原版记录里看球第一次碰到滑块时它的状态。"
+  },
+  {
+   "kind": "measure",
+   "question_zh": "推开后停住到再冻结为什么会到 1.35 游戏秒（纸球顶着到 2.30），超出冻结规则的范围。",
+   "matters_zh": "“推完等它冻结”或“顶着等”的容错。",
+   "how_zh": "先看已有逐帧轨迹里停得晚的几次球是否还贴着靶子。"
+  },
+  {
+   "kind": "tool",
+   "question_zh": "18 处找不到回程是否属实，6 处找到的带球半径和速度能不能走通；第 10 关第 1 小节和关卡文档说的“下去出不来”不一致。",
+   "matters_zh": "回程不通的地方这条命推开了也没用。",
+   "how_zh": "给粗层搜索加“从指定点出发到指定区域”的入口，带球半径和坡上速度；找到的 6 条在引擎里各滚一次。"
+  },
+  {
+   "kind": "measure",
+   "question_zh": "24 处里哪几处靶子前有 12 以上的直线助跑、坡度多少。",
+   "matters_zh": "木球助跑推只在有这段助跑的地方能用。",
+   "how_zh": "地图网格去掉摆放部件，沿本地 −X 取样到 −25 以外，给出每处可用直线长度和坡度；不用跑引擎。"
+  }
+ ]
+}
