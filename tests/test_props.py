@@ -370,3 +370,75 @@ def test_a_closed_gate_blocks_the_road_and_an_open_one_leaves_a_gap():
     rel.g, rel.fwd, rel.back = g, [list(a) for a in g.adj], [[] for _ in range(n + 1)]
     opened = rel.with_edges(d["edges"])
     assert sum(len(a) for a in opened.fwd) == sum(len(a) for a in rel.fwd) + len(d["edges"])
+
+
+# ---- the push board (P_Modul_25): made-up shapes of about its size. The placement's x is world -z, as on level 2:
+# the road ends at z 0 (its top at y 0), the gap is 10 wide, the stopper on the far side takes the board's top
+def road(z0, z1, y=0.0, size=40.0):
+    A = np.array([[-size, y, z0], [size, y, z1]])
+    B = np.array([[size, y, z0], [-size, y, z1]])
+    C = np.array([[-size, y, z1], [size, y, z0]])
+    return A, B, C
+
+
+def board_mesh():
+    (A1, B1, C1), (A2, B2, C2) = road(-40.0, 0.0), road(10.05, 40.0)
+    A, B, C = np.vstack([A1, A2]), np.vstack([B1, B2]), np.vstack([C1, C2])
+    return Mesh(A, B, C, np.zeros(4, np.int64), np.zeros(4, bool), np.zeros((0, 7)), [dict(name="floor", groups=[], friction=0.7, elasticity=0.3)], {})
+
+
+def board_info():
+    frame = [[0.0, -1.0, 0.0, 0.0], [0.0, 0.0, -1.0, 0.0], [1.0, 0.0, 0.0, 0.0], [0.02, -0.25, 0.65, 1.0]]
+    shapes = [hexa((-2.5, -0.61, 0.43), (2.5, 8.97, 0.93)), hexa((2.0, 0.26, -0.18), (2.5, 1.08, 0.43))]
+    hulls = [dict(placement="B", type="P_Modul_25", sector=1, body="P_Modul_25_Bridge", mesh="B_%d" % i, vertices=V, faces=F, frame=frame)
+             for i, (V, F) in enumerate(shapes)]
+    V, F = hexa((-2.5, -1.0, 9.05), (2.5, -0.5, 10.05))
+    return dict(placements=[dict(name="B", type="P_Modul_25", sector=1, position=[0.0, 0.0, 0.0], x_axis=[0.0, 0.0, -1.0], y_axis=[0.0, 1.0, 0.0],
+                                 z_axis=[1.0, 0.0, 0.0])], hulls=hulls, stoppers=[dict(name="S/0", sector=None, vertices=V, faces=F)], death_boxes=[])
+
+
+def board_run(ball, v0, ticks=400):
+    """A ball on the road, 6 in front of the board's hinge, at v0 towards it with that key held: (the board's angle
+    after each tick in degrees, the ball's z after each tick, the world, the board's index)."""
+    w = world_for(board_mesh(), board_info(), "strict", 1)
+    k0 = next(k for k, p in enumerate(w.props) if p.get("hinge") and p["leader"] == k)
+    scene = w.scene()
+    pos, vel, om = np.array([0.0, 2.0, -6.0]), np.array([0.0, 0.0, v0]), np.array([v0 / 2.0, 0.0, 0.0])
+    ang, zs = [], []
+    for _ in range(ticks):
+        st, _d, pos, vel, om, _s, _t = w.rollout(ball, ph.Params(), pos, vel, om, np.array([[0.0, 0.0, 1.0]]), [1], scene=scene)
+        assert st == OK
+        ang.append(np.degrees(kernel._hinge_angle(w.prop_consts, k0, *scene[k0, :3])))
+        zs.append(pos[2])
+    return np.array(ang), np.array(zs), w, k0
+
+
+def test_the_push_board():
+    w = world_for(board_mesh(), board_info(), "strict", 1)
+    k0 = next(k for k, p in enumerate(w.props) if p.get("hinge") and p["leader"] == k)
+    hg = w.props[k0]["hinge"]
+    rel = np.array(hg["mass_centre"]) - np.array(hg["anchor"])
+    assert abs(rel[1] - 2.48) < 0.05 and abs(rel[2] + 0.21) < 0.05      # the script's mass centre: 2.49 above the hinge, 0.21 towards the road
+    assert abs(hg["inertia"] - 44.6) < 0.5                               # 25.922 + 3 x 2.498^2
+    # woken, it leans back onto the road and stays there (MEASURED on level 2: -15.56 degrees)
+    lean = np.degrees(kernel._hinge_angle(w.prop_consts, k0, *w.scene()[k0, :3]))
+    assert -17.0 < lean < -14.0 and w.props[k0]["settled"]
+    # a wood or a stone ball pushes it over and goes across it; it lies on the stopper (MEASURED: 89.86 to 89.9)
+    for ball in (ph.WOOD, ph.STONE):
+        ang, zs, _w, _k = board_run(ball, 5.0)
+        assert ang.max() > 85.0 and abs(ang[-1] - 90.0) < 2.0
+        assert zs[-1] > 11.0                                             # on the far side
+    # a paper ball does not (MEASURED: it is thrown back)
+    ang, zs, _w, _k = board_run(ph.PAPER, 5.0, ticks=250)
+    assert ang.max() < 30.0 and zs[-1] < 0.0
+
+
+def test_a_push_board_is_crossed_where_it_is_pushed():
+    from ballistics import coarse
+    from ballistics.solve import board_edges
+    info = board_info()
+    pos = [[0.0, 2.0, z] for z in (-6.0, -3.0, -2.0)] + [[0.0, 2.0, z] for z in (11.0, 12.0)]
+    g = coarse.Graph(np.array(pos), np.zeros(5, int), np.full(5, -1), [[] for _ in pos], [])
+    d = board_edges(g, info, props.part_boxes(info, None))["B/P_Modul_25_Bridge"]
+    assert sorted(u for u, _v, _c, _k in d["edges"]) == [1, 2] and {v for _u, v, _c, _k in d["edges"]} <= {3, 4}       # from in front of it, across, one way
+    assert all(k == "roll" for *_x, k in d["edges"]) and d["fall"][2] > 0.9

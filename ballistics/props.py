@@ -47,12 +47,17 @@ COARSE_COST = {"paper": 2.0, "wood": 5.0, "stone": 30.0, "box": 15.0, "P_Modul_3
 #   P_Modul_34, the falling rock: a crate standing on the lower floor carries a block that hangs on an upright rail.
 #   Push the crate out from under it and the block comes down (READ: the script's rail; MEASURED on the rebuilt engine:
 #   who can push the crate out, see docs/mechanisms.md).
+#   `hinge`: it turns about a fixed hinge (the catalogue's motion: axis and point in the template's frame), with
+#     the mass centre the script gives it (in its own frame) and the measured inertia about that.
+#   P_Modul_25, the push board: a board on a hinge at the end of a road. Woken, it leans back onto the road (its
+#     wedge); pushed over its top from the road it falls forward across the gap onto a stopper and is a bridge.
 #   P_Modul_01, the sliding gate: the gate (target plate, bar and fence, one body of three hulls) lies in a groove
 #   (a floor plate and two walls) that only it touches; pushed along the groove it slides out of the upper road. The
 #   filler plate under it is road (`coarse.FIXED_PARTS`). READ: the groups, the hulls; the rest is contacts.
 PARTS = {"P_Modul_34": {"P_Modul_34_Kiste": dict(slider=False), "P_Modul_34_Schiebestein": dict(slider=True)},
-         "P_Modul_01": {"P_Modul_01_Pusher": dict(hulls=True, role=1), "P_Modul_01_Rinne": dict(hulls=True, role=2)}}
-MAX_TRIS = 12            # a hull piece that is not a box: at most this many triangles (a hexahedron)
+         "P_Modul_01": {"P_Modul_01_Pusher": dict(hulls=True, role=1), "P_Modul_01_Rinne": dict(hulls=True, role=2)},
+         "P_Modul_25": {"P_Modul_25_Bridge": dict(hulls=True, role=0, hinge=True)}}
+STOPPER = "Phys_FloorStopper"       # the catalogue's body for the stoppers (in collision_rules)
 
 
 def bodies() -> dict:
@@ -74,22 +79,59 @@ def bodies() -> dict:
     return out
 
 
-def _piece(kind, name, body, p, axes, V, spec, mech, faces=None):
-    """A part's piece: the box around the vertices V (world) in the mechanism's axes, and, when V is a hull that is
-    not that box, its triangles about the box's centre."""
+def _piece(kind, name, body, p, axes, V, spec, mech, hull=False):
+    """A part's piece: the box around the vertices V (world) in the mechanism's axes, and, when V is a hull, the hull
+    of those vertices (the engine's shape, whatever faces the mesh has): its triangles about the box's centre where
+    it is not that box, and its corners where the piece turns or is a stopper."""
+    from .geometry import convex_hull
     L = V @ axes.T                                   # in the mechanism's own axes
     lo, hi = L.min(0), L.max(0)
     centre = ((lo + hi) / 2) @ axes
-    tris = None
-    if faces is not None:
-        corner = np.all(np.minimum(np.abs(L - lo), np.abs(L - hi)) < 1e-4, axis=1)
+    tris = verts = None
+    if hull:
+        H, F = convex_hull(V)
+        corner = np.all(np.minimum(np.abs(H @ axes.T - lo), np.abs(H @ axes.T - hi)) < 1e-4, axis=1)
         if not corner.all():                         # not a box: keep its faces (a trapezoid prism: the gate's fence)
-            F = np.asarray(faces, int)
-            if len(F) > MAX_TRIS:
-                raise ValueError("%s: a hull of %d triangles (at most %d)" % (name, len(F), MAX_TRIS))
-            tris = [[float(v) for v in np.concatenate([V[f[0]] - centre, V[f[1]] - centre, V[f[2]] - centre])] for f in F]
+            tris = [[float(v) for v in np.concatenate([H[f[0]] - centre, H[f[1]] - centre, H[f[2]] - centre])] for f in F]
+        if spec.get("hinge") or spec.get("role") == 4:
+            verts = [[float(v) for v in h - centre] for h in H]
     return dict(kind=kind, name=name, body=body, sector=p.get("sector"), placed=[float(v) for v in centre], half=tuple(float(v) for v in (hi - lo) / 2),
-                axes=axes.tolist(), slider=bool(spec.get("slider", False)), role=int(spec.get("role", 0)), mech=mech, tris=tris)
+                axes=axes.tolist(), slider=bool(spec.get("slider", False)), role=int(spec.get("role", 0)), mech=mech, tris=tris, verts=verts)
+
+
+def _hinge(cat_body, p, hulls, mass):
+    """A hinged body's hinge in world, from the catalogue (axis and point in the template's frame, the script's mass
+    centre in the body's own frame, the inertia about that along the body's axes) and the body's frame in the map."""
+    PA = np.array([np.array(p[k], float) / np.linalg.norm(p[k]) for k in ("x_axis", "y_axis", "z_axis")])
+    axis = np.array(cat_body["motion"]["axis"], float) @ PA
+    axis /= np.linalg.norm(axis)
+    anchor = np.array(cat_body["motion"]["anchor"], float) @ PA + np.array(p["position"], float)
+    F = np.array(hulls[0]["frame"], float)
+    R, T = F[:3, :3], F[3, :3]
+    com = np.array(cat_body["mass_center"]["v"], float) @ R + T
+    core = np.array(cat_body["inertia"]["v"], float)
+    r = com - anchor
+    r_perp = r - axis * (r @ axis)
+    inertia = float(sum(core[i] * ((R[i] / np.linalg.norm(R[i])) @ axis) ** 2 for i in range(3))) + mass * float(r_perp @ r_perp)
+    return dict(anchor=[float(v) for v in anchor], axis=[float(v) for v in axis], inertia=inertia, mass_centre=[float(v) for v in com])
+
+
+def stoppers(info: dict, sector=None) -> list:
+    """The stoppers (the map's `stoppers`): fixed blocks that stop mechanisms and props, not the player ball (READ).
+    Each is a piece with its hull's corners and triangles."""
+    out = []
+    cat = things.load()
+    c = next(b for b in cat["collision_rules"].bodies if b["name"].startswith(STOPPER))
+    for i, s in enumerate(info.get("stoppers", ())):
+        if sector is not None and s.get("sector") not in (None, sector):
+            continue
+        V = np.array(s["vertices"], float)
+        if len(np.unique(np.round(V, 6), axis=0)) > 16:
+            continue                                     # (a big stopper block, of level 13: not needed yet)
+        b = _piece(STOPPER, s["name"], s["name"], dict(sector=s.get("sector")), np.eye(3), V, dict(role=4), 0, hull=True)
+        out.append(dict(b, shape="box", mass=LOCKED, friction=float(c["friction"]["v"]), elasticity=float(c["elasticity"]["v"]),
+                        lin_damp=0.0, rot_damp=0.0, inertia=LOCKED, rest=list(b["placed"]), leader=-1))
+    return out
 
 
 def part_boxes(info: dict, shapes, sector=None) -> list:
@@ -107,9 +149,18 @@ def part_boxes(info: dict, shapes, sector=None) -> list:
         for part, spec in parts.items():
             body = "%s/%s" % (p["name"], part)
             if spec.get("hulls"):
-                for h in hulls:
-                    if h["placement"] == p["name"] and h["body"] == part:
-                        out.append(_piece(part, "%s/%s" % (body, h["mesh"]), body, p, axes, np.array(h["vertices"], float), spec, m + 1, h["faces"]))
+                hs = [h for h in hulls if h["placement"] == p["name"] and h["body"] == part]
+                pieces = [_piece(part, "%s/%s" % (body, h["mesh"]), body, p, axes, np.array(h["vertices"], float), spec, m + 1, hull=True) for h in hs]
+                if spec.get("hinge") and hs:
+                    cb = next(x for x in things.load()[p["type"]].bodies if x["name"] == part)
+                    hg = _hinge(cb, p, hs, float(cb["mass"]["v"]))
+                    for b in pieces:
+                        b["hinge"] = hg
+                    # the piece furthest from the hinge first: the body's angle is read from where it is
+                    a, o = np.array(hg["axis"]), np.array(hg["anchor"])
+                    far = lambda b: float(np.linalg.norm((np.array(b["placed"]) - o) - a * ((np.array(b["placed"]) - o) @ a)))
+                    pieces.sort(key=lambda b: -far(b))
+                out += pieces
                 continue
             if shapes is None:
                 continue
@@ -149,11 +200,13 @@ def of(info: dict, sector, mesh=None, shapes=None) -> list:
                 unit = dict(x_axis=(1.0, 0.0, 0.0), y_axis=(0.0, 1.0, 0.0), z_axis=(0.0, 0.0, 1.0))
                 body["axes"] = [[float(v) for v in np.array(p.get(k, unit[k]), float) / np.linalg.norm(p.get(k, unit[k]))] for k in unit]
             out.append(body)
+    if out:                                              # what stops the mechanisms' parts and the props (not the player ball)
+        out += stoppers(info, sector)
     if mesh is not None and out:
         from .kernel import World
         w = World.of(mesh, stop_on_placed=False, props=out)
         scene = w.scene()
-        scene[:, 9] = [0.0 if b.get("role") == 2 else 1.0 for b in out]       # awake where they were put (a fixed part never is)
+        scene[:, 9] = [0.0 if b.get("role") in (2, 4) else 1.0 for b in out]       # awake where they were put (a fixed part never is)
         w.idle(scene, SETTLE_TICKS)
         for k, b in enumerate(out):
             b["rest"] = [float(v) for v in scene[k, :3]]

@@ -130,8 +130,50 @@ def placed_hulls(level: NmoLevel, templates, bmap=None) -> list:
                     continue
                 V, F = t.meshes[name]
                 W = (V @ pm[:3, :3] + pm[3, :3]) @ m[:3, :3] + m[3, :3]
+                frame = pm @ m                                 # the body's own frame in world (row vectors, translation in the last row)
                 out.append(dict(placement=o.name, type=kind, sector=sector_of.get(o.name), body=body, mesh=name,
-                                vertices=np.round(W, 6).tolist(), faces=F.tolist()))
+                                vertices=np.round(W, 6).tolist(), faces=F.tolist(), frame=np.round(frame, 6).tolist()))
+    return out
+
+
+def stoppers(level: NmoLevel) -> list:
+    """The objects in Phys_FloorStopper: they stop mechanisms and props, not the player ball (READ), so they are not in
+    the mesh. Each object's mesh split into its connected pieces, each a small convex block (the push board's
+    supports are wedges): [dict(name, sector, vertices (world), faces)]."""
+    sector_of = {}
+    for g, names in level.groups.items():
+        m = SECTOR.match(g)
+        if m:
+            for n in names:
+                sector_of[n] = int(m.group(1))
+    out = []
+    for o in level.members(STOPPER_GROUP):
+        if o.vertices is None:
+            continue
+        V, F = o.world_vertices(), np.asarray(o.faces, np.int64)
+        # the same point may be several vertices (one per face): join vertices that are within 1e-4
+        key = {}
+        ids = np.array([key.setdefault(tuple(np.round(v, 4)), len(key)) for v in V])
+        parent = list(range(len(key)))
+
+        def root(a):
+            while parent[a] != a:
+                parent[a] = parent[parent[a]]
+                a = parent[a]
+            return a
+        for f in ids[F]:
+            for a in f[1:]:
+                ra, rb = root(int(f[0])), root(int(a))
+                if ra != rb:
+                    parent[rb] = ra
+        groups: dict = {}
+        for fi, f in enumerate(ids[F]):
+            groups.setdefault(root(int(f[0])), []).append(fi)
+        for i, faces in enumerate(groups.values()):
+            used = sorted(set(F[faces].ravel().tolist()))
+            local = {v: j for j, v in enumerate(used)}
+            out.append(dict(name="%s/%d" % (o.name, i), sector=sector_of.get(o.name), vertices=np.round(V[used], 6).tolist(),
+                            faces=[[local[int(v)] for v in F[f]] for f in faces]))
     return out
 
 
@@ -234,6 +276,7 @@ def export_map(nmo_path, out_dir, name: str | None = None, bmap=None, templates=
     info = build_map(level)
     if templates is not None:
         info["hulls"] = placed_hulls(level, templates, bmap)       # the bodies' own collision shapes, where they are not the shown mesh
+    info["stoppers"] = stoppers(level)                             # what stops mechanisms and props, not the ball
     (out_dir / (name + "-map.json")).write_text(json.dumps(info, indent=1, ensure_ascii=False), encoding="utf8")
     return dict(name=name, objects=len(level.objects), triangles=len(mesh), rail_triangles=int(mesh.rail.sum()), entities=len(mesh.entities), tubes=len(mesh.tubes),
                 placed_parts=int(mesh.meta.get("placed_parts", 0)), placed_triangles=int(mesh.placed.sum()),

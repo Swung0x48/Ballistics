@@ -275,3 +275,47 @@ class Mesh:
     def load(cls, path) -> "Mesh":
         with np.load(path, allow_pickle=False) as z:
             return cls(z["A"], z["B"], z["C"], z["owner"], z["rail"], z["tubes"], json.loads(str(z["entities"])), json.loads(str(z["meta"])))
+
+
+def convex_hull(points, eps: float = 1e-4):
+    """The convex hull of a small set of points (a body's collision hull is the hull of its mesh's vertices, whatever
+    faces the mesh has): (vertices (n, 3), triangles (m, 3) as indices into them, wound outwards). Every plane through
+    three of the points that has all of them on one side is a face; a face with more than three points on it is cut
+    into a fan. Meant for a few dozen points."""
+    P = np.unique(np.round(np.asarray(points, float), 6), axis=0)
+    n = len(P)
+    if n > 64:
+        raise ValueError("convex_hull is for a few dozen points, not %d" % n)
+    planes = []
+    for i in range(n):
+        for j in range(i + 1, n):
+            K = np.arange(j + 1, n)
+            if not len(K):
+                continue
+            N = np.cross(P[j] - P[i], P[K] - P[i])                   # one plane per third point
+            ln = np.linalg.norm(N, axis=1)
+            ok = ln > 1e-9
+            N, K = N[ok] / ln[ok, None], K[ok]
+            S = (P - P[i]) @ N.T                                       # (n, planes): every point's side
+            out = (S <= eps).all(0)
+            inn = (S >= -eps).all(0)
+            for q in np.flatnonzero(out | inn):
+                nrm = N[q] if out[q] else -N[q]
+                d = float(nrm @ P[i])
+                if not any(np.allclose(nrm, e[0], atol=1e-3) and abs(d - e[1]) < 1e-3 for e in planes):
+                    planes.append((nrm, d))
+    tris = []
+    for nrm, d in planes:
+        on = np.flatnonzero(np.abs(P @ nrm - d) < eps * 10)
+        c = P[on].mean(0)
+        u = P[on[0]] - c
+        u /= np.linalg.norm(u)
+        v = np.cross(nrm, u)
+        ang = np.arctan2((P[on] - c) @ v, (P[on] - c) @ u)
+        ring = on[np.argsort(ang)]
+        for q in range(1, len(ring) - 1):
+            t = [int(ring[0]), int(ring[q]), int(ring[q + 1])]
+            if np.cross(P[t[1]] - P[t[0]], P[t[2]] - P[t[0]]) @ nrm < 0:
+                t[1], t[2] = t[2], t[1]
+            tris.append(t)
+    return P, np.array(tris, np.int64).reshape(-1, 3)

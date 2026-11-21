@@ -62,7 +62,7 @@ def _hits(pts, boxes, clear: float, pushed=None) -> bool:
     by more than `clear`: by its box, and where the piece is a hull that is not its box, by the hull.
     pushed: (the index of a piece, a point of the face it is pushed on, the way it gives): a ball that touches
     that piece from in front of that face pushes it, it is not stopped by it."""
-    from .kernel import PROP_WIDTH, _hull_point
+    from .kernel import BC_WIDTH, PROP_WIDTH, TRI0, _hull_point
     for i, (c, half, axes, tris) in enumerate(boxes):
         if pushed is not None and i == pushed[0]:
             ahead = (pts - pushed[1]) @ pushed[2] > -0.5     # past the face (or at it): the piece is in the way
@@ -80,10 +80,11 @@ def _hits(pts, boxes, clear: float, pushed=None) -> bool:
             continue
         if not tris:
             return True
-        row, prow = np.zeros(29), np.zeros(PROP_WIDTH)
+        row, prow = np.zeros(BC_WIDTH), np.zeros(PROP_WIDTH)
         row[21:24] = c
+        row[29:38] = np.eye(3).ravel()                    # as it was put
         T = np.asarray(tris, float).ravel()
-        prow[23], prow[24:24 + len(T)] = len(tris), T
+        prow[23], prow[TRI0:TRI0 + len(T)] = len(tris), T
         for p in pts[near]:
             if _hull_point(float(p[0]), float(p[1]), float(p[2]), row, prow, BALL_R)[0] < -clear:
                 return True
@@ -137,6 +138,41 @@ def gate_edges(g, info: dict, parts: list) -> dict:
     return out
 
 
+BOARD_COST = 5.0          # going over a push board, on top of the way: ASSUMED, only to rank ways (pushing it over slows the ball)
+
+
+def board_edges(g, info: dict, parts: list) -> dict:
+    """The push boards (P_Modul_25) on the coarse level. Where a board is pushed is where it is crossed: a ball rolling
+    from the road into the leaning board pushes it over and goes on across it as it lies on its stopper. So the
+    places on the road in front of it (1.5 to 4 from the hinge, within 2 of its middle) get an edge across to the
+    places on the far side (10 to 14 from the hinge), one way only: from behind it cannot be pushed over (READ: no
+    road there). Per board: dict(sector, edges [(u, v, cost, kind)], fall (the way it falls, level))."""
+    out = {}
+    for b in parts:
+        if not b.get("hinge") or not b["kind"].startswith("P_Modul_25") or b["body"] in out:
+            continue
+        hg = b["hinge"]
+        a, o = np.array(hg["axis"], float), np.array(hg["anchor"], float)
+        fall = np.cross(a, [0.0, 1.0, 0.0])                # where its top goes as it falls over (positive turn)
+        fall /= np.linalg.norm(fall)
+        side = np.cross([0.0, 1.0, 0.0], fall)
+        rel = g.pos - o
+        along, across, up = rel @ fall, rel @ side, rel[:, 1]
+        floor = g.kind == 0
+        near = np.flatnonzero(floor & (along > -4.0) & (along < -1.5) & (np.abs(across) <= 2.0) & (up > 0.5) & (up < 4.0))
+        far = np.flatnonzero(floor & (along > 10.0) & (along < 14.0) & (np.abs(across) <= 2.0) & (np.abs(up - 2.2) < 2.5))
+        edges = []
+        for u in near:
+            if not len(far):
+                break
+            v = int(far[np.argmin(np.abs(across[far] - across[u]) + 0.1 * np.abs(along[far] - 11.0))])
+            c = float(np.linalg.norm(g.pos[v] - g.pos[u])) + BOARD_COST
+            g.adj[u] = list(g.adj[u]) + [(v, c, "roll")]
+            edges.append((int(u), v, c, "roll"))
+        out[b["body"]] = dict(sector=b.get("sector"), edges=edges, fall=fall)
+    return out
+
+
 def graph_for(mesh: Mesh, info: dict, cache: Path | None = None, log=print):
     """The coarse graph of a map: the domes are geometry, the loose balls are not obstacles but cost to go through,
     a stone transformer costs its transformation, a paper transformer is kept out of."""
@@ -148,7 +184,8 @@ def graph_for(mesh: Mesh, info: dict, cache: Path | None = None, log=print):
     from .launch import FOLLOW_SPEED
     marks = dict(fixed_bodies=fixed, transformers="wood and stone ones can be gone through, at the cost of the transformation",
                  loose_balls="bodies: gone through at a cost %s; parts of %s" % (sorted(props.COARSE_COST.items()), sorted(props.PARTS)),
-                 gate_rule="a closed gate blocks the edges into it; the edges it clears when pushed open %.2f are kept per gate" % GATE_OPEN)
+                 gate_rule="a closed gate blocks the edges into it, the target plate only past the face it is pushed on; the edges it clears when pushed open %.2f are kept per gate" % GATE_OPEN,
+                 board_rule="a push board is crossed where it is pushed: road places in front of it lead across to the far side, cost %.1f more" % BOARD_COST)
     if cache is not None and cache.exists():
         g = pickle.load(open(cache, "rb"))
         n = g.info.get("mesh_triangles")                  # graphs cached before this was recorded have none
@@ -185,6 +222,9 @@ def graph_for(mesh: Mesh, info: dict, cache: Path | None = None, log=print):
         for u in np.flatnonzero(~inside):
             g.adj[u] = [(v, c + props.COARSE_COST[b["kind"]] if inside[v] else c, k) for v, c, k in g.adj[u]]
     g.info["gates"] = gate_edges(g, info, parts)
+    g.info["boards"] = board_edges(g, info, parts)
+    for name, d in g.info["boards"].items():
+        log("push board %s (sector %s): %d edges across it" % (name, d["sector"], len(d["edges"])))
     for name, d in g.info["gates"].items():
         log("gate %s (sector %s): %d edges wait for it to be opened; pushed from place %d" % (name, d["sector"], len(d["edges"]), d["operate"]))
     g.info["mesh_triangles"] = len(mesh.A)
