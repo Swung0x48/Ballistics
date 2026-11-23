@@ -262,10 +262,35 @@ PALETTE = [(31, 119, 180), (255, 127, 14), (44, 160, 44), (214, 39, 40), (148, 1
 LINK = {"launch": (212, 122, 28), "drop": (16, 132, 120), "step": (82, 81, 78), "roll": (150, 149, 144), "lift": (62, 100, 150), "mech": (196, 60, 48)}
 
 
+def _arrow(v, a, b, colour, width: int = 5):
+    """An arrow from world point a to world point b; a ring where they are the same place (a step done in place)."""
+    from .render import SURFACE
+    (x0, y0), (x1, y1) = v.P(a[0], a[2]), v.P(b[0], b[2])
+    L = float(np.hypot(x1 - x0, y1 - y0))
+    if L < 4.0:
+        v.pen.ellipse((x1 - 13, y1 - 13, x1 + 13, y1 + 13), outline=SURFACE + (255,), width=width + 4)
+        v.pen.ellipse((x1 - 13, y1 - 13, x1 + 13, y1 + 13), outline=colour + (255,), width=width)
+        return
+    v.halo_line([a, b], colour, width, ring=2)
+    ux, uy = (x1 - x0) / L, (y1 - y0) / L
+    h = 18.0
+    tip = [(x1, y1), (x1 - h * ux + 0.55 * h * uy, y1 - h * uy - 0.55 * h * ux), (x1 - h * ux - 0.55 * h * uy, y1 - h * uy + 0.55 * h * ux)]
+    v.pen.polygon(tip, fill=colour + (255,), outline=SURFACE + (255,))
+
+
+def _rim(P):
+    """Of a region's places, the ones at its edge: a neighbour 1 away (x or z) is not one of its places."""
+    keys = {(int(round(p[0])), int(round(p[2]))) for p in P}
+    return np.array([p for p in P if any((int(round(p[0])) + dx, int(round(p[2])) + dz) not in keys
+                                          for dx, dz in ((1, 0), (-1, 0), (0, 1), (0, -1)))]).reshape(-1, 3)
+
+
 def draw(mesh, res: dict, path, title: str = ""):
     """The sector's regions in colours (the big ones and the ones on the way), the links between them as thin lines,
-    and the way through the regions with the fewest breaks as a thick one."""
-    from .render import INK, TopView, _font
+    and the way with the fewest breaks: the regions it goes through outlined, and each of its links as a numbered
+    arrow from where it leaves one region to where it lands in the next. Within a region nothing is drawn: rolling
+    gets the ball anywhere in it."""
+    from .render import INK, SURFACE, TopView, _font
     P = res["places"]
     lab = res["lab"]
     lo, hi = P.min(0), P.max(0)
@@ -275,35 +300,82 @@ def draw(mesh, res: dict, path, title: str = ""):
     order = sorted(show, key=lambda r: -res["regions"][r]["places"])
     colour = {r: PALETTE[i % len(PALETTE)] for i, r in enumerate(order)}
     for r in order:
+        alpha = 220 if r in on_way else 90
         for p in P[lab == r]:
             x, y = v.P(p[0], p[2])
-            v.pen.rectangle((x - 2, y - 2, x + 2, y + 2), fill=colour[r] + (200,))
+            v.pen.rectangle((x - 2, y - 2, x + 2, y + 2), fill=colour[r] + (alpha,))
+    for r in set(on_way):                                  # the regions of the way, outlined
+        for p in _rim(P[lab == r]):
+            x, y = v.P(p[0], p[2])
+            v.pen.rectangle((x - 3, y - 3, x + 3, y + 3), fill=INK + (255,))
     for key, e in res["links"].items():
         if key[1] not in show or key[2] not in show or (key[0] == "plain" and key[3] in BREAK):
             continue
         a, b = P[e["at"][0]], P[e["at"][1]]
         c = LINK["mech"] if key[0] == "mech" else LINK["lift"] if key[0] == "lift" else LINK.get(key[3], (82, 81, 78))
-        v.halo_line([a, b], c, 2, ring=1, alpha=170)
+        v.halo_line([a, b], c, 2, ring=1, alpha=110)
     f = _font(22)
     for r in order:
         d = res["regions"][r]
         if d["places"] >= 300 or r in on_way:
             x, y = v.P(d["centre"][0], d["centre"][2])
             t = "R%d" % r + ("（%s变）" % "".join({"wood": "木", "stone": "石", "paper": "纸"}[k] for k in d["transformers"]) if d["transformers"] else "")
-            v.pen.rectangle((x - 2, y - 2, x + v.pen.textlength(t, font=f) + 4, y + 26), fill=(252, 252, 251, 220))
+            v.pen.rectangle((x - 2, y - 2, x + v.pen.textlength(t, font=f) + 4, y + 26), fill=SURFACE + (220,))
             v.pen.text((x, y), t, fill=INK, font=f)
-    # the way: from each link's place to the next
-    pts = []
+    # the way's links, in order: an arrow each with its number in a disc by its head (moved down until it lands on no
+    # other); a transformation's number goes in its region. What each number is, is listed under the map
+    BALL = {"wood": "木", "stone": "石", "paper": "纸"}
+    fb = _font(22)
+    n, rows, discs = 0, [], []
     for r, k, b, what, key in res["path"]:
-        if key is not None:
+        if what == "start":
+            continue
+        n += 1
+        if key is None:                                    # transformed within the region
+            d = res["regions"][r]
+            x, y = v.P(d["centre"][0], d["centre"][2])
+            rows.append("%d　在 R%d 变%s球" % (n, r, BALL[KINDS[k]]))
+        else:
             e = res["links"][key]
-            pts += [P[e["at"][0]], P[e["at"][1]]]
+            a, bp = P[e["at"][0]], P[e["at"][1]]
+            c = (20, 28, 40) if key[0] == "plain" and key[3] in BREAK else LINK["mech"] if key[0] == "mech" else LINK["lift"] if key[0] == "lift" \
+                else LINK.get(key[3], (82, 81, 78))
+            _arrow(v, a, bp, c, 6)
+            x, y = v.P(bp[0], bp[2])
+            x, y = x + 18, y - 18
+            rows.append("%d　R%d → R%d　%s（%s球）" % (n, key[1], key[2], describe(key), BALL[KINDS[k]]))
+        while any(abs(x - qx) < 30 and abs(y - qy) < 30 for qx, qy in discs):
+            y += 32
+        discs.append((x, y))
+        v.pen.ellipse((x - 15, y - 15, x + 15, y + 15), fill=INK + (255,), outline=SURFACE + (255,), width=2)
+        t = str(n)
+        v.pen.text((x - v.pen.textlength(t, font=fb) / 2, y - 14), t, fill=SURFACE, font=fb)
     sg = res["sg"]
-    first = sg.g.pos[res["start_place"]]
-    if pts:
-        v.halo_line([first] + pts + [sg.g.pos[res["goal"]]], (20, 28, 40), 5, ring=2)
-    v.dot(first, "起点", colour=(208, 59, 59))
+    v.dot(sg.g.pos[res["start_place"]], "起点", colour=(208, 59, 59))
     v.dot(sg.g.pos[res["goal"]], "目标", colour=(20, 28, 40))
     v.legend([(LINK["launch"], "起飞"), (LINK["drop"], "下落"), (LINK["step"], "台阶"), (LINK["lift"], "风扇上升"), (LINK["mech"], "机关"),
-              ((20, 28, 40), "断点最少、连接最少的走法")])
+              ((20, 28, 40), "断点"), (INK, "黑框：走法经过的区域；号码：它的连接，按顺序（列在图下）")])
     v.save(path)
+    _list_under(path, rows)
+
+
+def _list_under(path, rows, per_column: int = 12):
+    """The way's steps written under the picture, in columns."""
+    from PIL import Image, ImageDraw
+    from .render import INK, SURFACE, _font
+    if not rows:
+        return
+    img = Image.open(path)
+    f = _font(22)
+    cols = [rows[i:i + per_column] for i in range(0, len(rows), per_column)]
+    h = 24 + 32 * min(len(rows), per_column) + 16
+    out = Image.new("RGB", (img.size[0], img.size[1] + h), SURFACE)
+    out.paste(img, (0, 0))
+    pen = ImageDraw.Draw(out)
+    x = 16
+    for col in cols:
+        w = max(pen.textlength(t, font=f) for t in col)
+        for i, t in enumerate(col):
+            pen.text((x, img.size[1] + 12 + 32 * i), t, fill=INK, font=f)
+        x += int(w) + 48
+    out.save(path)
