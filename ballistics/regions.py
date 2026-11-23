@@ -156,8 +156,20 @@ def links_of(sg, R: Regions) -> dict:
     return out
 
 
-def _moves(key, bits: int):
-    """What a link does with the mechanism bits `bits`: [(kind it goes on as, bits after, what)] (empty: not there)."""
+def _moves(key, bits: int, lock: int = 0):
+    """What a link does with the mechanism bits `bits`: [(kind it goes on as, bits after, what)] (empty: not there).
+    lock: bits that never change (a what-if): a locked gate is not opened, a locked board not pushed over (so not
+    crossed that way), a stone ball goes over a locked seesaw without tipping it."""
+    got = _moves_free(key, bits)
+    if not lock or not got:
+        return got
+    t, b2, what = got[0]
+    if not (b2 ^ bits) & lock:
+        return got
+    return [(t, bits, what)] if key[0] == "mech" and key[3] == coarse.SEESAW else []
+
+
+def _moves_free(key, bits: int):
     if key[0] == "plain":
         _p, _a, _b, kind, mask, _k, t = key
         return [(t, bits, kind)] if (bits & mask) == mask else []
@@ -180,7 +192,7 @@ def _moves(key, bits: int):
     return []
 
 
-def connect(links: dict, start, goals):
+def connect(links: dict, start, goals, lock: int = 0):
     """The way through the regions from start = (region, kind, bits) to any of the regions `goals` with the fewest
     breaks, then the fewest links: (breaks, [(region, kind, bits, how it got there, the link's key or None)], every
     (region, kind, bits) reached without a break); (None, [], ...) if there is none even with breaks."""
@@ -201,7 +213,7 @@ def connect(links: dict, start, goals):
             end = node
             break
         for key in by_from.get(r, ()):
-            for k2, b2, what in _moves(key, bits):
+            for k2, b2, what in _moves(key, bits, lock):
                 nxt = (key[2], k2, b2)
                 cost = (nb + (1 if what in BREAK else 0), ns + 1)
                 if cost < best.get(nxt, (1 << 30, 0)):
@@ -220,12 +232,15 @@ def connect(links: dict, start, goals):
     return best[end][0], path[::-1], free
 
 
-def scan(g, info, sector: int, world, entry_kind: str = "wood", operate_cost: float = 20.0) -> dict:
-    """Step 1: a sector's regions for each kind of ball, where its reset point and its goal are."""
+def scan(g, info, sector: int, world, entry_kind: str = "wood", operate_cost: float = 20.0, overrides=None) -> dict:
+    """Step 1: a sector's regions for each kind of ball, where its reset point and its goal are. overrides (a
+    what-if, `Overrides`): placements taken as not there, mechanisms put in another state at the start, mechanisms
+    whose state never changes."""
+    ov = overrides or Overrides()
     from . import trafo
     from .solve import state_graph_for
     from .staged import nearest_node
-    sg, state_of = state_graph_for(g, info, sector, world, operate_cost, cork=True)
+    sg, state_of = state_graph_for(g, info, sector, world, operate_cost, cork=True, without=ov.without)
     n, M = sg.n, sg.M
     P = g.pos[sg.glob]
     R = Regions(kind_labels(n, [[v for v, _c, kind, _e, _m in sg.fwd[u] if kind in ROLL] for u in range(n)], sg.tk), P)
@@ -233,6 +248,13 @@ def scan(g, info, sector: int, world, entry_kind: str = "wood", operate_cost: fl
     goal = g.nearest(anchors[sector], 25.0)
     togo = sg.togo(goal)
     s0 = state_of(entry_kind, world.scene())
+    lock = 0
+    for m, mc in enumerate(sg.mechs):
+        nm = mc["name"].split("/")[0]
+        if nm in ov.state:
+            s0 = (s0 & ~(1 << m)) | (ov.bit(mc["type"], ov.state[nm]) << m)
+        if nm in ov.lock:
+            lock |= 1 << m
     reset = np.array(info["reset_points"][sector - 1], float)
     u0 = nearest_node(g, togo[s0], reset)
     if sg.loc[u0] < 0:
@@ -247,7 +269,7 @@ def scan(g, info, sector: int, world, entry_kind: str = "wood", operate_cost: fl
         idx = R.members(r)
         regions[r] = dict(name=R.name(r), kind=KINDS[int(R.kind[r])], places=int(len(idx)), centre=P[idx].mean(0).tolist(),
                           lo=P[idx].min(0).tolist(), hi=P[idx].max(0).tolist())
-    return dict(sector=sector, sg=sg, R=R, places=P, regions=regions, transformers=trafo.of(info, sector),
+    return dict(sector=sector, sg=sg, R=R, places=P, regions=regions, transformers=[t for t in trafo.of(info, sector) if t["name"] not in ov.without], lock=lock,
                 start=(R.of(k0, l0), k0, s0 & ((1 << M) - 1)), start_place=int(u0), s0=int(s0), togo=togo, goal=int(goal),
                 goal_regions=sorted(R.of(k, gl) for k in range(3) if gl >= 0 and R.labs[k][gl] >= 0),
                 mechs=[dict(name=m["name"], type=m["type"]) for m in sg.mechs], entry_kind=entry_kind)
@@ -258,7 +280,7 @@ def link(res: dict) -> dict:
     coarse level's own cheapest plan as regions. Adds them to res and returns it."""
     sg, R, M = res["sg"], res["R"], len(res["mechs"])
     res["links"] = links_of(sg, R)
-    res["breaks"], res["path"], res["free"] = connect(res["links"], res["start"], res["goal_regions"])
+    res["breaks"], res["path"], res["free"] = connect(res["links"], res["start"], res["goal_regions"], res.get("lock", 0))
     nodes, kinds, states = sg.plan(res["s0"], res["start_place"], res["togo"])
     plan = []
     for i, gu in enumerate(nodes):
@@ -271,9 +293,46 @@ def link(res: dict) -> dict:
     return res
 
 
-def analyse(g, info, sector: int, world, entry_kind: str = "wood", operate_cost: float = 20.0) -> dict:
+def analyse(g, info, sector: int, world, entry_kind: str = "wood", operate_cost: float = 20.0, overrides=None) -> dict:
     """Both steps for one sector."""
-    return link(scan(g, info, sector, world, entry_kind, operate_cost))
+    return link(scan(g, info, sector, world, entry_kind, operate_cost, overrides))
+
+
+class Overrides:
+    """A what-if for the region analysis: without (placement names taken as not there), state ({mechanism name:
+    state at the start}: 0/1, or the state's name: gate 关/开, board 立/倒, seesaw 0 as it falls first / 1 tipped),
+    lock (mechanism names whose state never changes)."""
+
+    def __init__(self, without=(), state=None, lock=()):
+        self.without, self.state, self.lock = set(without), dict(state or {}), set(lock)
+
+    @classmethod
+    def parse(cls, without=(), state=(), lock=()):
+        """From the command line: state as NAME=VALUE strings."""
+        st = {}
+        for s in state or ():
+            name, _, v = s.partition("=")
+            if not v:
+                raise ValueError("--state %r: write it as NAME=STATE" % s)
+            st[name.strip()] = v.strip()
+        return cls(without or (), st, lock or ())
+
+    @staticmethod
+    def bit(typ: str, v) -> int:
+        v = str(v).strip().lower()
+        names = {"gate": {"关": 0, "closed": 0, "开": 1, "open": 1}, "board": {"立": 0, "up": 0, "倒": 1, "down": 1},
+                 "seesaw": {"tipped": 1, "翻": 1, "翻过来": 1}}
+        if v in ("0", "1"):
+            return int(v)
+        if v in names.get(typ, {}):
+            return names[typ][v]
+        raise ValueError("a %s has no state %r (0, 1%s)" % (typ, v, "".join(", " + k for k in names.get(typ, {}))))
+
+    def __bool__(self):
+        return bool(self.without or self.state or self.lock)
+
+    def plain(self) -> dict:
+        return dict(without=sorted(self.without), state=self.state, lock=sorted(self.lock))
 
 
 def describe(key) -> str:
@@ -334,7 +393,7 @@ def summary_links(res: dict) -> dict:
                 note="mechanism_bits: bit m is mechanism m's state (gate open, push board down, seesaw low at its other end)" if res["mechs"] else "")
 
 
-def run(mesh, info, g, name: str, out, png=None, log=print) -> list:
+def run(mesh, info, g, name: str, out, png=None, log=print, overrides=None, tag: str | None = None) -> list:
     """The two steps for every sector of a map: step 1 the regions, step 2 the links between them and the way with
     the fewest breaks. Writes <name>-regions.json and <name>-links.json into `out` (and pictures of each step for
     each sector into `png`). A sector is entered as the kind of ball the way through the one before ended as (the
@@ -343,8 +402,17 @@ def run(mesh, info, g, name: str, out, png=None, log=print) -> list:
     from pathlib import Path
     from .staged import world_for
     kind, done = "wood", []
+    ov = overrides or Overrides()
+    if ov:
+        tag = tag or "what-if"
+        log("what-if: %s" % ov.plain())
+        known = {p["name"] for p in info.get("placements", ())}
+        for nm in ov.without | set(ov.state) | ov.lock:
+            if nm not in known:
+                log("   (no placement is called %s)" % nm)
+    stem = name + ("-" + tag if tag else "")
     for sec in range(1, len(info["reset_points"]) + 1):
-        res = link(scan(g, info, sec, world_for(mesh, info, "strict", sec), entry_kind=kind))
+        res = link(scan(g, info, sec, world_for(mesh, info, "strict", sec), entry_kind=kind, overrides=ov))
         res["placements"] = [p for p in info.get("placements", ()) if p.get("sector") == sec]
         mechanisms(res)
         done.append(res)
@@ -382,13 +450,13 @@ def run(mesh, info, g, name: str, out, png=None, log=print) -> list:
             log("      a break %s -> %s (for %s)%s has %s (%s) beside it" % (b["from"], b["to"], b["balls"], " (on the way)" if b["on_way"] else "", b["mechanism"], b["type"]))
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
-    head = dict(map=name, generator="ballistics", what="", note="the coarse level only: nothing is rolled or searched")
+    head = dict(map=name, generator="ballistics", what="", note="the coarse level only: nothing is rolled or searched", overrides=ov.plain() if ov else None)
     json.dump(dict(head, what="step 1: the regions, the places a ball of one kind reaches from each other by rolling", sectors=[summary_regions(r) for r in done]),
-              open(out / (name + "-regions.json"), "w", encoding="utf8"), ensure_ascii=False, indent=1)
+              open(out / (stem + "-regions.json"), "w", encoding="utf8"), ensure_ascii=False, indent=1)
     json.dump(dict(head, what="step 2: the links between the regions, and the way with the fewest breaks", sectors=[summary_links(r) for r in done]),
-              open(out / (name + "-links.json"), "w", encoding="utf8"), ensure_ascii=False, indent=1)
+              open(out / (stem + "-links.json"), "w", encoding="utf8"), ensure_ascii=False, indent=1)
     json.dump(dict(head, what="step 3: the mechanisms as simple state machines over the regions", sectors=[summary_mechanisms(r) for r in done]),
-              open(out / (name + "-mechanisms.json"), "w", encoding="utf8"), ensure_ascii=False, indent=1)
+              open(out / (stem + "-mechanisms.json"), "w", encoding="utf8"), ensure_ascii=False, indent=1)
     if png is not None:
         png = Path(png)
         png.mkdir(parents=True, exist_ok=True)
@@ -396,13 +464,13 @@ def run(mesh, info, g, name: str, out, png=None, log=print) -> list:
             s = res["sector"]
             k = KINDS.index(res["entry_kind"])
             mine = [d for d in res["regions"].values() if d["kind"] == res["entry_kind"]]
-            draw_regions(mesh, res, png / ("%s-regions-s%d.png" % (name, s)),
+            draw_regions(mesh, res, png / ("%s-regions-s%d.png" % (stem, s)),
                          "第 %d 小节，第一步：%s球只靠滚动互相到得了的区域（%d 个，%d 个点以上的 %d 个）；圈是变球器的范围" % (
                              s, BALL[k], len(mine), BIG, sum(1 for d in mine if d["places"] >= BIG)))
-            draw(mesh, res, png / ("%s-links-s%d.png" % (name, s)),
+            draw(mesh, res, png / ("%s-links-s%d.png" % (stem, s)),
                  "第 %d 小节，第二步：区域之间的连接；%s" % (s, "到不了目标" if res["breaks"] is None else "到目标最少要跨 %d 个断点" % res["breaks"]))
             if res["mechanisms"] or res["breaks_by_mechanisms"]:
-                draw_mechanisms(mesh, res, png / ("%s-mechanisms-s%d.png" % (name, s)),
+                draw_mechanisms(mesh, res, png / ("%s-mechanisms-s%d.png" % (stem, s)),
                                 "第 %d 小节，第三步：机关对通断的影响（每个机关固定在开局状态时，到目标最少几个断点）" % s)
     return done
 
@@ -499,7 +567,7 @@ def mechanisms(res: dict) -> dict:
         initial = 0 if what == "cork" else (b0 >> m) & 1
         # held: the links that would switch it out (for a bridge: all of its links)
         held = {k: e for k, e in res["links"].items() if k not in set(changes)}
-        hb, hpath, _f = connect(held, res["start"], res["goal_regions"])
+        hb, hpath, _f = connect(held, res["start"], res["goal_regions"], res.get("lock", 0))
         on_way = any(k in used for k in keys)
         if base is None:
             need = "到不了目标"

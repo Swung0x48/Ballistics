@@ -32,6 +32,11 @@ def main(argv=None):
     v.add_argument("--seconds", type=float, default=600.0, help="with --whole: time limit per sector")
     v.add_argument("--out", type=Path, default=Path("data"), help="folder for the results and the coarse graph")
     v.add_argument("--png", type=Path, help="folder for a top view of each sector (of each step)")
+    for p_ in (v,):
+        p_.add_argument("--without", action="append", metavar="NAME", help="what-if: this placement is not there (a transformer, fan, cork bridge, push board, seesaw; a gate: always open); repeatable")
+        p_.add_argument("--state", action="append", metavar="NAME=STATE", help="what-if: this mechanism starts in that state (0/1; gate 关/开, board 立/倒, seesaw 1 = tipped); repeatable")
+        p_.add_argument("--lock", action="append", metavar="NAME", help="what-if: this mechanism's state never changes; repeatable")
+        p_.add_argument("--tag", help="with what-ifs: the files are <name>-<tag>-... (default what-if)")
     k = sub.add_parser("coarse", help="the coarse level's plan alone: per sector the cheapest way over the coarse graph and the links it needs; nothing is rolled or searched")
     k.add_argument("--mesh", type=Path, required=True, help="<name>-mesh.npz (exported with --templates, so that placed objects are in it)")
     k.add_argument("--map", type=Path, required=True, help="<name>-map.json")
@@ -51,6 +56,10 @@ def main(argv=None):
     q.add_argument("--map", type=Path, required=True, help="<name>-map.json")
     q.add_argument("--out", type=Path, default=Path("data"), help="folder of the coarse graph (<name>-coarse-solid.pkl) and for <name>-regions.json, <name>-links.json")
     q.add_argument("--png", type=Path, help="folder for a top view of each sector (of each step)")
+    q.add_argument("--without", action="append", metavar="NAME", help="as for solve")
+    q.add_argument("--state", action="append", metavar="NAME=STATE", help="as for solve")
+    q.add_argument("--lock", action="append", metavar="NAME", help="as for solve")
+    q.add_argument("--tag", help="as for solve")
     t = sub.add_parser("things", help="the catalogue of balls, loose objects, mechanisms, triggers, pickups and level rules: list it, print one entry, or check it")
     t.add_argument("name", nargs="?", help="an entry id (P_Modul_25, ball_paper), a placed type name (P_Trafo_Stone) or a rule id (death_timing); without it: the list")
     t.add_argument("--check", action="store_true", help="check every file of the catalogue and say what is wrong")
@@ -158,7 +167,7 @@ def main(argv=None):
         info = json.load(open(a.map, encoding="utf8"))
         name = a.mesh.name.replace("-mesh.npz", "")
         g = solve.graph_for(mesh, info, a.out / (name + "-coarse-solid.pkl"))
-        regions.run(mesh, info, g, name, a.out, a.png)
+        regions.run(mesh, info, g, name, a.out, a.png, overrides=regions.Overrides.parse(a.without, a.state, a.lock), tag=a.tag)
         return
     if a.command == "route":
         import json

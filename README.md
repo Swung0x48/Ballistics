@@ -24,7 +24,7 @@ Ballance 地图的静态分析器。
 python -m ballistics export <地图.nmo> --out data --templates <游戏的 3D Entities/PH 目录>
 ```
 
-求解分三步，都只用粗层，不推演、不细搜（见 [docs/solver.md](docs/solver.md)）：第一步把每个小节按球种分成只靠滚动就互相到得了的区域；第二步列出区域之间靠什么相连（起飞、下落、台阶、风扇、变球、机关），找跨断点最少的走法；第三步把机关当成简单的状态机，看它们接通、断开了什么，走法要不要它们、按什么次序拨动。写出 `<名字>-regions.json`、`<名字>-links.json` 和 `<名字>-mechanisms.json`，`--png` 另外画出每一步的俯视图：
+求解分三步，都只用粗层，不推演、不细搜（见 [docs/solver.md](docs/solver.md)）：第一步把每个小节按球种分成只靠滚动就互相到得了的区域；第二步列出区域之间靠什么相连（起飞、下落、台阶、风扇、变球、机关），找跨断点最少的走法；第三步把机关当成简单的状态机，看它们接通、断开了什么，走法要不要它们、按什么次序拨动。写出 `<名字>-regions.json`、`<名字>-links.json` 和 `<名字>-mechanisms.json`，`--png` 另外画出每一步的俯视图；`--without`、`--state`、`--lock` 可以假设某个摆放物不存在、某个机关开局在别的状态或永远不变，再规划一遍：
 
 ```bash
 python -m ballistics solve --mesh data/Level_02-mesh.npz --map data/Level_02-map.json --out data --png out

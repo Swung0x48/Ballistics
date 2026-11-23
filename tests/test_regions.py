@@ -113,3 +113,21 @@ def test_step_3_finds_a_gate_needed_and_what_opening_it_is_for():
     assert m["lets_through"]["开"] == [{"from": R.name(0), "to": R.name(1), "balls": "石"}]
     (c,) = res["chain"]
     assert c["step"] == 1 and c["for"]["step"] == 2 and "开" in c["did"]
+
+
+def test_what_ifs_a_locked_mechanism_never_changes_and_states_are_read_by_name():
+    gate_open = ("mech", 0, 0, coarse.GATE_OPERATE, 0, 0, S, S)
+    seesaw = ("mech", 0, 1, coarse.SEESAW, 0, 0, S, S)
+    board = ("mech", 0, 1, coarse.BOARD_PUSH, 0, 0, W, W)
+    assert regions._moves(gate_open, 0) and not regions._moves(gate_open, 0, lock=1)            # a locked gate is not opened
+    assert regions._moves(board, 0) and not regions._moves(board, 0, lock=1)                    # nor a locked board pushed over
+    assert regions._moves(seesaw, 0)[0][1] == 1 and regions._moves(seesaw, 0, lock=1)[0][1] == 0  # a locked seesaw is gone over, not tipped
+    ov = regions.Overrides.parse(["P_Trafo_Paper_01"], ["P_Modul_01_03=开", "B=倒"], ["S"])
+    assert ov and ov.without == {"P_Trafo_Paper_01"} and ov.state == {"P_Modul_01_03": "开", "B": "倒"} and ov.lock == {"S"}
+    assert regions.Overrides.bit("gate", "开") == 1 and regions.Overrides.bit("board", "立") == 0 and regions.Overrides.bit("seesaw", "1") == 1
+    assert not regions.Overrides()
+    import pytest
+    with pytest.raises(ValueError):
+        regions.Overrides.bit("gate", "倒")
+    with pytest.raises(ValueError):
+        regions.Overrides.parse(state=["P_Modul_01_03"])

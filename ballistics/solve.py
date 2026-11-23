@@ -478,12 +478,15 @@ def cork_edges(g, info: dict, sector: int | None = None) -> list:
     return out
 
 
-def state_graph_for(g, info: dict, sector: int, world, operate_cost: float, cork: bool = False):
+def state_graph_for(g, info: dict, sector: int, world, operate_cost: float, cork: bool = False, without=()):
     """The coarse level of a sector over the ball's kind and its mechanisms' states (`coarse.StateGraph`), and how to
     read those states from the kernel's scene: (graph, reader(kind name, scene) -> state index). Only the places
     of the sector's region take part: its reset point, its goal and what is placed in it, 60 wider. cork: with the
     edges over cork bridges (`cork_edges`); the kernel has no cork bridge yet, so the solver that rolls leaves them
-    out."""
+    out. without: names of placements taken as not there (a what-if): a transformer has no range, a fan no lifts, a
+    cork bridge, push board or seesaw no way over it; a gate is no obstacle (the ways it clears are always there).
+    The places and the graph's own edges stay as they are."""
+    without = {str(w) for w in without}
     from . import trafo
     from .kernel import _hinge_angle
     from .launch import FOLLOW_SPEED
@@ -497,13 +500,16 @@ def state_graph_for(g, info: dict, sector: int, world, operate_cost: float, cork
     region = np.all((g.pos >= P.min(0) - 60.0) & (g.pos <= P.max(0) + 60.0), axis=1)
     R = trafo.rules()
     cost = (R.body_after + 1) / 66.0 * FOLLOW_SPEED
+    trafos = [t for t in trafo.of(info, sector) if t["name"] not in without]
     tk = np.full(len(g.pos), -1, np.int64)
-    for t in trafo.of(info, sector):
+    for t in trafos:
         tk[np.linalg.norm(g.pos - t["pos"], axis=1) < R.radius] = coarse.KIND_INDEX[t["kind"]]
 
     # a lift that ends in a transformer's range on the way (its run stopped there) ends as that kind, whatever place it is kept for
-    lifts = [(u, v, e["cost"], coarse.KIND_INDEX[e["ends_in"]] if e.get("ends_in") else -1)
-             for (u, v), e in g.info.get("lifts", {}).items() if e.get("sector") == sector]
+    gone_fans = [np.array(p["position"], float) for p in info["placements"] if p["name"] in without and p["type"] == "P_Modul_18"]
+    lifts = [(u, v, e["cost"], coarse.KIND_INDEX[e["ends_in"]] if e.get("ends_in") and any(t["kind"] == e["ends_in"] for t in trafos) else -1)
+             for (u, v), e in g.info.get("lifts", {}).items() if e.get("sector") == sector
+             and not any(np.linalg.norm(np.asarray(e["fan"], float) - f) < 1.0 for f in gone_fans)]
     # a run-up rolled as another kind (it starts in a transformer's range) is that kind's only where the range is this
     # sector's: elsewhere the ball there is not that kind
     skip = [(w, v) for (w, v), e in g.info.get("launches", {}).items() if e.get("ball", "wood") != "wood" and tk[w] != coarse.KIND_INDEX[e["ball"]]]
@@ -511,6 +517,9 @@ def state_graph_for(g, info: dict, sector: int, world, operate_cost: float, cork
     props = world.props
     for name, d in sorted(g.info.get("gates", {}).items()):
         if d["sector"] != sector or not d["edges"]:
+            continue
+        if name in without:                                # no gate: the ways it clears are plain ways
+            rel = rel.with_edges([(u, v, c, k) for u, v, c, k in d["edges"]])
             continue
         edges = [(coarse.GATE_THROUGH, u, v, c, 0, k) for u, v, c, k in d["edges"]]
         if d["operate"] >= 0:
@@ -522,7 +531,7 @@ def state_graph_for(g, info: dict, sector: int, world, operate_cost: float, cork
         mechs.append(dict(name=name, type="gate", edges=edges, axis=axis, operate=d["operate"], pieces=d.get("pieces")))
         readers.append(lambda sc, k=k, axis=axis, rest=rest: int((sc[k, :3] - rest) @ axis >= GATE_FULL))
     for name, d in sorted(g.info.get("boards", {}).items()):
-        if d["sector"] != sector or not d["edges"]:
+        if d["sector"] != sector or not d["edges"] or name.split("/")[0] in without:
             continue
         edges = [(coarse.BOARD_PUSH, u, v, c, 0, k) for u, v, c, k in d["edges"]]
         edges += [(coarse.BOARD_OVER, u, v, c, 0, k) for u, v, c, k in d["edges"] + d["back"]]
@@ -532,7 +541,7 @@ def state_graph_for(g, info: dict, sector: int, world, operate_cost: float, cork
         mechs.append(dict(name=name, type="board", edges=edges, pieces=d.get("pieces")))
         readers.append(lambda sc, k=k: int(np.degrees(_hinge_angle(world.prop_consts, k, sc[k, 0], sc[k, 1], sc[k, 2])) >= BOARD_DOWN))
     for name, d in sorted(g.info.get("seesaws", {}).items()):
-        if d["sector"] != sector or not (d["edges"] or d["other"]):
+        if d["sector"] != sector or not (d["edges"] or d["other"]) or name.split("/")[0] in without:
             continue
         edges = [(coarse.SEESAW, u, v, c, 0, k) for u, v, c, k in d["edges"]] + [(coarse.SEESAW, u, v, c, 1, k) for u, v, c, k in d["other"]]
         k = next((i for i, p in enumerate(props) if p["name"].startswith(name + "/") and p.get("hinge") and p.get("leader") == i), None)
@@ -542,8 +551,8 @@ def state_graph_for(g, info: dict, sector: int, world, operate_cost: float, cork
         # put at 10 degrees, it falls to its first low end (about +9.6 from where it was put); tipped over, -29.6
         readers.append(lambda sc, k=k: int(np.degrees(_hinge_angle(world.prop_consts, k, sc[k, 0], sc[k, 1], sc[k, 2])) < -10.0))
     sg = coarse.StateGraph(rel, g, region, tk, cost, lifts, mechs, operate_cost,
-                           links=_link_rules(rel, g, region, tk, trafo.of(info, sector), R.radius, mechs), skip=skip,
-                           bridges=cork_edges(g, info, sector) if cork else ())
+                           links=_link_rules(rel, g, region, tk, trafos, R.radius, mechs), skip=skip,
+                           bridges=[b for b in cork_edges(g, info, sector) if b[3] not in without] if cork else ())
     M = len(mechs)
 
     def state_of(kind: str, scene) -> int:
