@@ -36,7 +36,13 @@ python -m ballistics solve --mesh data/Level_01-mesh.npz --map data/Level_01-map
 python -m ballistics coarse --mesh data/Level_01-mesh.npz --map data/Level_01-map.json --png out
 ```
 
-把解出的路线写成路线文件（`L01.npz`，一条参考线）：
+只看连通：把粗层分成只靠滚动就互相到得了的区域，列出区域之间靠什么相连，找跨断点最少的走法（不推演，见 [docs/solver.md](docs/solver.md)）：
+
+```bash
+python -m ballistics regions --mesh data/Level_02-mesh.npz --map data/Level_02-map.json --out data --png out
+```
+
+把解出的路线写成路线文件（`L01.npz`，一条参考线；加 `--mesh` 还写出分段的版本 2）：
 
 ```bash
 python -m ballistics route --map data/Level_01-map.json --results data --level 1 --out data/routes
@@ -57,23 +63,25 @@ python -m ballistics calibrate --mesh data/Level_01-mesh.npz --run data/runs/<�
 
 ## 现状
 
-第一个验收目标是第 1 关：从出生点到飞船前的路面。**物理核里走通了**：四个小节都有一条不碰箱子和机关的路线（第 3 小节是撞开一排道具球过去的），共 158.1 游戏秒，没有优化。这些是手写物理核里的轨迹，还没有在游戏里跑过。详见 [docs/level-1.md](docs/level-1.md) 和 [docs/mechanisms.md](docs/mechanisms.md)。
+第 1 关**在物理核里走通了**：四个小节都有路线，共 150.5 游戏秒，没有优化。第 2 关第 1、2、5 小节走通，第 3、4 小节还留着断点（第 3 小节要软木桥、跷跷板和几步机关，见 [docs/mechanisms.md](docs/mechanisms.md)）。这些都是手写物理核里的轨迹，没有在游戏里跑过。详见 [docs/level-1.md](docs/level-1.md) 和 [docs/mechanisms.md](docs/mechanisms.md)。
 
 已有：
 
 - 读 `.nmo`，导出碰撞网格、锚点和摆放的东西（机关、箱子、道具球按游戏模板的真实形状）
 - 精确几何（球对三角面的距离和接触）和钢轨提取
-- 球对静态几何的物理核，以及它和一条引擎轨迹对比的误差
-- 求解器：粗层规划通路，沿通路推演，只在过不去的地方细搜
+- 物理核：三种球对静态几何，会动的刚体（道具球、箱子、栅栏的滑块、绕铰链转的推板和跷跷板），风扇的推力，变球器；和引擎轨迹对比的误差
+- 求解器：粗层按球种和机关的简单状态规划通路（为了推栅栏先去变石球、先推倒推板再过去），沿通路推演，只在过不去的地方细搜
+- 已经接进求解的：分数球和生命球、风扇、变球器、Dome、道具球、箱子、落石、活式木栅栏、推板、纸球、跷跷板（状态表在 [docs/mechanisms.md](docs/mechanisms.md)）
 - 备选路线：找出粗层没有边通上去的落点（墙顶、护栏），从标准路线上搜过去；每条路线给出预计时间和容错率
-- 路线清单、路线文件和俯视图
+- 输出：路线清单、俯视图、参考线（`L<nn>.npz`，版本 1）和分段的路线文件（`L<nn>.segments.json`，版本 2：每段的球种、变球点、粗略的出口和走廊、机关标注，格式见 [docs/files.md](docs/files.md)）
 
 没有：
 
-- 会动的东西（推箱子、推道具球、机关）
+- 其余 9 种机关（升降机、秋千、单摆、软木桥等）
+- 纸球的真实形状（物理核里是球体替身）
 - 轨迹的优化（现在的轨迹远慢于高手录像）；备选路线只有“经过孤岛”一种，收益只算时间
-- 证明格式和独立检查器
-- 石球、纸球；第 1 关以外的关卡
+- 证明格式和独立检查器；路线文件里的出口和走廊只是扰动重放的包络
+- 第 3 关以后的关卡没有认真解过
 
 ## 文档
 

@@ -32,6 +32,13 @@ TICK_MS = 1000.0 / 132.0            # one physics tick in game time
 
 def reference_line(results: list, info: dict, level: int, spacing: float = 0.5, time_sigma_ms: float = 40.0, tangent_span: float = 2.0):
     """results: the solver's sector results in order (staged.solve_sector). Returns (points, sector, t_ms, meta)."""
+    return line_and_ticks(results, info, level, spacing, time_sigma_ms, tangent_span)[:4]
+
+
+def line_and_ticks(results: list, info: dict, level: int, spacing: float = 0.5, time_sigma_ms: float = 40.0, tangent_span: float = 2.0):
+    """As `reference_line`, and one more array: for every tick of the route that is on the line (the rows of the
+    segments' traces, in order, up to where the line ends), its arc length along the line's points. Tick k is at
+    game time k * TICK_MS on the line's clock."""
     pos, sec, breaks, collected = [], [], [], []
     complete = True
     for res in results:
@@ -68,7 +75,8 @@ def reference_line(results: list, info: dict, level: int, spacing: float = 0.5, 
         pos = sm
     d = np.linalg.norm(np.diff(pos, axis=0), axis=1)
     keep = np.r_[True, d > 1e-9]
-    cum = np.r_[0.0, np.cumsum(d)][keep]
+    cum_all = np.r_[0.0, np.cumsum(d)]
+    cum = cum_all[keep]
     pos, sec, t = pos[keep], sec[keep], t[keep]
     s_new = np.arange(0.0, cum[-1], spacing)
     if cum[-1] - s_new[-1] > 1e-6:
@@ -87,7 +95,8 @@ def reference_line(results: list, info: dict, level: int, spacing: float = 0.5, 
                 source="a trajectory of the Ballistics physics kernel: a candidate, not run in the game",
                 complete=bool(complete), sectors_on_line=sorted(int(k) for k in np.unique(sector)), left_breaks=breaks,
                 collected=collected)
-    return P.astype(np.float32), sector.astype(np.uint8), t_new.astype(np.float64), meta
+    tick_s = np.interp(cum_all, s_new, arc)                 # (s_new is in the smoothed track's arc length, arc along the points)
+    return P.astype(np.float32), sector.astype(np.uint8), t_new.astype(np.float64), meta, tick_s
 
 
 def write_line(out_dir, level: int, points, sector, t_ms, meta) -> Path:

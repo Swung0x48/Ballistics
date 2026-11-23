@@ -38,6 +38,15 @@ def main(argv=None):
     r.add_argument("--results", type=Path, default=Path("data"), help="folder with the solver's results (<name>-staged-s<N>.pkl)")
     r.add_argument("--level", type=int, required=True, help="the level number the file is named after")
     r.add_argument("--out", type=Path, required=True, help="folder to write L<nn>.npz into")
+    r.add_argument("--mesh", type=Path, help="<name>-mesh.npz the results were solved on: also write the route file of version 2, L<nn>.segments.json "
+                                             "(its exits and corridors are replayed in the kernel)")
+    r.add_argument("--nmo", type=Path, help="the map file (.nmo) the mesh was exported from, for its sha256 in L<nn>.segments.json "
+                                            "(default: maps/<its name> next to the map json, or in BALLISTICS_DATA)")
+    q = sub.add_parser("regions", help="the coarse level as connectivity between regions: what leads where, and the way through with the fewest breaks (nothing is rolled)")
+    q.add_argument("--mesh", type=Path, required=True, help="<name>-mesh.npz (exported with --templates)")
+    q.add_argument("--map", type=Path, required=True, help="<name>-map.json")
+    q.add_argument("--out", type=Path, default=Path("data"), help="folder of the coarse graph (<name>-coarse-solid.pkl) and for <name>-regions.json")
+    q.add_argument("--png", type=Path, help="folder for a top view of each sector's regions")
     t = sub.add_parser("things", help="the catalogue of balls, loose objects, mechanisms, triggers, pickups and level rules: list it, print one entry, or check it")
     t.add_argument("name", nargs="?", help="an entry id (P_Modul_25, ball_paper), a placed type name (P_Trafo_Stone) or a rule id (death_timing); without it: the list")
     t.add_argument("--check", action="store_true", help="check every file of the catalogue and say what is wrong")
@@ -134,6 +143,38 @@ def main(argv=None):
                                 "；终点离飞船标记还有 %.0f" % p["short_of_goal"] if "short_of_goal" in p else "")
                             + ("；开头 %.0f 没有规划" % p["starts_off"] if "starts_off" in p else ""), anchors, names, box=box)
         return
+    if a.command == "regions":
+        import json
+
+        from . import regions, solve, staged
+        from .coarse import without_bodiless
+        from .geometry import Mesh
+        mesh = without_bodiless(Mesh.load(a.mesh))
+        info = json.load(open(a.map, encoding="utf8"))
+        name = a.mesh.name.replace("-mesh.npz", "")
+        g = solve.graph_for(mesh, info, a.out / (name + "-coarse-solid.pkl"))
+        kind, out = "wood", []                             # ASSUMED: a level begins with the wood ball
+        for sec in range(1, len(info["reset_points"]) + 1):
+            world = staged.world_for(mesh, info, "strict", sec)
+            res = regions.analyse(g, info, sec, world, entry_kind=kind)
+            s = regions.summary(res)
+            out.append(s)
+            big = sum(1 for d in res["regions"].values() if d["places"] >= regions.BIG)
+            print("sector %d (enters as %s): %d regions, %d of %d places or more; %s" % (
+                sec, kind, len(res["regions"]), big, regions.BIG,
+                "no way to the goal even with breaks" if res["breaks"] is None else
+                "the goal is reached with %d break%s, over %d links" % (res["breaks"], "" if res["breaks"] == 1 else "s", len(res["path"]) - 1)))
+            for w in s["way"]:
+                print("   R%-4d %-5s bits %d  %s" % (w["region"], w["kind"], w["mechanism_bits"], w["link"] or w["by"]))
+            if res["path"]:
+                kind = regions.KINDS[res["path"][-1][1]]
+            if a.png:
+                a.png.mkdir(parents=True, exist_ok=True)
+                regions.draw(mesh, res, a.png / ("%s-regions-s%d.png" % (name, sec)),
+                             "第 %d 小节的区域（同色的点只靠滚动互相到得了）：%s" % (sec, "到不了目标" if res["breaks"] is None else "到目标最少要跨 %d 个断点" % res["breaks"]))
+        json.dump(dict(map=name, generator="ballistics", what="the coarse level as connectivity between regions (nothing rolled)", sectors=out),
+                  open(a.out / (name + "-regions.json"), "w", encoding="utf8"), ensure_ascii=False, indent=1)
+        return
     if a.command == "route":
         import json
         import pickle
@@ -155,6 +196,34 @@ def main(argv=None):
         print("%s: %d points, %.0f long, %.1f game s, sectors %s on the line; %s" % (
             path, len(P), meta["length"], meta["game_ms"] / 1000, meta["sectors_on_line"],
             "complete" if meta["complete"] else "ends at the first break that was left: " + ", ".join("sector %d %s" % (b["sector"], b["no"]) for b in meta["left_breaks"])))
+        if a.mesh:
+            import os
+
+            from . import segments, staged
+            from .coarse import without_bodiless
+            from .geometry import Mesh
+            mesh = without_bodiless(Mesh.load(a.mesh))
+            worlds = {}
+
+            def world_of(sector, mode):
+                if (sector, mode) not in worlds:
+                    worlds[(sector, mode)] = staged.world_for(mesh, info, mode, sector)
+                return worlds[(sector, mode)]
+            nmo = a.nmo
+            if nmo is None and info.get("map"):
+                places = [a.map.parent / "maps", Path(os.environ["BALLISTICS_DATA"]) / "maps" if os.environ.get("BALLISTICS_DATA") else None, Path("data") / "maps"]
+                nmo = next((p / info["map"] for p in places if p is not None and (p / info["map"]).exists()), None)
+            if nmo is None:
+                print("the map file %s was not found: map_sha256 is left empty (give it with --nmo)" % info.get("map"))
+            data = segments.build(results, info, a.level, world_of, line=path.name, line_sha256=segments.file_sha256(path),
+                                  map_sha256=segments.file_sha256(nmo) if nmo is not None else None)
+            sp = segments.write(a.out, a.level, data)
+            segs = data["routes"][0]["segments"]
+            kinds = {}
+            for s in segs:
+                kinds[s["kind"]] = kinds.get(s["kind"], 0) + 1
+            print("%s: %d segments (%s), %d of them on the line" % (sp, len(segs), ", ".join("%s %d" % kv for kv in sorted(kinds.items())),
+                                                                   sum(s.get("s") is not None for s in segs)))
         return
     if a.command == "solve":
         import json
