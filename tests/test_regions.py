@@ -131,3 +131,122 @@ def test_what_ifs_a_locked_mechanism_never_changes_and_states_are_read_by_name()
         regions.Overrides.bit("gate", "倒")
     with pytest.raises(ValueError):
         regions.Overrides.parse(state=["P_Modul_01_03"])
+
+
+def _road_state_fixture(typ, xyz, edges, hulls, axis, mesh=None):
+    from ballistics import solve
+    X = np.array(axis)
+    Y = np.array([0., 1., 0.])
+    A = np.array([X, Y, np.cross(X, Y)])
+    o = np.array([41., 7., -38.])
+    pos = np.array(xyz) @ A + o
+    adj = [[] for _ in pos]
+    for u, v, c, kind in edges:
+        adj[u].append((v, c, kind))
+    g = coarse.Graph(pos, np.zeros(len(pos), int), np.full(len(pos), -1), adj, [])
+    g._relaxed = coarse.Relaxed.__new__(coarse.Relaxed)
+    g._relaxed.g, g._relaxed.fwd, g._relaxed.back = g, adj, [[] for _ in pos]
+    obj = dict(name="M", type=typ, sector=1, position=o, x_axis=A[0], y_axis=A[1], z_axis=A[2])
+    info = dict(placements=[obj], hulls=[dict(placement="M", body=body, vertices=vertices @ A + o, frame=np.r_[np.c_[A, np.zeros(3)], [np.r_[o, 1.]]]) for body, vertices in hulls],
+                start=pos[0], airship=pos[-1], checkpoints=[], reset_points=[pos[0]])
+    world = SimpleNamespace(props=[], scene=lambda: None, mesh=mesh(A, o) if mesh else None)
+
+    def build(**kw):
+        return solve.state_graph_for(g, info, 1, world, operate_cost=3.0, **kw)
+
+    return info, g, world, build
+
+
+def _hull_box(lo, hi):
+    from itertools import product
+    return np.array(list(product(*zip(lo, hi))), float)
+
+
+ROAD_AXES = ((1., 0., 0.), (0., 0., 1.), (0.6, 0., 0.8))
+
+
+def test_falling_rock_is_pushed_below_by_stone_opens_above_and_closes_below():
+    xyz = [(0, -3, -5), (0, -3, 5), (-5, -3, -5), (-5, 2, -5), (-4, 2, 0), (4, 2, 0)]
+    hulls = [("Schiebestein", _hull_box((-2.5, -0.22, -2.5), (2.5, 4.78, 2.5))),
+             ("Kiste", _hull_box((-2.05, -5, -2.5), (2.05, -0.9, 2.5)))]
+    edges = [(0, 1, 10, "roll"), (1, 0, 10, "roll"), (0, 2, 5, "roll"), (2, 3, 5, "step"), (3, 4, 5, "roll")]
+    for axis in ROAD_AXES:
+        info, g, world, build = _road_state_fixture("P_Modul_34", xyz, edges, hulls, axis)
+        sg, read = build(cork=True)
+        assert sg.M == 1 and read("stone", None) == (S << 1)
+        for k in (W, S, P):
+            s = k << 1
+            assert (s, 1, 10, "roll") in sg.step(s, 0)
+            assert not sg.step(s, 4)
+            assert [(t, v, h) for t, v, _, h in sg.step(s | 1, 4)] == [(s | 1, 5, "over_falling_rock")]
+            assert not any(v == 1 for _, v, _, _ in sg.step(s | 1, 0))
+            assert np.isfinite(sg.togo(1)[s, 0]) and np.isinf(sg.togo(1)[s | 1, 0])
+            assert any(h == "drop_falling_rock" for _, _, _, h in sg.step(s, 0)) == (k == S)
+            assert np.isfinite(sg.togo(5)[s, 0]) == (k == S)
+        s = S << 1
+        nodes, kinds, bits = sg.plan(s, 0, sg.togo(5))
+        assert nodes == [0, 0, 2, 3, 4, 5] and bits == [s] + [s | 1] * 5
+        assert kinds[0] == "drop_falling_rock" and kinds[-1] == "over_falling_rock"
+        assert np.isinf(sg.togo(5, lock=1)[s, 0])
+        res = regions.analyse(g, info, 1, world, "stone")
+        regions.mechanisms(res)
+        (rock,) = res["mechanisms"]
+        assert rock["need"] == "必需" and rock["lets_through"]["未落"] and rock["lets_through"]["已落"]
+        assert all(row["balls"] == "石" and row["at"] for row in rock["switched"])
+        assert res["chain"][0]["for"] and res["breaks"] == 0
+        locked = regions.analyse(g, info, 1, world, "stone", overrides=regions.Overrides(lock=["M"]))
+        assert locked["breaks"] is None and len(locked["plan"]) == 1
+        dropped = regions.analyse(g, info, 1, world, "paper", overrides=regions.Overrides(state={"M": "已落"}, lock=["M"]))
+        assert dropped["breaks"] == 0 and dropped["start"][2] == 1
+        for plain in (build(cork=False)[0], build(cork=True, without=["M"])[0]):
+            assert plain.M == 0 and np.isfinite(plain.togo(1)[W, 0]) and np.isinf(plain.togo(5)[S, 0])
+
+
+def test_t_board_operation_is_separate_from_the_crossbar_and_paper_cannot_push():
+    angle = np.radians(94.9)
+    c, s = np.cos(angle), np.sin(angle)
+    turn = np.array([[c, s, 0], [-s, c, 0], [0, 0, 1]])
+    hulls = [("head", _hull_box((-13., -1., -4.5), (-8., 0., 4.5)) @ turn.T),
+             ("foot", _hull_box((-1., 0., -1.), (1., 3., 1.)))]
+    xyz = [(3.5, 2, 0), (3.5, 2, -6), (-10, 2, -6), (-10, 2, 6)]
+    for axis in ROAD_AXES:
+        info, g, world, build = _road_state_fixture("P_Modul_37", xyz, [(0, 1, 6, "roll"), (1, 2, 14, "roll")], hulls, axis)
+        sg, _ = build(cork=True)
+        for k in (W, S, P):
+            s = k << 1
+            assert any(v == 0 and t == s | 1 for t, v, _, _ in sg.step(s, 0)) == (k != P)
+            assert not sg.step(s, 2)
+            assert [(t, v, h) for t, v, _, h in sg.step(s | 1, 2)] == [(s | 1, 3, "over_t_board")]
+            assert np.isfinite(sg.togo(3)[s, 0]) == (k != P)
+        nodes, kinds, _ = sg.plan(W << 1, 0, sg.togo(3))
+        assert nodes == [0, 0, 1, 2, 3] and kinds == ["push_t_board", "roll", "roll", "over_t_board"]
+        res = regions.analyse(g, info, 1, world)
+        regions.mechanisms(res)
+        (board,) = res["mechanisms"]
+        assert board["states"] == ["立", "倒"] and board["need"] == "必需"
+        assert "助跑约 12" in board["switch_note"] and board["lets_through"]["倒"]
+        preset = regions.analyse(g, info, 1, world, "paper", overrides=regions.Overrides(state={"M": "倒"}, lock=["M"]))
+        assert preset["breaks"] == 0 and preset["start"][2] == 1
+        assert not build(cork=True, without=["M"])[0].step(W, 2)
+
+
+def test_t_board_restores_only_supported_floor_under_its_old_foot():
+    from ballistics.geometry import Mesh
+
+    def floor(A, o):
+        # A continuous floor across the upright foot, with no fallen board in this lane.
+        points = np.array([[0, 0, -8], [0, 0, 9], [5, 0, 9], [5, 0, -8]]) @ A + o
+        a, b, c = points[[[0, 1, 2], [0, 2, 3]]].transpose(1, 0, 2)
+        return Mesh(a, b, c, np.zeros(2, int), np.zeros(2, bool), np.empty((0, 7)), [{}])
+
+    xyz = [(2.4, 2, -3), (2.4, 2, 3)]
+    hulls = [("foot", _hull_box((1.9, 2.1, -1), (3, 4, 1)))]
+    for axis in ROAD_AXES:
+        *_, build = _road_state_fixture("P_Modul_37", xyz, [], hulls, axis, mesh=floor)
+        sg, _ = build(cork=True)
+        assert not sg.step(W, 0)
+        assert [(t, v, h) for t, v, _, h in sg.step(1, 0)] == [(1, 1, "past_t_board")]
+        assert np.isfinite(sg.togo(1)[1, 0])
+        assert build(cork=True, without=["M"])[0].step(W, 0)[0][3] == "roll"
+        *_, unsupported = _road_state_fixture("P_Modul_37", xyz, [], hulls, axis)
+        assert not unsupported(cork=True)[0].step(1, 0)

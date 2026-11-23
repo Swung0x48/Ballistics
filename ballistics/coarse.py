@@ -449,15 +449,18 @@ class Relaxed:
 WOOD, STONE, PAPER = 0, 1, 2                 # the ball's kind, as a state of the coarse level
 KIND_INDEX = {"wood": WOOD, "stone": STONE, "paper": PAPER}
 GATE_THROUGH, GATE_OPERATE, BOARD_PUSH, BOARD_OVER, SEESAW, CORK = 1, 2, 3, 4, 5, 6
+ROCK_OVER, T_OVER, T_CLEAR, ROCK_PUSH, T_PUSH = 7, 8, 9, 10, 11
+STATE_OVER = (ROCK_OVER, T_OVER, T_CLEAR)
+OPERATE = (GATE_OPERATE, ROCK_PUSH, T_PUSH)
 _INF = 1e300
 
 
 @njit(cache=True)
-def _state_togo(n, M, bptr, bsrc, bcost, bek, bmask, tk, tcost, lptr, lsrc, lcost, lk, cptr, csrc, ccost, cmech, ctype, cside, goal):
+def _state_togo(n, M, bptr, bsrc, bcost, bek, bmask, bclear, tk, tcost, lptr, lsrc, lcost, lk, cptr, csrc, ccost, cmech, ctype, cside, goal, lock):
     """How far each (state, place) is from the goal, which counts in any state. A state is kind * 2^M + bits (bit m:
     mechanism m's state). Backwards over: plain edges (u -> v; v inside a transformer's range makes the ball its
     kind there, at tcost unless it is that kind already; a link that passes through a range, bek, likewise; a link
-    with bmask is there only while those mechanisms' bits are set), the paper ball's lifts, and the mechanisms'
+    with bmask or bclear needs those bits set or clear respectively), the paper ball's lifts, and the mechanisms'
     edges, each with the state it needs and the state it leaves (see `StateGraph`)."""
     S = 3 * (1 << M)
     togo = np.full((S, n), _INF)
@@ -473,7 +476,7 @@ def _state_togo(n, M, bptr, bsrc, bcost, bek, bmask, tk, tcost, lptr, lsrc, lcos
         k = s >> M
         bits = s & ((1 << M) - 1)
         for e in range(bptr[v], bptr[v + 1]):
-            if (bits & bmask[e]) != bmask[e]:
+            if (bits & bmask[e]) != bmask[e] or bits & bclear[e]:
                 continue
             t = tk[v] if tk[v] >= 0 else bek[e]
             u = bsrc[e]
@@ -511,17 +514,17 @@ def _state_togo(n, M, bptr, bsrc, bcost, bek, bmask, tk, tcost, lptr, lsrc, lcos
                 if bit == 1:
                     preds = (s, -1)
             elif typ == 2:                                 # a stone ball pushes the gate open
-                if bit == 1 and k == 1:
+                if bit == 1 and k == 1 and not (lock & (1 << m)):
                     preds = (s & ~(1 << m), -1)
             elif typ == 3:                                 # a wood or stone ball pushes the board over, going across it
                 if bit == 1 and k != 2:
-                    preds = (s, s & ~(1 << m))
+                    preds = (s, s & ~(1 << m) if not (lock & (1 << m)) else -1)
             elif typ == 4:                                 # across a board that lies
                 if bit == 1:
                     preds = (s, -1)
             elif typ == 5:                                 # up the seesaw from its low end (cside: which end is low): a stone ball tips it
                 side = cside[e]
-                if k == 1:
+                if k == 1 and not (lock & (1 << m)):
                     if bit == 1 - side:
                         preds = ((s & ~(1 << m)) | (side << m), -1)
                 elif bit == side:
@@ -529,6 +532,21 @@ def _state_togo(n, M, bptr, bsrc, bcost, bek, bmask, tk, tcost, lptr, lsrc, lcos
             elif typ == 6:                                 # over a cork bridge: a wood or paper ball (a stone one breaks it and falls)
                 if k != 1:
                     preds = (s, -1)
+            elif typ == ROCK_OVER or typ == T_OVER or typ == T_CLEAR:
+                if bit == 1:
+                    t = tk[v]
+                    if t < 0:
+                        preds = (s, -1)
+                    elif k == t:
+                        for k2 in range(3):
+                            s2 = (k2 << M) | bits
+                            nd2 = nd + (0.0 if k2 == t else tcost)
+                            if nd2 < togo[s2, u]:
+                                togo[s2, u] = nd2
+                                heapq.heappush(heap, (nd2, s2, u))
+            elif typ == ROCK_PUSH or typ == T_PUSH:
+                if bit == 1 and not (lock & (1 << m)) and (k == STONE or (typ == T_PUSH and k == WOOD)):
+                    preds = (s & ~(1 << m), -1)
             for s2 in preds:
                 if s2 >= 0 and nd < togo[s2, u]:
                     togo[s2, u] = nd
@@ -562,7 +580,10 @@ class StateGraph:
       (a paper ball cannot: READ); across it either way while it lies;
     * a seesaw (P_Modul_30): from its low end up and across, by any ball; a stone one tips it, so that the other end
       is low after (MEASURED).
-    mechs: [dict(name, type ("gate", "board", "seesaw"), ...edges)] as `solve` makes them. links: {(u, v): (kind
+    * falling rocks and T boards (region analysis only): a push changes their bit in place; crossing the new
+      surface or the way a T-board foot clears needs the bit set. Existing blocked edges retain their own kinds,
+      with guards {(u, v, edge kind): (required set bits, required clear bits)}.
+    mechs: [dict(name, type, ...edges)] as `solve` makes them. links: {(u, v): (kind
     index or -1, bits mask)} for the relaxed graph's links that pass through a transformer's range or a mechanism
     (`solve._link_rules`). lifts: (u, v, cost[, the kind index it ends as when that is a transformer's it enters on the
     way, not one v is in]). skip: (u, v) edges of the relaxed graph that are not there in this sector.
@@ -570,7 +591,7 @@ class StateGraph:
     ball breaks it and falls with it (READ), and a broken bridge is whole again only once the ball is lost, so no ball
     that goes on ever finds it broken."""
 
-    def __init__(self, rel, g, region, trafo_kind, trafo_cost: float, lifts, mechs: list, operate_cost: float, links=None, skip=(), bridges=()):
+    def __init__(self, rel, g, region, trafo_kind, trafo_cost: float, lifts, mechs: list, operate_cost: float, links=None, skip=(), bridges=(), guards=None):
         N = len(g.pos)
         self.g, self.N, self.mechs = g, N, list(mechs)
         self.M = len(self.mechs)
@@ -585,6 +606,8 @@ class StateGraph:
         links = links or {}
         skip = set(skip)
         self.fwd = [[] for _ in range(n)]
+        self.guards = {}  # local (u, v, kind) -> mask of bits that must be clear; required bits live in fwd
+        guards = guards or {}
         base, base_kind = [], []
         for gu in ids:
             u = int(loc[gu])
@@ -592,8 +615,14 @@ class StateGraph:
                 v = int(loc[v_])
                 if v >= 0 and (int(gu), int(v_)) not in skip:
                     ek, mask = links.get((int(gu), int(v_)), (-1, 0)) if k in ("gap", "bridge") else (-1, 0)
+                    on, off = guards.get((int(gu), int(v_), k), (0, 0))
+                    mask |= on
+                    if mask & off:
+                        continue
+                    if off:
+                        self.guards[u, v, k] = off
                     self.fwd[u].append((v, float(c), k, int(ek), int(mask)))
-                    base.append((u, v, float(c), int(ek), int(mask)))
+                    base.append((u, v, float(c), int(ek), int(mask), off))
                     base_kind.append(k)
         self.tk = np.array([int(trafo_kind[gu]) for gu in ids], np.int64)
         self.tcost = float(trafo_cost)
@@ -613,7 +642,7 @@ class StateGraph:
                 u, v = int(loc[gu]), int(loc[gv])
                 if u < 0 or v < 0:
                     continue
-                c = float(c) + (operate_cost if typ == GATE_OPERATE else 0.0)
+                c = float(c) + (operate_cost if typ in OPERATE else 0.0)
                 self.cfwd[u].append((v, c, kind, m, typ, side))
                 cond.append((u, v, c, m, typ, side))
                 cond_kind.append(kind)
@@ -634,7 +663,7 @@ class StateGraph:
     def _arrays(self):
         n = self.n
         base = [e for e, k in zip(self._base, self._base_kind) if (e[0], e[1], k) not in self._dropped]
-        self.bptr, self.bsrc, self.bcost, (self.bek, self.bmask) = _csr(n, base or [(0, 0, _INF, -1, 0)])
+        self.bptr, self.bsrc, self.bcost, (self.bek, self.bmask, self.bclear) = _csr(n, base or [(0, 0, _INF, -1, 0, 0)])
         lift = self._lift or [(0, 0, _INF, -1)]
         self.lptr, self.lsrc, self.lcost, (self.lk,) = _csr(n, lift)
         cond = self._cond or [(0, 0, _INF, 0, 0, 0)]
@@ -661,25 +690,25 @@ class StateGraph:
             self.cfwd[u] = [e for e in self.cfwd[u] if not (e[3] == m and e[4] == typ)]
         self._arrays()
 
-    def togo(self, goal: int) -> np.ndarray:
+    def togo(self, goal: int, lock: int = 0) -> np.ndarray:
         """(S, N): how far each place is from the goal in each state (inf outside the sector's region)."""
         out = np.full((self.S, self.N), np.inf)
         gl = int(self.loc[goal])
         if gl < 0:
             return out
-        t = _state_togo(self.n, self.M, self.bptr, self.bsrc, self.bcost, self.bek, self.bmask, self.tk, self.tcost, self.lptr, self.lsrc, self.lcost, self.lk,
-                        self.cptr, self.csrc, self.ccost, self.cmech, self.ctype, self.cside, gl)
+        t = _state_togo(self.n, self.M, self.bptr, self.bsrc, self.bcost, self.bek, self.bmask, self.bclear, self.tk, self.tcost, self.lptr, self.lsrc, self.lcost, self.lk,
+                        self.cptr, self.csrc, self.ccost, self.cmech, self.ctype, self.cside, gl, lock)
         t[t >= _INF / 2] = np.inf
         out[:, self.glob] = t
         return out
 
-    def step(self, s: int, u: int):
+    def step(self, s: int, u: int, lock: int = 0):
         """Every way on from state s at local place u: [(state, local place, cost, edge kind)]."""
         M = self.M
         k, bits = s >> M, s & ((1 << M) - 1)
         out = []
         for v, c, kind, ek, mask in self.fwd[u]:
-            if (bits & mask) != mask:
+            if (bits & mask) != mask or bits & self.guards.get((u, v, kind), 0):
                 continue
             t = self.tk[v] if self.tk[v] >= 0 else ek
             if t >= 0 and t != k:
@@ -697,19 +726,25 @@ class StateGraph:
             bit = (bits >> m) & 1
             if typ == GATE_THROUGH and bit == 1:
                 out.append((s, v, c, kind))
-            elif typ == GATE_OPERATE and bit == 0 and k == STONE:
-                out.append((s | (1 << m), v, c, "operate"))
-            elif typ == BOARD_PUSH and k != PAPER:
+            elif typ in OPERATE and bit == 0 and not (lock & (1 << m)) and (k == STONE or (typ == T_PUSH and k == WOOD)):
+                out.append((s | (1 << m), v, c, "operate" if typ == GATE_OPERATE else kind))
+            elif typ == BOARD_PUSH and k != PAPER and (bit or not (lock & (1 << m))):
                 out.append((s | (1 << m), v, c, kind))
             elif typ == BOARD_OVER and bit == 1:
                 out.append((s, v, c, kind))
             elif typ == SEESAW and bit == side:
-                out.append(((s & ~(1 << m)) | ((1 - side) << m) if k == STONE else s, v, c, kind))
+                out.append(((s & ~(1 << m)) | ((1 - side) << m) if k == STONE and not (lock & (1 << m)) else s, v, c, kind))
+            elif typ in STATE_OVER and bit == 1:
+                t = int(self.tk[v])
+                if t >= 0 and t != k:
+                    out.append(((t << M) | bits, v, c + self.tcost, kind))
+                else:
+                    out.append((s, v, c, kind))
             elif typ == CORK and k != STONE:
                 out.append((s, v, c, "cork_bridge"))
         return out
 
-    def plan(self, s: int, gu: int, togo: np.ndarray, most: int = 5000):
+    def plan(self, s: int, gu: int, togo: np.ndarray, most: int = 5000, lock: int = 0):
         """The way from global place gu in state s to the goal: (global places, the kind of each edge, the state at
         each place)."""
         u = int(self.loc[gu])
@@ -718,7 +753,7 @@ class StateGraph:
         T = togo[:, self.glob]
         nodes, kinds, states = [u], [], [int(s)]
         while T[states[-1], nodes[-1]] > 0 and np.isfinite(T[states[-1], nodes[-1]]) and len(nodes) < most:
-            best = min(self.step(states[-1], nodes[-1]), key=lambda e: e[2] + T[e[0], e[1]], default=None)
+            best = min(self.step(states[-1], nodes[-1], lock=lock), key=lambda e: e[2] + T[e[0], e[1]], default=None)
             if best is None or not np.isfinite(best[2] + T[best[0], best[1]]):
                 break
             states.append(int(best[0]))

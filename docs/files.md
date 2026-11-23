@@ -58,7 +58,7 @@ python -m ballistics export <地图.nmo> --out data
 
 | 内容 | 含义 |
 |---|---|
-| `mechanisms[]` | 每个机关：名字、种类（`gate`、`board`、`seesaw`、`cork_bridge`）、状态（`states`）、开局的状态（`initial`）、每个状态放行的连接（`lets_through`：状态 → 从哪个区域到哪个、哪几种球）、在哪里由哪种球拨动（`switched`、`switch_note`）、固定在开局状态时到目标最少几个断点（`held_breaks`，到不了为 `null`）、结论（`need`：必需 / 用到，可以绕开 / 这条走法没用到） |
+| `mechanisms[]` | 每个机关：名字、种类（`gate`、`board`、`seesaw`、`cork_bridge`、`falling_rock`、`t_board`）、状态（`states`）、开局的状态（`initial`）、每个状态放行的连接（`lets_through`：状态 → 从哪个区域到哪个、哪几种球）、在哪里由哪种球拨动（`switched`、`switch_note`；落石和 T 型板的 `switched[].at` 是该区域里的操作处坐标列表）、固定在开局状态时到目标最少几个断点（`held_breaks`，到不了为 `null`）、结论（`need`：必需 / 用到，可以绕开 / 这条走法没用到） |
 | `chain[]` | 第二步的走法里每次变球或拨动机关：第几步、做了什么（`did`）、靠哪条连接（`by`）、为了后面第几步的哪条连接（`for`，之后没用到时为 `null`） |
 | `breaks_by_mechanisms[]` | 旁边 8 个单位以内有粗层还没接的机关的断点：从哪个区域到哪个、那个机关的名字和种类、是否在走法上、断点两端的位置 |
 
