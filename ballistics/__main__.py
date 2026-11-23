@@ -18,16 +18,20 @@ def main(argv=None):
     c.add_argument("--mesh", type=Path, required=True, help="<name>-mesh.npz of the map the run was played on")
     c.add_argument("--run", type=Path, required=True, help="a recorded run file (.npz)")
     c.add_argument("--every", type=int, default=30, help="start an open-loop roll every this many ticks")
-    v = sub.add_parser("solve", help="coarse plan, plain roll along it, fine search only at the breaks; says what each break needed")
+    v = sub.add_parser("solve", help="step 1: the regions, the places that reach each other by rolling; step 2: the links between them and the way "
+                                     "through with the fewest breaks (nothing is rolled). With --roll: the route rolled in the kernel along the coarse plan, "
+                                     "with a fine search at the breaks, as before")
     v.add_argument("--mesh", type=Path, required=True, help="<name>-mesh.npz (exported with --templates, so that placed objects are in it)")
     v.add_argument("--map", type=Path, required=True, help="<name>-map.json")
+    v.add_argument("--roll", action="store_true", help="roll the route in the kernel along the coarse plan and search at the breaks (the earlier way; "
+                                                       "--sector, --tries, --shortcuts and --whole are for it)")
     v.add_argument("--sector", default="all", help="sector number, or all")
     v.add_argument("--tries", type=int, default=300_000, help="how many times the fine search may try a key hold at one break in one mode")
     v.add_argument("--shortcuts", type=int, default=4, help="how many islands (places no edge of the coarse level leads onto) to try per sector for another route; 0: only the standard route")
     v.add_argument("--whole", choices=("strict", "free"), help="instead: one search over the whole sector in this mode (the first version)")
     v.add_argument("--seconds", type=float, default=600.0, help="with --whole: time limit per sector")
     v.add_argument("--out", type=Path, default=Path("data"), help="folder for the results and the coarse graph")
-    v.add_argument("--png", type=Path, help="folder for a top view of each sector")
+    v.add_argument("--png", type=Path, help="folder for a top view of each sector (of each step)")
     k = sub.add_parser("coarse", help="the coarse level's plan alone: per sector the cheapest way over the coarse graph and the links it needs; nothing is rolled or searched")
     k.add_argument("--mesh", type=Path, required=True, help="<name>-mesh.npz (exported with --templates, so that placed objects are in it)")
     k.add_argument("--map", type=Path, required=True, help="<name>-map.json")
@@ -42,11 +46,11 @@ def main(argv=None):
                                              "(its exits and corridors are replayed in the kernel)")
     r.add_argument("--nmo", type=Path, help="the map file (.nmo) the mesh was exported from, for its sha256 in L<nn>.segments.json "
                                             "(default: maps/<its name> next to the map json, or in BALLISTICS_DATA)")
-    q = sub.add_parser("regions", help="the coarse level as connectivity between regions: what leads where, and the way through with the fewest breaks (nothing is rolled)")
+    q = sub.add_parser("regions", help="the same as solve without --roll: the regions, then the links between them")
     q.add_argument("--mesh", type=Path, required=True, help="<name>-mesh.npz (exported with --templates)")
     q.add_argument("--map", type=Path, required=True, help="<name>-map.json")
-    q.add_argument("--out", type=Path, default=Path("data"), help="folder of the coarse graph (<name>-coarse-solid.pkl) and for <name>-regions.json")
-    q.add_argument("--png", type=Path, help="folder for a top view of each sector's regions")
+    q.add_argument("--out", type=Path, default=Path("data"), help="folder of the coarse graph (<name>-coarse-solid.pkl) and for <name>-regions.json, <name>-links.json")
+    q.add_argument("--png", type=Path, help="folder for a top view of each sector (of each step)")
     t = sub.add_parser("things", help="the catalogue of balls, loose objects, mechanisms, triggers, pickups and level rules: list it, print one entry, or check it")
     t.add_argument("name", nargs="?", help="an entry id (P_Modul_25, ball_paper), a placed type name (P_Trafo_Stone) or a rule id (death_timing); without it: the list")
     t.add_argument("--check", action="store_true", help="check every file of the catalogue and say what is wrong")
@@ -143,37 +147,18 @@ def main(argv=None):
                                 "；终点离飞船标记还有 %.0f" % p["short_of_goal"] if "short_of_goal" in p else "")
                             + ("；开头 %.0f 没有规划" % p["starts_off"] if "starts_off" in p else ""), anchors, names, box=box)
         return
-    if a.command == "regions":
+    if a.command == "regions" or (a.command == "solve" and not a.roll and not a.whole):
+        # the default: step 1 the regions, step 2 the links between them (`ballistics.regions`); nothing is rolled
         import json
 
-        from . import regions, solve, staged
+        from . import regions, solve
         from .coarse import without_bodiless
         from .geometry import Mesh
         mesh = without_bodiless(Mesh.load(a.mesh))
         info = json.load(open(a.map, encoding="utf8"))
         name = a.mesh.name.replace("-mesh.npz", "")
         g = solve.graph_for(mesh, info, a.out / (name + "-coarse-solid.pkl"))
-        kind, out = "wood", []                             # ASSUMED: a level begins with the wood ball
-        for sec in range(1, len(info["reset_points"]) + 1):
-            world = staged.world_for(mesh, info, "strict", sec)
-            res = regions.analyse(g, info, sec, world, entry_kind=kind)
-            s = regions.summary(res)
-            out.append(s)
-            big = sum(1 for d in res["regions"].values() if d["places"] >= regions.BIG)
-            print("sector %d (enters as %s): %d regions, %d of %d places or more; %s" % (
-                sec, kind, len(res["regions"]), big, regions.BIG,
-                "no way to the goal even with breaks" if res["breaks"] is None else
-                "the goal is reached with %d break%s, over %d links" % (res["breaks"], "" if res["breaks"] == 1 else "s", len(res["path"]) - 1)))
-            for w in s["way"]:
-                print("   R%-4d %-5s bits %d  %s" % (w["region"], w["kind"], w["mechanism_bits"], w["link"] or w["by"]))
-            if res["path"]:
-                kind = regions.KINDS[res["path"][-1][1]]
-            if a.png:
-                a.png.mkdir(parents=True, exist_ok=True)
-                regions.draw(mesh, res, a.png / ("%s-regions-s%d.png" % (name, sec)),
-                             "第 %d 小节的区域（同色的点只靠滚动互相到得了）：%s" % (sec, "到不了目标" if res["breaks"] is None else "到目标最少要跨 %d 个断点" % res["breaks"]))
-        json.dump(dict(map=name, generator="ballistics", what="the coarse level as connectivity between regions (nothing rolled)", sectors=out),
-                  open(a.out / (name + "-regions.json"), "w", encoding="utf8"), ensure_ascii=False, indent=1)
+        regions.run(mesh, info, g, name, a.out, a.png)
         return
     if a.command == "route":
         import json

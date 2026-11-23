@@ -24,10 +24,16 @@ Ballance 地图的静态分析器。
 python -m ballistics export <地图.nmo> --out data --templates <游戏的 3D Entities/PH 目录>
 ```
 
-求解，每个小节给出一条标准路线、若干备选路线（各带预计时间和容错率）和留下的断点，写成一份路线清单；`--png` 另外画出俯视图：
+求解分两步，都只用粗层，不推演、不细搜（见 [docs/solver.md](docs/solver.md)）：第一步把每个小节分成只靠滚动就互相到得了的区域；第二步列出区域之间靠什么相连（起飞、下落、台阶、风扇、机关），找跨断点最少的走法。写出 `<名字>-regions.json` 和 `<名字>-links.json`，`--png` 另外画出每一步的俯视图：
 
 ```bash
-python -m ballistics solve --mesh data/Level_01-mesh.npz --map data/Level_01-map.json --sector all --png out
+python -m ballistics solve --mesh data/Level_02-mesh.npz --map data/Level_02-map.json --out data --png out
+```
+
+加 `--roll` 是原来的做法：沿粗层的规划在物理核里推演，在过不去的地方细搜，每个小节给出一条标准路线、若干备选路线（各带预计时间和容错率）和留下的断点，写成一份路线清单。它慢得多（第 1、2 关各要半小时左右）：
+
+```bash
+python -m ballistics solve --roll --mesh data/Level_01-mesh.npz --map data/Level_01-map.json --sector all --png out
 ```
 
 只看粗层的规划线（不推演、不细搜，很快，适合先看一张地图的全貌）：
@@ -36,13 +42,7 @@ python -m ballistics solve --mesh data/Level_01-mesh.npz --map data/Level_01-map
 python -m ballistics coarse --mesh data/Level_01-mesh.npz --map data/Level_01-map.json --png out
 ```
 
-只看连通：把粗层分成只靠滚动就互相到得了的区域，列出区域之间靠什么相连，找跨断点最少的走法（不推演，见 [docs/solver.md](docs/solver.md)）：
-
-```bash
-python -m ballistics regions --mesh data/Level_02-mesh.npz --map data/Level_02-map.json --out data --png out
-```
-
-把解出的路线写成路线文件（`L01.npz`，一条参考线；加 `--mesh` 还写出分段的版本 2）：
+把 `solve --roll` 解出的路线写成路线文件（`L01.npz`，一条参考线；加 `--mesh` 还写出分段的版本 2）：
 
 ```bash
 python -m ballistics route --map data/Level_01-map.json --results data --level 1 --out data/routes

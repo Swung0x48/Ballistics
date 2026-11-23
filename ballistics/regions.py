@@ -168,8 +168,9 @@ def connect(links: dict, trafo_kinds: dict, M: int, start, goal_region: int):
     return best[end][0], path[::-1], free
 
 
-def analyse(g, info, sector: int, world, entry_kind: str = "wood", operate_cost: float = 20.0) -> dict:
-    """A sector's regions, the links between them, and the way through them from its reset point to its goal."""
+def scan(g, info, sector: int, world, entry_kind: str = "wood", operate_cost: float = 20.0) -> dict:
+    """Step 1: a sector's regions (the places that reach each other by rolling), where its reset point and its goal
+    are, and which transformers' ranges each region has."""
     from .solve import state_graph_for
     from .staged import nearest_node
     sg, state_of = state_graph_for(g, info, sector, world, operate_cost)
@@ -186,31 +187,42 @@ def analyse(g, info, sector: int, world, entry_kind: str = "wood", operate_cost:
     u0 = nearest_node(g, togo[s0], reset)
     if sg.loc[u0] < 0:
         u0 = int(sg.glob[np.argmin(np.linalg.norm(P - reset, axis=1))])
-    start = (int(lab[sg.loc[u0]]), s0 >> M, s0 & ((1 << M) - 1))
-    goal_region = int(lab[sg.loc[goal]]) if sg.loc[goal] >= 0 else -1
-    links = links_of(sg, lab)
     trafo_kinds: dict = {}
     for u in np.flatnonzero(sg.tk >= 0):
         trafo_kinds.setdefault(int(lab[u]), set()).add(int(sg.tk[u]))
-    breaks, path, free = connect(links, trafo_kinds, M, start, goal_region)
-    # the coarse level's own cheapest plan (point by point, over the same states), as regions
-    nodes, kinds, states = sg.plan(s0, u0, togo)
-    plan = []
-    for i, gu in enumerate(nodes):
-        r = int(lab[sg.loc[gu]])
-        st = states[i]
-        how = kinds[i - 1] if i else "start"
-        if plan and plan[-1]["region"] == r and plan[-1]["state"] == st:
-            continue
-        plan.append(dict(region=r, state=st, kind=KINDS[st >> M], bits=st & ((1 << M) - 1), how=how, at=g.pos[gu].tolist()))
     regions = {}
     for r in range(len(sizes)):
         idx = np.flatnonzero(lab == r)
         regions[r] = dict(places=int(sizes[r]), centre=P[idx].mean(0).tolist(), lo=P[idx].min(0).tolist(), hi=P[idx].max(0).tolist(),
                           transformers=sorted(KINDS[t] for t in trafo_kinds.get(r, ())))
-    return dict(sector=sector, sg=sg, lab=lab, places=P, regions=regions, links=links, start=start, start_place=int(u0), goal_region=goal_region,
-                goal=int(goal), breaks=breaks, path=path, free=free, plan=plan, togo_start=float(togo[s0, u0]),
+    return dict(sector=sector, sg=sg, lab=lab, places=P, regions=regions, trafo_kinds=trafo_kinds,
+                start=(int(lab[sg.loc[u0]]), s0 >> M, s0 & ((1 << M) - 1)), start_place=int(u0), s0=int(s0), togo=togo,
+                goal=int(goal), goal_region=int(lab[sg.loc[goal]]) if sg.loc[goal] >= 0 else -1,
                 mechs=[dict(name=m["name"], type=m["type"]) for m in sg.mechs], entry_kind=entry_kind)
+
+
+def link(res: dict) -> dict:
+    """Step 2: the links between a sector's regions (`scan`), the way through them with the fewest breaks, and the
+    coarse level's own cheapest plan as regions. Adds them to res and returns it."""
+    sg, lab, M = res["sg"], res["lab"], len(res["mechs"])
+    g = sg.g
+    res["links"] = links_of(sg, lab)
+    res["breaks"], res["path"], res["free"] = connect(res["links"], res["trafo_kinds"], M, res["start"], res["goal_region"])
+    nodes, kinds, states = sg.plan(res["s0"], res["start_place"], res["togo"])
+    plan = []
+    for i, gu in enumerate(nodes):
+        r = int(lab[sg.loc[gu]])
+        st = states[i]
+        if plan and plan[-1]["region"] == r and plan[-1]["state"] == st:
+            continue
+        plan.append(dict(region=r, state=st, kind=KINDS[st >> M], bits=st & ((1 << M) - 1), how=kinds[i - 1] if i else "start", at=g.pos[gu].tolist()))
+    res["plan"] = plan
+    return res
+
+
+def analyse(g, info, sector: int, world, entry_kind: str = "wood", operate_cost: float = 20.0) -> dict:
+    """Both steps for one sector."""
+    return link(scan(g, info, sector, world, entry_kind, operate_cost))
 
 
 def describe(key) -> str:
@@ -233,28 +245,80 @@ def describe(key) -> str:
             coarse.BOARD_OVER: "从倒下的推板上过", coarse.SEESAW: "从低端过跷跷板（石球会把它翻过来）"}[typ] + "（机关 %d）" % m
 
 
-def summary(res: dict) -> dict:
-    """The analysis as plain data, for a file."""
-    M = len(res["mechs"])
-    used = {p[0] for p in res["path"]} | {p["region"] for p in res["plan"]}
-    regs = {r: d for r, d in res["regions"].items() if d["places"] >= BIG or r in used or r == res["start"][0] or r == res["goal_region"]}
+def _r1(v):
+    return [round(float(x), 1) for x in v]
+
+
+def summary_regions(res: dict) -> dict:
+    """Step 1 as plain data: every region of the sector."""
+    return dict(sector=res["sector"], entry_kind=res["entry_kind"], mechanisms=res["mechs"], start_region=res["start"][0], goal_region=res["goal_region"],
+                regions={str(r): dict(d, centre=_r1(d["centre"]), lo=_r1(d["lo"]), hi=_r1(d["hi"])) for r, d in res["regions"].items()})
+
+
+def summary_links(res: dict) -> dict:
+    """Step 2 as plain data: the links between the sector's regions, and the way with the fewest breaks."""
+    P = res["places"]
     links = []
     for key, e in sorted(res["links"].items(), key=lambda kv: (kv[0][1], kv[0][2], str(kv[0]))):
-        if key[1] not in regs or key[2] not in regs:
-            continue
-        P = res["sg"].g.pos[res["sg"].glob]
         links.append(dict(**{"from": key[1], "to": key[2]}, what=describe(key), cost=round(e["cost"], 1), count=e["count"],
                           at=[[round(float(x), 2) for x in P[e["at"][0]]], [round(float(x), 2) for x in P[e["at"][1]]]],
                           is_break=bool(key[0] == "plain" and key[3] in BREAK)))
-    return dict(sector=res["sector"], entry_kind=res["entry_kind"], mechanisms=res["mechs"],
-                regions={str(r): dict(d, centre=[round(x, 1) for x in d["centre"]], lo=[round(x, 1) for x in d["lo"]], hi=[round(x, 1) for x in d["hi"]])
-                         for r, d in regs.items()},
-                regions_all=len(res["regions"]), start_region=res["start"][0], goal_region=res["goal_region"],
+    return dict(sector=res["sector"], entry_kind=res["entry_kind"], start_region=res["start"][0], goal_region=res["goal_region"],
                 fewest_breaks=res["breaks"],
                 way=[dict(region=r, kind=KINDS[k], mechanism_bits=b, by=what, link=describe(key)) for r, k, b, what, key in res["path"]],
-                coarse_plan=[dict(region=p["region"], kind=p["kind"], mechanism_bits=p["bits"], by=p["how"], at=[round(x, 1) for x in p["at"]]) for p in res["plan"]],
-                links=[l for l in links if not l["is_break"]], breaks_between_regions=sum(1 for l in links if l["is_break"]),
-                note="mechanism_bits: bit m is mechanism m's state (gate open, push board down, seesaw low at its other end)" if M else "")
+                coarse_plan=[dict(region=p["region"], kind=p["kind"], mechanism_bits=p["bits"], by=p["how"], at=_r1(p["at"])) for p in res["plan"]],
+                links=[l for l in links if not l["is_break"]],
+                breaks=[l for l in links if l["is_break"] and res["regions"][l["from"]]["places"] >= BIG and res["regions"][l["to"]]["places"] >= BIG],
+                breaks_all=sum(1 for l in links if l["is_break"]),
+                note="mechanism_bits: bit m is mechanism m's state (gate open, push board down, seesaw low at its other end)" if res["mechs"] else "")
+
+
+def run(mesh, info, g, name: str, out, png=None, log=print) -> list:
+    """The two steps for every sector of a map: step 1 the regions, step 2 the links between them and the way with
+    the fewest breaks. Writes <name>-regions.json and <name>-links.json into `out` (and pictures of each step for
+    each sector into `png`). A sector is entered as the kind of ball the way through the one before ended as (the
+    first as a wood ball: ASSUMED, the map file does not say). Returns the sectors' analyses."""
+    import json
+    from pathlib import Path
+    from .staged import world_for
+    kind, done = "wood", []
+    for sec in range(1, len(info["reset_points"]) + 1):
+        res = link(scan(g, info, sec, world_for(mesh, info, "strict", sec), entry_kind=kind))
+        done.append(res)
+        if res["path"]:
+            kind = KINDS[res["path"][-1][1]]
+    log("step 1, regions (the places that reach each other by rolling):")
+    for res in done:
+        big = sum(1 for d in res["regions"].values() if d["places"] >= BIG)
+        log("   sector %d: %d regions, %d of them of %d places or more; the reset point in R%d, the goal in R%d" % (
+            res["sector"], len(res["regions"]), big, BIG, res["start"][0], res["goal_region"]))
+    log("step 2, the links between them, and the way with the fewest breaks:")
+    for res in done:
+        n_links = sum(1 for k in res["links"] if not (k[0] == "plain" and k[3] in BREAK))
+        log("   sector %d (enters as %s): %d links, %d breaks between regions; %s" % (
+            res["sector"], res["entry_kind"], n_links, len(res["links"]) - n_links,
+            "no way to the goal even with breaks" if res["breaks"] is None else
+            "the goal is reached with %d break%s, over %d links" % (res["breaks"], "" if res["breaks"] == 1 else "s", len(res["path"]) - 1)))
+        for r, k, b, what, key in res["path"]:
+            log("      R%-4d %-5s bits %d  %s" % (r, KINDS[k], b, describe(key) or what))
+    out = Path(out)
+    out.mkdir(parents=True, exist_ok=True)
+    head = dict(map=name, generator="ballistics", what="", note="the coarse level only: nothing is rolled or searched")
+    json.dump(dict(head, what="step 1: the regions, the places that reach each other by rolling", sectors=[summary_regions(r) for r in done]),
+              open(out / (name + "-regions.json"), "w", encoding="utf8"), ensure_ascii=False, indent=1)
+    json.dump(dict(head, what="step 2: the links between the regions, and the way with the fewest breaks", sectors=[summary_links(r) for r in done]),
+              open(out / (name + "-links.json"), "w", encoding="utf8"), ensure_ascii=False, indent=1)
+    if png is not None:
+        png = Path(png)
+        png.mkdir(parents=True, exist_ok=True)
+        for res in done:
+            s = res["sector"]
+            draw_regions(mesh, res, png / ("%s-regions-s%d.png" % (name, s)),
+                         "第 %d 小节，第一步：只靠滚动互相到得了的区域（%d 个，%d 个点以上的 %d 个）" % (
+                             s, len(res["regions"]), BIG, sum(1 for d in res["regions"].values() if d["places"] >= BIG)))
+            draw(mesh, res, png / ("%s-links-s%d.png" % (name, s)),
+                 "第 %d 小节，第二步：区域之间的连接；%s" % (s, "到不了目标" if res["breaks"] is None else "到目标最少要跨 %d 个断点" % res["breaks"]))
+    return done
 
 
 PALETTE = [(31, 119, 180), (255, 127, 14), (44, 160, 44), (214, 39, 40), (148, 103, 189), (140, 86, 75), (227, 119, 194), (127, 127, 127),
@@ -283,6 +347,34 @@ def _rim(P):
     keys = {(int(round(p[0])), int(round(p[2]))) for p in P}
     return np.array([p for p in P if any((int(round(p[0])) + dx, int(round(p[2])) + dz) not in keys
                                           for dx, dz in ((1, 0), (-1, 0), (0, 1), (0, -1)))]).reshape(-1, 3)
+
+
+def draw_regions(mesh, res: dict, path, title: str = ""):
+    """Step 1: the sector's regions in colours (those of BIG places or more, and the ones the reset point and the goal
+    are in), each of 300 places or more named, with the transformers in it."""
+    from .render import INK, SURFACE, TopView, _font
+    P, lab = res["places"], res["lab"]
+    lo, hi = P.min(0), P.max(0)
+    v = TopView(mesh, box=(lo[0], hi[0], lo[2], hi[2]), width=2000, title=title, height=True)
+    show = {r for r, d in res["regions"].items() if d["places"] >= BIG} | {res["start"][0], res["goal_region"]}
+    order = sorted(show, key=lambda r: -res["regions"][r]["places"])
+    colour = {r: PALETTE[i % len(PALETTE)] for i, r in enumerate(order)}
+    for r in order:
+        for p in P[lab == r]:
+            x, y = v.P(p[0], p[2])
+            v.pen.rectangle((x - 2, y - 2, x + 2, y + 2), fill=colour[r] + (220,))
+    f = _font(22)
+    for r in order:
+        d = res["regions"][r]
+        if d["places"] >= 300 or r in (res["start"][0], res["goal_region"]):
+            x, y = v.P(d["centre"][0], d["centre"][2])
+            t = "R%d" % r + ("（%s变）" % "".join({"wood": "木", "stone": "石", "paper": "纸"}[k] for k in d["transformers"]) if d["transformers"] else "")
+            v.pen.rectangle((x - 2, y - 2, x + v.pen.textlength(t, font=f) + 4, y + 26), fill=SURFACE + (220,))
+            v.pen.text((x, y), t, fill=INK, font=f)
+    sg = res["sg"]
+    v.dot(sg.g.pos[res["start_place"]], "起点", colour=(208, 59, 59))
+    v.dot(sg.g.pos[res["goal"]], "目标", colour=(20, 28, 40))
+    v.save(path)
 
 
 def draw(mesh, res: dict, path, title: str = ""):
