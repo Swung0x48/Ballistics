@@ -435,10 +435,55 @@ GATE_FULL = 4.5           # a gate counts as open once it has slid this far (the
 BOARD_DOWN = 60.0         # a push board counts as down once it has turned this far over (degrees)
 
 
-def state_graph_for(g, info: dict, sector: int, world, operate_cost: float):
+def cork_edges(g, info: dict, sector: int | None = None) -> list:
+    """The cork bridges (P_Modul_29) on the coarse level: (u, v, cost, name), both ways. A wood or paper ball walks
+    over one, a stone ball breaks it (READ and MEASURED, catalogue P_Modul_29). Its ends are those of its planks'
+    hulls along its long axis (the placement's own x, as they are put): the places on the road beyond each end (0.5
+    to 4 out, within 2 of its middle line, within 2.5 of the end's height) get an edge to the place beyond the other
+    end nearest across. Cost: the way's length (ASSUMED: the bridge is crossed at about the follower's pace; MEASURED
+    0.62 to 1.02 game s over its 14.8)."""
+    out = []
+    for p in info.get("placements", ()):
+        if p["type"] != "P_Modul_29" or (sector is not None and p.get("sector") != sector):
+            continue
+        V = [np.array(h["vertices"], float) for h in info.get("hulls", ()) if h.get("placement") == p["name"]]     # (in world, as put)
+        if not V:
+            continue
+        V = np.vstack(V)
+        o = np.array(p["position"], float)
+        ax = np.array(p["x_axis"], float)
+        ax[1] = 0.0
+        ax /= np.linalg.norm(ax)
+        side = np.cross([0.0, 1.0, 0.0], ax)
+        t = (V - o) @ ax
+        ends = []
+        for sign, lim in ((-1.0, t.min()), (1.0, t.max())):
+            e = o + lim * ax
+            e[1] = float(V[np.abs(t - lim) < 1.0, 1].max())     # the end's top
+            ends.append((sign, lim, e))
+        rel = g.pos - o
+        along, across = rel @ ax, rel @ side
+        floor = g.kind == 0
+        groups = []
+        for sign, lim, e in ends:
+            groups.append(np.flatnonzero(floor & (sign * (along - lim) > 0.5) & (sign * (along - lim) < 4.0) & (np.abs(across) <= 2.0)
+                                         & (np.abs(g.pos[:, 1] - e[1] - 2.0) < 2.5)))
+        a, b = groups
+        for us, vs in ((a, b), (b, a)):
+            for u in us:
+                if not len(vs):
+                    break
+                v = int(vs[np.argmin(np.abs(across[vs] - across[u]))])
+                out.append((int(u), v, float(np.linalg.norm(g.pos[v] - g.pos[u])), p["name"]))
+    return out
+
+
+def state_graph_for(g, info: dict, sector: int, world, operate_cost: float, cork: bool = False):
     """The coarse level of a sector over the ball's kind and its mechanisms' states (`coarse.StateGraph`), and how to
     read those states from the kernel's scene: (graph, reader(kind name, scene) -> state index). Only the places
-    of the sector's region take part: its reset point, its goal and what is placed in it, 60 wider."""
+    of the sector's region take part: its reset point, its goal and what is placed in it, 60 wider. cork: with the
+    edges over cork bridges (`cork_edges`); the kernel has no cork bridge yet, so the solver that rolls leaves them
+    out."""
     from . import trafo
     from .kernel import _hinge_angle
     from .launch import FOLLOW_SPEED
@@ -497,7 +542,8 @@ def state_graph_for(g, info: dict, sector: int, world, operate_cost: float):
         # put at 10 degrees, it falls to its first low end (about +9.6 from where it was put); tipped over, -29.6
         readers.append(lambda sc, k=k: int(np.degrees(_hinge_angle(world.prop_consts, k, sc[k, 0], sc[k, 1], sc[k, 2])) < -10.0))
     sg = coarse.StateGraph(rel, g, region, tk, cost, lifts, mechs, operate_cost,
-                           links=_link_rules(rel, g, region, tk, trafo.of(info, sector), R.radius, mechs), skip=skip)
+                           links=_link_rules(rel, g, region, tk, trafo.of(info, sector), R.radius, mechs), skip=skip,
+                           bridges=cork_edges(g, info, sector) if cork else ())
     M = len(mechs)
 
     def state_of(kind: str, scene) -> int:

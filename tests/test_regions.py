@@ -75,3 +75,41 @@ def test_a_paper_ball_cannot_push_a_board_over_so_that_link_is_not_made():
     R = regions.Regions(labs, np.zeros((n, 3)))
     made = {(int(R.kind[k[1]]), k[3]) for k in regions.links_of(sg, R)}
     assert made == {(W, coarse.BOARD_PUSH), (S, coarse.BOARD_PUSH)}
+
+
+def test_a_cork_bridge_is_crossed_by_a_wood_or_paper_ball_either_way_whichever_way_it_lies():
+    from ballistics import solve
+    for ax in ((1.0, 0.0, 0.0), (0.0, 0.0, 1.0), (0.6, 0.0, 0.8)):          # (nothing about which way it lies on the map)
+        a = np.array(ax)
+        side = np.cross([0.0, 1.0, 0.0], a)
+        pos = [t * a + w * side + [0.0, 2.0, 0.0] for t in list(np.arange(-12, -8)) + list(np.arange(9, 13)) for w in (-1.0, 0.0, 1.0)]
+        g = coarse.Graph(np.array(pos), np.zeros(len(pos), int), np.full(len(pos), -1), [[] for _ in pos], [])
+        # its planks' hulls, in world as put: 14.8 long along its x, 5 wide, its top at 0.3
+        V = [t * a + w * side + [0.0, y, 0.0] for t in (-7.4, 7.4) for w in (-2.5, 2.5) for y in (-0.3, 0.3)]
+        info = dict(placements=[dict(name="C", type="P_Modul_29", sector=1, position=[0.0, 0.0, 0.0], x_axis=list(ax))],
+                    hulls=[dict(placement="C", type="P_Modul_29", vertices=[list(v) for v in V])])
+        e = solve.cork_edges(g, info, 1)
+        ends = {(int(np.sign(g.pos[u] @ a)), int(np.sign(g.pos[v] @ a))) for u, v, _c, _n in e}
+        assert ends == {(-1, 1), (1, -1)} and all(n == "C" for *_x, n in e)
+    key = ("mech", 0, 1, coarse.CORK, 0, 0, W, W)
+    assert regions._moves(key, 0) and regions._moves(("mech", 0, 1, coarse.CORK, 0, 0, P, P), 0)
+    assert not regions._moves(("mech", 0, 1, coarse.CORK, 0, 0, S, S), 0)        # a stone ball breaks it and falls
+
+
+def test_step_3_finds_a_gate_needed_and_what_opening_it_is_for():
+    labs = np.array([[-1, -1], [0, 1], [-1, -1]])                               # two places, a stone ball's regions 0 and 1
+    R = regions.Regions(labs, np.zeros((2, 3)))
+    links = {}
+    links.update(key("mech", 0, 0, coarse.GATE_OPERATE, 0, 0, S, S))
+    links.update(key("mech", 0, 1, coarse.GATE_THROUGH, 0, 0, S, S))
+    links.update(key("plain", 0, 1, "gap", 0, S, S))
+    start, goals = (0, S, 0), [1]
+    b, path, free = regions.connect(links, start, goals)
+    res = dict(R=R, places=np.zeros((2, 3)), links=links, start=start, goal_regions=goals, breaks=b, path=path, mechs=[dict(name="G", type="gate")],
+               sg=SimpleNamespace(bridges=[]), regions={r: dict(name=R.name(r), kind="stone", places=50) for r in range(2)}, placements=[])
+    regions.mechanisms(res)
+    (m,) = res["mechanisms"]
+    assert m["states"] == ["关", "开"] and m["initial"] == "关" and m["need"] == "必需" and m["held_breaks"] == 1
+    assert m["lets_through"]["开"] == [{"from": R.name(0), "to": R.name(1), "balls": "石"}]
+    (c,) = res["chain"]
+    assert c["step"] == 1 and c["for"]["step"] == 2 and "开" in c["did"]

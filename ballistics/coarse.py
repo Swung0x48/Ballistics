@@ -448,7 +448,7 @@ class Relaxed:
 # ---------------- the coarse level with the mechanisms' states
 WOOD, STONE, PAPER = 0, 1, 2                 # the ball's kind, as a state of the coarse level
 KIND_INDEX = {"wood": WOOD, "stone": STONE, "paper": PAPER}
-GATE_THROUGH, GATE_OPERATE, BOARD_PUSH, BOARD_OVER, SEESAW = 1, 2, 3, 4, 5
+GATE_THROUGH, GATE_OPERATE, BOARD_PUSH, BOARD_OVER, SEESAW, CORK = 1, 2, 3, 4, 5, 6
 _INF = 1e300
 
 
@@ -526,6 +526,9 @@ def _state_togo(n, M, bptr, bsrc, bcost, bek, bmask, tk, tcost, lptr, lsrc, lcos
                         preds = ((s & ~(1 << m)) | (side << m), -1)
                 elif bit == side:
                     preds = (s, -1)
+            elif typ == 6:                                 # over a cork bridge: a wood or paper ball (a stone one breaks it and falls)
+                if k != 1:
+                    preds = (s, -1)
             for s2 in preds:
                 if s2 >= 0 and nd < togo[s2, u]:
                     togo[s2, u] = nd
@@ -562,9 +565,12 @@ class StateGraph:
     mechs: [dict(name, type ("gate", "board", "seesaw"), ...edges)] as `solve` makes them. links: {(u, v): (kind
     index or -1, bits mask)} for the relaxed graph's links that pass through a transformer's range or a mechanism
     (`solve._link_rules`). lifts: (u, v, cost[, the kind index it ends as when that is a transformer's it enters on the
-    way, not one v is in]). skip: (u, v) edges of the relaxed graph that are not there in this sector."""
+    way, not one v is in]). skip: (u, v) edges of the relaxed graph that are not there in this sector.
+    bridges: (u, v, cost, name) over cork bridges (P_Modul_29), for a wood or paper ball. A bridge has no bit: a stone
+    ball breaks it and falls with it (READ), and a broken bridge is whole again only once the ball is lost, so no ball
+    that goes on ever finds it broken."""
 
-    def __init__(self, rel, g, region, trafo_kind, trafo_cost: float, lifts, mechs: list, operate_cost: float, links=None, skip=()):
+    def __init__(self, rel, g, region, trafo_kind, trafo_cost: float, lifts, mechs: list, operate_cost: float, links=None, skip=(), bridges=()):
         N = len(g.pos)
         self.g, self.N, self.mechs = g, N, list(mechs)
         self.M = len(self.mechs)
@@ -611,6 +617,15 @@ class StateGraph:
                 self.cfwd[u].append((v, c, kind, m, typ, side))
                 cond.append((u, v, c, m, typ, side))
                 cond_kind.append(kind)
+        self.bridges = sorted({b[3] for b in bridges})
+        for gu, gv, c, name in bridges:
+            u, v = int(loc[gu]), int(loc[gv])
+            if u < 0 or v < 0:
+                continue
+            j = self.bridges.index(name)                   # (kept where a mechanism's index goes; it is no bit)
+            self.cfwd[u].append((v, float(c), "roll", j, CORK, 0))
+            cond.append((u, v, float(c), j, CORK, 0))
+            cond_kind.append("roll")
         self._base, self._lift, self._cond = base, lift, cond
         self._base_kind, self._cond_kind = base_kind, cond_kind
         self._dropped = set()
@@ -690,6 +705,8 @@ class StateGraph:
                 out.append((s, v, c, kind))
             elif typ == SEESAW and bit == side:
                 out.append(((s & ~(1 << m)) | ((1 - side) << m) if k == STONE else s, v, c, kind))
+            elif typ == CORK and k != STONE:
+                out.append((s, v, c, "cork_bridge"))
         return out
 
     def plan(self, s: int, gu: int, togo: np.ndarray, most: int = 5000):
