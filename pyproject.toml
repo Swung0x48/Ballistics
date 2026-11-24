@@ -3,10 +3,16 @@ name = "ballistics"
 version = "0.0.1"
 description = "Static analyzer for Ballance maps: trajectories worth trying, with proofs under known physics rules"
 requires-python = ">=3.11"
-dependencies = ["numpy", "numba"]
+dependencies = ["numpy", "numba", "pillow", "scipy"]
 
 [project.optional-dependencies]
 dev = ["pytest"]
+
+[tool.setuptools.packages.find]
+include = ["ballistics*"]
+
+[tool.setuptools.package-data]
+"ballistics.things" = ["data/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

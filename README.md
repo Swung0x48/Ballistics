@@ -9,14 +9,14 @@ Ballance 地图的静态分析器。
 ## 设计
 
 - **手写的是物理，不是路线。** 球怎么受力、怎么滚、怎么碰，写成规则；路线由搜索在这套规则里找出来，不靠逐关补规则。
-- **几何从粗到细。** 粗层只用来看全局结构和提候选；细层是引擎实际碰撞用的三角面本身。只有细层的计算能写进证明。
+- **判定用闭式，不按时间步推演。** 能不能过、落在哪、要多久，都由几何、球的属性和重力直接算出来，不一步步模拟。粗层的位置和区域只用来组织搜索；碰撞查的是引擎实际碰撞用的三角面本身。检验以游戏自己的模拟为准（SimTool、原版记录）。
 - **每条规则都有依据。** 规则和常数分三种：在引擎数据上量过的、从游戏自己的表里读的、假定的。只靠假定的东西不能进证明。
 - **过不去就如实留着。** 搜索没找到走法的地方是断点，原样列出来，不拿放宽条件的结果充数。
 - **不依赖引擎。** 这个项目不启动、不驱动游戏引擎，代码里也不引用它。它只读文件：地图文件，和别处录下来的引擎轨迹（用来量物理规则的误差）。它的输出也是文件；拿路线去引擎里实验、复核，是引擎那一侧工具的事。
 
 ## 用法
 
-需要 Python 3.11 以上，以及 numpy、numba。读 `.nmo` 另外需要 libcmo21 的 `pybmap`，怎么找到它见 [docs/files.md](docs/files.md)。
+需要 Python 3.11 以上，以及 numpy、numba、Pillow（画图）、scipy（闭式判定里的特殊函数），都写在 `pyproject.toml` 里。读 `.nmo` 另外需要 libcmo21 的 `pybmap`，怎么找到它见 [docs/files.md](docs/files.md)。
 
 导出地图的碰撞网格和锚点（出生点、盘点、飞船、摆放的东西）：
 
@@ -63,6 +63,8 @@ python -m ballistics calibrate --mesh data/Level_01-mesh.npz --run data/runs/<�
 
 ## 现状
 
+**正在改造**：按时间步推演的物理核、跟随器、细搜和 `--roll` 要全部换成闭式判定的等价实现，再删掉（见 [docs/closed-form-plan.md](docs/closed-form-plan.md)）。下面说的物理核和 `--roll` 都属于要换掉的部分。
+
 第 1 关**在物理核里走通了**：四个小节都有路线，共 150.5 游戏秒，没有优化。第 2 关第 1、2、5 小节走通，第 3、4 小节还留着断点（第 3 小节要软木桥、跷跷板和几步机关，见 [docs/mechanisms.md](docs/mechanisms.md)）。这些都是手写物理核里的轨迹，没有在游戏里跑过。详见 [docs/level-1.md](docs/level-1.md) 和 [docs/mechanisms.md](docs/mechanisms.md)。
 
 已有：
@@ -77,7 +79,7 @@ python -m ballistics calibrate --mesh data/Level_01-mesh.npz --run data/runs/<�
 
 没有：
 
-- 其余 9 种机关（升降机、秋千、单摆、软木桥等）
+- 闭式判定：起飞、风扇抬升、路线和时间估计现在还靠物理核推演
 - 纸球的真实形状（物理核里是球体替身）
 - 轨迹的优化（现在的轨迹远慢于高手录像）；备选路线只有“经过孤岛”一种，收益只算时间
 - 证明格式和独立检查器；路线文件里的出口和走廊只是扰动重放的包络
@@ -95,6 +97,7 @@ python -m ballistics calibrate --mesh data/Level_01-mesh.npz --run data/runs/<�
 | [docs/mechanisms.md](docs/mechanisms.md) | 目录里已经接进求解的机关和物体：模拟了什么、依据、和原版记录的对照、还没做的 |
 | [docs/design.md](docs/design.md) | 思路：每个决定的理由、放弃过的做法、还没解决的问题 |
 | [docs/route-generator-plan.md](docs/route-generator-plan.md) | 计划：作为路线生成器还缺什么（分段的路线文件、覆盖、为机关规划、多样性、反馈通道） |
+| [docs/closed-form-plan.md](docs/closed-form-plan.md) | 计划：所有按时间步的推演换成闭式判定的等价实现，再删旧代码 |
 | [docs/step4-shortcut-plan.md](docs/step4-shortcut-plan.md) | 计划：区域分析的第四步，按条件认定借机关几何的捷径（跳台、反弹、磕底座），带时间估计的替代走法 |
 
 关于游戏本身（和这个工具无关的事实，每条标了依据）：
