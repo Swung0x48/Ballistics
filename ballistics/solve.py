@@ -859,11 +859,129 @@ def road_state_edges(g, rel, info, sector, region, mesh=None):
         yield dict(name=name, type=typ, edges=edges), guards, removed
 
 
+def flap_state_edges(g, rel, info, sector, region, lifts):
+    """Catalogue lane crossings for P_Modul_19 and guards on the cached edges, in the placement frame."""
+    placements = [p for p in info.get("placements", ()) if p["type"] == "P_Modul_19" and p.get("sector") == sector]
+    if not placements:
+        return
+    from . import things
+    nums = things.load()["P_Modul_19"].numbers
+    gaps, lanes = (nums[k]["v"] for k in ("gap_x", "lane_z"))
+    height = nums["standing_flap_height"]["v"]
+    floor = (g.kind == 0) & region
+    ground, flights = [], []
+    for u in np.flatnonzero(region):
+        for v, _c, kind in rel.fwd[u]:
+            if region[v]:
+                (flights if kind == "launch" else ground).append((int(u), int(v), kind))
+    flights += [(u, v, "lift") for u, v, *_ in lifts if region[u] and region[v]]
+    uv = np.array([(u, v) for u, v, _ in ground], dtype=int).reshape(-1, 2)
+    for p in placements:
+        name = p["name"]
+        o = np.asarray(p["position"], float)
+        frame = np.array([p[ax + "_axis"] for ax in "xyz"], float)
+        frame /= np.linalg.norm(frame, axis=1)[:, None]
+        P = (g.pos - o) @ frame.T
+        parts = [(np.asarray(h["vertices"]) - o) @ frame.T for h in info.get("hulls", ())
+                 if h.get("placement") == name and len(h["vertices"]) >= 4]
+        plates = []
+        for z0, z1 in (lanes["lane_A"], lanes["lane_B"]):
+            # The plate spans its lane; the wire and central steel piece do not.
+            parts_in_lane = [v for v in parts if z0 < v[:, 2].mean() < z1]
+            if parts_in_lane:
+                v = max(parts_in_lane, key=lambda v: np.ptp(v[:, 2]))
+                plates.append((v.min(0), v.max(0)))
+        edges, guards, deck_edges = [], {}, {}
+        if len(plates) != 2:
+            continue  # no geometry for this placement; leave its breaks unresolved
+        alo, ahi = plates[0]
+        blo, bhi = plates[1]
+        # B pose: the A plate stands at its minus-X end. ASSUMED box thickness from the other
+        # upright plate's X extent; use the catalogue upright height over the local road datum.
+        wall_a = (alo.copy(), np.array([alo[0] + bhi[0] - blo[0], height, ahi[2]]))
+        walls = (wall_a, (blo, bhi))
+        top = (alo[1] + ahi[1]) / 2
+        # ASSUMED: only the ball-centre band for the cached A deck, not the road underneath it.
+        slab_lo = alo + [0, BALL_R - _MECH_HEIGHT, 0]
+        slab_hi = ahi + [0, BALL_R + _MECH_HEIGHT, 0]
+        supported = floor & np.all((P > slab_lo) & (P < slab_hi), axis=1)
+        # Height of the filled B gap is inferred from A; do not count a hypothetical bridge
+        # or a flight between the banks as rolling on this surface.
+        b_slab_lo = np.array([gaps["lane_B"][0], top + BALL_R - _MECH_HEIGHT, lanes["lane_B"][0]])
+        b_slab_hi = np.array([gaps["lane_B"][1], top + BALL_R + _MECH_HEIGHT, lanes["lane_B"][1]])
+        for side, lane in enumerate(("lane_A", "lane_B")):
+            x0, x1 = gaps[lane]
+            z0, z1 = lanes[lane]
+            lo, hi = np.array([x0, top, z0]), np.array([x1, top, z1])
+            # ASSUMED: use the same end/height/alignment tolerances on either lane. Before
+            # tipping there may be no rest sample right at the lip (the ball meets the wall first).
+            bank = BALL_R + _MECH_BANK
+            if side or not supported.any():
+                for u, v, c in _span(g, P, floor, lo, hi, 0, top, bank):
+                    if side or not any(w == v and k not in ("gap", "bridge", "launch") for w, _c, k in g.adj[u]):
+                        edges.append((coarse.FLAP_OVER, u, v, c, side, "over_flap"))
+            wl, wh = walls[side]
+            sign, face, lip = (1, wh[0], x1) if side else (-1, wl[0], x0)
+            d = sign * (P[:, 0] - face) - BALL_R
+            x, y, z = P.T
+            along_lane = (z >= z0) & (z <= z1)
+            # ASSUMED contact band at the upright face. A rail/groove ball need not be at
+            # ball-radius height over the road: any centre between the face bottom and top can push.
+            sources = np.flatnonzero(region & along_lane & (sign * (x - lip) >= -1e-8)
+                                     & (d >= -0.2) & (d <= _MECH_BANK) & (y >= wl[1]) & (y <= wh[1]))
+            far_lip = x0 if side else x1
+            to_end = sign * (far_lip - x)
+            banks = np.flatnonzero(floor & along_lane & (to_end >= -1e-8) & (to_end <= bank)
+                                   & (abs(y - top - BALL_R) <= _MECH_HEIGHT))
+            for u in sources:
+                aligned = banks[abs(z[banks] - z[u]) <= _MECH_ALIGN]
+                if len(aligned):
+                    v = int(aligned[np.argmin(np.linalg.norm(P[aligned] - P[u], axis=1))])
+                    edges.append((coarse.FLAP_PUSH, int(u), v, float(np.linalg.norm(P[v] - P[u])), 1 - side, "push_flap"))
+
+        # ASSUMED: test passage through the faces' actual X bands. Do not seal rolling
+        # along a bank alongside the wall. Allow ball clearance below and at the sides,
+        # but do not extend above the face. Flights use only their stored paths.
+        pad = BALL_R - 0.2
+        wall_boxes = [(lo - [0, pad, pad], hi + [0, 0, pad]) for lo, hi in walls]
+        low = np.minimum(P[uv[:, 0]], P[uv[:, 1]])
+        high = np.maximum(P[uv[:, 0]], P[uv[:, 1]])
+        near = supported[uv].any(axis=1)
+        for lo, hi in [*wall_boxes, (slab_lo, slab_hi), (b_slab_lo, b_slab_hi)]:
+            near |= ((low <= hi) & (high >= lo)).all(axis=1)
+
+        def screen(edge, way):
+            u, v, kind = edge
+            # A steel rail has its own support even if its centreline is at deck height.
+            # Still guard it below if the new standing face intersects that centreline.
+            rolling = kind in ("roll", "step") and g.kind[u] == g.kind[v] == 0
+            deck_a = supported[u] or supported[v] or (rolling and _box_span(way, slab_lo, slab_hi))
+            deck_b = rolling and _box_span(way, b_slab_lo, b_slab_hi)
+            # Dependent edges disappear without the flap. Relaxed links between two
+            # independent banks remain breaks, not proof of a crossing.
+            if deck_a or deck_b:
+                deck_edges[edge] = 0 if deck_a else 1
+            on = deck_b or (len(way) > 1 and _box_span(way, *wall_boxes[1]))  # B upright blocks in A
+            off = deck_a or (len(way) > 1 and _box_span(way, *wall_boxes[0]))
+            if on or off:
+                guards[edge] = (on, off)
+
+        for i in np.flatnonzero(near):
+            screen(ground[i], P[uv[i]])
+        for edge in flights:
+            u, v, kind = edge
+            stored = g.info.get("launches" if kind == "launch" else "lifts", {}).get((u, v), {})
+            way = stored.get("way", ())
+            local = (np.asarray(way) - o) @ frame.T if len(way) > 1 else ()
+            screen(edge, local)
+        yield dict(name=name, type="flap", edges=edges, deck_edges=deck_edges), guards
+
+
 def state_graph_for(g, info: dict, sector: int, world, operate_cost: float, cork: bool = False, without=()):
     """The coarse level of a sector over the ball's kind and its mechanisms' states (`coarse.StateGraph`), and how to
     read those states from the kernel's scene: (graph, reader(kind name, scene) -> state index). Only the places
     of the sector's region take part: its reset point, its goal and what is placed in it, 60 wider. cork: with the
-    region-only cork bridges, falling rocks, T boards and box float rows; the solver that rolls leaves them out. without: names of placements taken as not there (a what-if): a transformer has no range, a fan no lifts, a
+    region-only cork bridges, falling rocks, T boards, two-way flaps and box float rows; the solver that rolls leaves them out. without: names of placements taken as not there (a what-if): a transformer has no range, a fan no lifts, a
     cork bridge, push board or seesaw no way over it; a gate is no obstacle (the ways it clears are always there).
     A removed rock has no upper bridge and never seals the lower route; a removed T board leaves only the
     supported crossings of its old foot. No change to the cached places or edges."""
@@ -945,6 +1063,17 @@ def state_graph_for(g, info: dict, sector: int, world, operate_cost: float, cork
                 guards[edge] = (a | (bit if on else 0), b | (bit if off else 0))
             mechs.append(mc)
             readers.append(lambda _scene: 0)  # the region-only bits start at rest; never read from physics
+    if cork:
+        for mc, rules in flap_state_edges(g, rel, info, sector, region, lifts):
+            if mc["name"] in without:
+                skip.extend(mc["deck_edges"])
+                continue
+            bit = 1 << len(mechs)
+            for edge, (on, off) in rules.items():
+                a, b = guards.get(edge, (0, 0))
+                guards[edge] = (a | (bit if on else 0), b | (bit if off else 0))
+            mechs.append(mc)
+            readers.append(lambda _scene: 0)
     floats = float_rows(g, info, sector) if cork else []
     region, screened = _float_screen(g, rel, region, lifts, floats)
     skip.extend(screened)

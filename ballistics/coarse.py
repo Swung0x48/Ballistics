@@ -451,6 +451,7 @@ KIND_INDEX = {"wood": WOOD, "stone": STONE, "paper": PAPER}
 GATE_THROUGH, GATE_OPERATE, BOARD_PUSH, BOARD_OVER, SEESAW, CORK = 1, 2, 3, 4, 5, 6
 ROCK_OVER, T_OVER, T_CLEAR, ROCK_PUSH, T_PUSH = 7, 8, 9, 10, 11
 FLOAT_ROW = 12
+FLAP_OVER, FLAP_PUSH = 13, 14
 FLOAT_KIND_BITS = len(KIND_INDEX)
 FLOAT_KIND_MASK = (1 << FLOAT_KIND_BITS) - 1
 FLOAT_THROUGH, FLOAT_MINUS, FLOAT_PLUS, FLOAT_END = range(4)
@@ -469,7 +470,7 @@ _INF = 1e300
 
 
 @njit(cache=True)
-def _state_togo(n, M, bptr, bsrc, bcost, bek, bmask, bclear, tk, tcost, lptr, lsrc, lcost, lk, cptr, csrc, ccost, cmech, ctype, cside, goal, lock):
+def _state_togo(n, M, bptr, bsrc, bcost, bek, bmask, bclear, tk, tcost, lptr, lsrc, lcost, lk, lmask, lclear, cptr, csrc, ccost, cmech, ctype, cside, goal, lock):
     """How far each (state, place) is from the goal, which counts in any state. A state is kind * 2^M + bits (bit m:
     mechanism m's state). Backwards over: plain edges (u -> v; v inside a transformer's range makes the ball its
     kind there, at tcost unless it is that kind already; a link that passes through a range, bek, likewise; a link
@@ -509,7 +510,7 @@ def _state_togo(n, M, bptr, bsrc, bcost, bek, bmask, bclear, tk, tcost, lptr, ls
         s2 = (2 << M) | bits
         for e in range(lptr[v], lptr[v + 1]):
             tl = tk[v] if tk[v] >= 0 else (lk[e] if lk[e] >= 0 else 2)
-            if k != tl:
+            if k != tl or (bits & lmask[e]) != lmask[e] or bits & lclear[e]:
                 continue
             u = lsrc[e]
             nd = d + lcost[e] + (tcost if tl != 2 else 0.0)
@@ -560,6 +561,20 @@ def _state_togo(n, M, bptr, bsrc, bcost, bek, bmask, bclear, tk, tcost, lptr, ls
                             if nd2 < togo[s2, u]:
                                 togo[s2, u] = nd2
                                 heapq.heappush(heap, (nd2, s2, u))
+            elif typ == FLAP_OVER or typ == FLAP_PUSH:
+                side = cside[e]  # required state before crossing
+                push = typ == FLAP_PUSH
+                if bit == (1 - side if push else side) and not (push and lock & (1 << m)):
+                    before = bits ^ (1 << m) if push else bits
+                    t = tk[v]
+                    for k2 in range(3):
+                        if (push and k2 == PAPER) or k != (t if t >= 0 else k2):
+                            continue
+                        s2 = (k2 << M) | before
+                        nd2 = nd + (tcost if k2 != k else 0.0)
+                        if nd2 < togo[s2, u]:
+                            togo[s2, u] = nd2
+                            heapq.heappush(heap, (nd2, s2, u))
             elif typ == ROCK_PUSH or typ == T_PUSH:
                 if bit == 1 and not (lock & (1 << m)) and (k == STONE or (typ == T_PUSH and k == WOOD)):
                     preds = (s & ~(1 << m), -1)
@@ -599,6 +614,8 @@ class StateGraph:
     * falling rocks and T boards (region analysis only): a push changes their bit in place; crossing the new
       surface or the way a T-board foot clears needs the bit set. Existing blocked edges retain their own kinds,
       with guards {(u, v, edge kind): (required set bits, required clear bits)}.
+    * two-way flaps (region analysis only): over the lane in the current pose, or push from the supported side
+      and cross the other lane in the same move. The latter toggles the bit each time.
     mechs: [dict(name, type, ...edges)] as `solve` makes them. links: {(u, v): (kind
     index or -1, bits mask)} for the relaxed graph's links that pass through a transformer's range or a mechanism
     (`solve._link_rules`). lifts: (u, v, cost[, the kind index it ends as when that is a transformer's it enters on the
@@ -645,13 +662,17 @@ class StateGraph:
         self.tcost = float(trafo_cost)
         self.lfwd = [[] for _ in range(n)]
         lift = []
+        self.lift_guards = {}
         for e in lifts:
             gu, gv, c = e[:3]
             lk = int(e[3]) if len(e) > 3 else -1
             u, v = int(loc[gu]), int(loc[gv])
-            if u >= 0 and v >= 0:
+            on, off = guards.get((gu, gv, "lift"), (0, 0))
+            if u >= 0 and v >= 0 and (gu, gv, "lift") not in skip and not on & off:
                 self.lfwd[u].append((v, float(c), lk))
-                lift.append((u, v, float(c), lk))
+                if on or off:
+                    self.lift_guards[u, v] = (on, off)
+                lift.append((u, v, float(c), lk, on, off))
         self.cfwd = [[] for _ in range(n)]
         cond, cond_kind = [], []
         for m, mc in enumerate(self.mechs):
@@ -659,7 +680,7 @@ class StateGraph:
                 u, v = int(loc[gu]), int(loc[gv])
                 if u < 0 or v < 0:
                     continue
-                c = float(c) + (operate_cost if typ in OPERATE else 0.0)
+                c = float(c) + (operate_cost if typ in (*OPERATE, FLAP_PUSH) else 0.0)
                 self.cfwd[u].append((v, c, kind, m, typ, side))
                 cond.append((u, v, c, m, typ, side))
                 cond_kind.append(kind)
@@ -737,8 +758,8 @@ class StateGraph:
         n = self.n
         base = [e for e, k in zip(self._base, self._base_kind) if (e[0], e[1], k) not in self._dropped]
         self.bptr, self.bsrc, self.bcost, (self.bek, self.bmask, self.bclear) = _csr(n, base or [(0, 0, _INF, -1, 0, 0)])
-        lift = self._lift or [(0, 0, _INF, -1)]
-        self.lptr, self.lsrc, self.lcost, (self.lk,) = _csr(n, lift)
+        lift = self._lift or [(0, 0, _INF, -1, 0, 0)]
+        self.lptr, self.lsrc, self.lcost, (self.lk, self.lmask, self.lclear) = _csr(n, lift)
         cond = self._cond or [(0, 0, _INF, 0, 0, 0)]
         self.cptr, self.csrc, self.ccost, (self.cmech, self.ctype, self.cside) = _csr(n, cond)
 
@@ -769,7 +790,7 @@ class StateGraph:
         gl = int(self.loc[goal])
         if gl < 0:
             return out
-        t = _state_togo(self.n, self.M, self.bptr, self.bsrc, self.bcost, self.bek, self.bmask, self.bclear, self.tk, self.tcost, self.lptr, self.lsrc, self.lcost, self.lk,
+        t = _state_togo(self.n, self.M, self.bptr, self.bsrc, self.bcost, self.bek, self.bmask, self.bclear, self.tk, self.tcost, self.lptr, self.lsrc, self.lcost, self.lk, self.lmask, self.lclear,
                         self.cptr, self.csrc, self.ccost, self.cmech, self.ctype, self.cside, gl, lock)
         t[t >= _INF / 2] = np.inf
         out[:, self.glob] = t
@@ -790,6 +811,9 @@ class StateGraph:
                 out.append((s, v, c, kind))
         if k == PAPER:
             for v, c, lk in self.lfwd[u]:
+                on, off = self.lift_guards.get((u, v), (0, 0))
+                if bits & on != on or bits & off:
+                    continue
                 t = self.tk[v] if self.tk[v] >= 0 else lk
                 if t >= 0 and t != PAPER:              # it lands in (or ends in, on the way) a transformer's range of another kind
                     out.append(((int(t) << M) | bits, v, c + self.tcost, "lift"))
@@ -807,6 +831,12 @@ class StateGraph:
                 out.append((s, v, c, kind))
             elif typ == SEESAW and bit == side:
                 out.append(((s & ~(1 << m)) | ((1 - side) << m) if k == STONE and not (lock & (1 << m)) else s, v, c, kind))
+            elif typ in (FLAP_OVER, FLAP_PUSH) and bit == side:
+                if typ == FLAP_PUSH and (k == PAPER or lock & (1 << m)):
+                    continue
+                after = bits ^ (1 << m) if typ == FLAP_PUSH else bits
+                t = int(self.tk[v]) if self.tk[v] >= 0 else k
+                out.append(((t << M) | after, v, c + (self.tcost if t != k else 0.0), kind))
             elif (typ in STATE_OVER and bit == 1) or (typ == FLOAT_ROW and side & (1 << k)):
                 t = int(self.tk[v])
                 if t >= 0 and t != k:

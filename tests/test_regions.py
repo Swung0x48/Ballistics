@@ -363,3 +363,112 @@ def test_box_float_row_side_exits_count_from_either_bank_and_prune_by_region():
         assert left_p[3][1] == left_w[1][1] != left_w[5][1]
         assert set(right_w) == {3} and right_w[3][0] == 2
         assert not departures(0, S) and not departures(4, S)
+
+
+def _flap_fixture(axis, sampled=True):
+    from ballistics import things
+    from ballistics.geometry import BALL_R
+
+    nums = things.load()["P_Modul_19"].numbers
+    a0, a1 = nums["gap_x"]["v"]["lane_A"]
+    b0, b1 = nums["gap_x"]["v"]["lane_B"]
+    az0, az1 = nums["lane_z"]["v"]["lane_A"]
+    bz0, bz1 = nums["lane_z"]["v"]["lane_B"]
+    az, bz = (az0 + az1) / 2, (bz0 + bz1) / 2
+    h = nums["standing_flap_height"]["v"]
+    points = [(a0 - BALL_R - 0.1, BALL_R, az), (a1 + 1, BALL_R, az),
+              (b0 - 1, BALL_R, bz), (b1 + BALL_R + 0.1, BALL_R, bz),
+              ((a0 + a1) / 2, BALL_R if sampled else -5, az),
+              (a0 - BALL_R - 0.1, 0.3, az), (b1 + BALL_R + 0.1, 0.3, bz),
+              (a0 - 3, -4, az), (a1 + 2, -4, az),
+              (a0 - 3, h + 2, az), (a1 + 2, h + 2, az),
+              (b0 - 2, h + 2, bz), (b1 + 3, h + 2, bz),
+              (0.1, BALL_R + 0.7, az), (1, BALL_R + 0.7, az)]
+    old = [(7, 8, 10, "roll"), (8, 7, 10, "roll"), (9, 10, 10, "launch"), (12, 11, 10, "launch"), (13, 14, 1, "rail")]
+    if sampled:
+        old += [(0, 4, 5, "roll"), (4, 0, 5, "roll"), (1, 4, 5, "roll"), (4, 1, 5, "roll")]
+    hulls = [("plate", _hull_box((a0, -0.25, az0), (a1, 0.25, az1))),
+             ("plate", _hull_box((b1 - 0.5, -0.25, bz0), (b1, h, bz1)))]
+    info, g, world, build = _road_state_fixture("P_Modul_19", points, old, hulls, axis)
+    # Both launch endpoints and the lift endpoints are above the wall. Only the lift's stored path hits it.
+    g.info["launches"] = {(u, v): {"way": g.pos[[u, v]]} for u, v in ((9, 10), (12, 11))}
+    mid = (g.pos[11] + g.pos[12]) / 2
+    mid[1] = g.pos[3, 1]
+    g.info["lifts"] = {(11, 12): dict(cost=10, way=[g.pos[11], mid, g.pos[12]], sector=1)}
+    g.kind[[5, 6, 13, 14]] = 1  # low push sites, plus independent rail at deck height
+    return info, g, world, build
+
+
+def test_two_way_flap_states_pushes_guards_and_overrides():
+    for axis in ROAD_AXES:
+        for sampled in (False, True):
+            info, g, world, build = _flap_fixture(axis, sampled)
+            sg, state = build(cork=True)
+            assert sg.M == 1 and state("wood", None) == 0
+            plain, _ = build()
+            assert plain.M == 0 and not any(plain.cfwd)
+
+            def steps(k, pose, u, lock=0, graph=sg):
+                return {(s & ((1 << graph.M) - 1), int(graph.glob[v]), how)
+                        for s, v, _, how in graph.step((k << graph.M) | pose, graph.loc[u], lock)}
+
+            for k in (W, S, P):
+                a, b = (k << 1), (k << 1) | 1
+                assert np.isfinite(sg.togo(1, lock=1)[a, 0]) and np.isfinite(sg.togo(0, lock=1)[a, 1])
+                assert np.isinf(sg.togo(1, lock=1)[b, 0]) and np.isinf(sg.togo(0, lock=1)[b, 1])
+                assert np.isinf(sg.togo(2, lock=1)[a, 3]) and np.isinf(sg.togo(3, lock=1)[a, 2])
+                assert (1, 2, "over_flap") in steps(k, 1, 3) and (1, 3, "over_flap") in steps(k, 1, 2)
+                for u, v, pose in ((3, 2, 0), (6, 2, 0), (0, 1, 1), (5, 1, 1)):
+                    assert ((1 - pose, v, "push_flap") in steps(k, pose, u)) == (k != P)
+                    assert not steps(k, pose, u, lock=1)
+                    assert np.isfinite(sg.togo(v)[(k << 1) | pose, u]) == (k != P)
+                assert not steps(k, 0, 2) and not steps(k, 1, 1)
+                assert (1, 8, "roll") in steps(k, 1, 7)
+                for pose in (0, 1):
+                    assert (pose, 10, "launch") in steps(k, pose, 9)
+                    assert (pose, 11, "launch") in steps(k, pose, 12)
+                    assert (pose, 14, "rail") in steps(k, pose, 13)
+            assert not steps(P, 0, 11)
+            assert (1, 12, "lift") in steps(P, 1, 11)
+            assert np.isinf(sg.togo(12)[P << 1, 11])
+            assert np.isfinite(sg.togo(12)[(P << 1) | 1, 11])
+            gone, _ = build(cork=True, without={"M"})
+            for k in (W, S, P):
+                assert all(not steps(k, 0, u, graph=gone) for u in range(7))
+                assert (0, 12, "lift") in steps(P, 0, 11, graph=gone)
+            assert (0, 14, "rail") in steps(P, 0, 13, graph=gone)
+
+            info["airship"] = g.pos[1]
+            ov = regions.Overrides.parse(state=["M=B姿态"], lock=["M"])
+            r = regions.mechanisms(regions.analyse(g, info, 1, world, overrides=ov))
+            (m,) = r["mechanisms"]
+            assert r["start"][2] == 1 and m["initial"] == "B 姿态" and r["breaks"] is None
+            removed = regions.mechanisms(regions.analyse(g, info, 1, world, overrides=regions.Overrides.parse(without=["M"])))
+            assert removed["breaks"] is None and not removed["mechanisms"]
+            assert all(set("".join(row["balls"] for row in rows)) == set("木石纸")
+                       for rows in m["lets_through"].values())
+            assert {row["from_state"] for row in m["switched"]} == {"A 姿态", "B 姿态"}
+            assert all(row["balls"] in ("木", "石") and row["at"] for row in m["switched"])
+            assert all(set("".join(row["balls"] for row in m["switched"] if row["from_state"] == state))
+                       == set("木石") for state in m["states"])
+            assert all(regions.Overrides.bit("flap", label) == value for label, value in
+                       (("A", 0), ("A 姿态", 0), ("B", 1), ("B姿态", 1)))
+
+
+def test_two_way_flap_region_route_must_cross_a_before_flipping():
+    for axis in ROAD_AXES:
+        info, g, world, _ = _flap_fixture(axis, sampled=False)
+        g.adj[1].append((3, 20, "roll"))  # A far bank reaches the B push side
+        g.adj[2].append((1, 20, "launch"))  # after crossing B, only the wrong side to push A is reachable
+        info["airship"] = g.pos[2]
+        r = regions.mechanisms(regions.analyse(g, info, 1, world))
+        assert r["breaks"] == 0 and r["mechanisms"][0]["held_breaks"] is None
+        assert r["mechanisms"][0]["need"] == "必需"
+        used = [key for *_, key in r["path"] if key and key[0] == "mech"]
+        assert [(key[3], key[5]) for key in used] == [(coarse.FLAP_OVER, 0), (coarse.FLAP_PUSH, 0)]
+        assert "B 路，A 路断开" in r["chain"][0]["did"]
+        labs = r["R"]
+        sg = r["sg"]
+        assert regions.connect(r["links"], (labs.of(W, sg.loc[2]), W, 1), [labs.of(W, sg.loc[0])])[0] is None
+        locked = regions.analyse(g, info, 1, world, overrides=regions.Overrides.parse(lock=["M"]))
+        assert locked["start"][2] == 0 and locked["breaks"] is None
