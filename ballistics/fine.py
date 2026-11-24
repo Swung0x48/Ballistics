@@ -61,7 +61,7 @@ class Crossing:
     end_ball: str = ""
 
     def keys(self) -> str:
-        return " ".join("%s×%d" % (PUSH_NAMES[a], n) for a, n in self.tape)
+        return " ".join("%sx%d" % (PUSH_NAMES[a], n) for a, n in self.tape)
 
 
 def guide(graph, goal: int) -> np.ndarray:

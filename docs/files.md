@@ -1,5 +1,7 @@
 # 输入和输出的文件
 
+约定：程序的输出（日志和 JSON）使用英文和 ASCII 字符，图里的文字保留中文；`things` 命令显示的是中文目录正文。
+
 ## 输入：地图文件
 
 输入是一张 Ballance 地图的 `.nmo` 文件，原版关卡和自制图都一样。直接读文件，不启动游戏。
@@ -32,7 +34,7 @@ python -m ballistics export <地图.nmo> --out data
 
 ## 输出：区域和连接
 
-`solve`（不带 `--roll`）分两步写出两份文件（怎么算的见 [solver.md](solver.md) 的“区域”），`sectors[]` 都是每个小节一项。
+`solve`（不带 `--roll`）分三步写出三份文件（怎么算的见 [solver.md](solver.md) 的“区域”），`sectors[]` 都是每个小节一项。
 
 第一步，`<名字>-regions.json`：
 
@@ -42,7 +44,7 @@ python -m ballistics export <地图.nmo> --out data
 | `mechanisms` | 这个小节粗层记状态的机关，按位的顺序（第二步的 `mechanism_bits` 的第 m 位是第 m 个：栅栏开了、推板倒了、跷跷板低在另一头） |
 | `transformers` | 这个小节的变球器：名字、种类、位置 |
 | `start_region`、`goal_regions` | 盘点所在的区域（按入口的球种）；目标所在的区域（每种球一个） |
-| `regions` | 按球种（`wood`、`stone`、`paper`）分开，每个区域：名字（如 `木109`）→ 点数、中心、范围（`lo`、`hi`） |
+| `regions` | 按球种（`wood`、`stone`、`paper`）分开，每个区域：名字（如 `W68`、`S54`、`P4`，首字母分别代表木球、石球、纸球）→ 点数、中心、范围（`lo`、`hi`） |
 
 第二步，`<名字>-links.json`：
 
@@ -52,17 +54,20 @@ python -m ballistics export <地图.nmo> --out data
 | `way` | 断点最少、其次连接最少的走法：每一步的区域（名字带球种）、球种、机关位、怎么到的（`by`）和这条连接的说明（变球的连接写明进了哪种变球器的范围） |
 | `coarse_plan` | 粗层自己的最短计划压成的区域步骤，对照用 |
 | `links` | 区域之间的连接（不含断点）：从哪个区域到哪个、是什么、最小代价、有几条这样的边、一个例子的两端位置 |
-| `breaks`、`breaks_all` | 30 个点以上的区域之间的断点式连接（同样的写法）；所有区域之间的个数 |
+| `breaks`、`breaks_all` | 30 个点以上的区域之间的断点式连接（`what` 以 `break (gap)` 或 `break (bridge)` 开头）；所有区域之间的个数 |
 
 第三步，`<名字>-mechanisms.json`：
 
 | 内容 | 含义 |
 |---|---|
-| `mechanisms[]` | 每个机关：名字、种类（`gate`、`board`、`seesaw`、`cork_bridge`、`falling_rock`、`t_board`、`flap`、`float_row`）、状态（`states`）、开局的状态（`initial`）、每个状态放行的连接（`lets_through`：状态 → 从哪个区域到哪个、哪几种球）、在哪里由哪种球拨动（`switched`、`switch_note`；落石、T 型板和双向挡板的 `switched[].at` 是该区域里的操作处坐标列表）、固定在开局状态时到目标最少几个断点（`held_breaks`，到不了为 `null`）、结论（`need`：必需 / 用到，可以绕开 / 这条走法没用到） |
+| `mechanisms[]` | 每个机关：名字、种类（`gate`、`board`、`seesaw`、`cork_bridge`、`falling_rock`、`t_board`、`flap`、`float_row`、`pendulum`）、状态（`states`）、开局的状态（`initial`）、每个状态放行的连接（`lets_through`：状态 → 从哪个区域到哪个、哪几种球）、在哪里由哪种球拨动（`switched`、`switch_note`；落石、T 型板和双向挡板的 `switched[].at` 是该区域里的操作处坐标列表）、固定在开局状态时到目标最少几个断点（`held_breaks`，到不了为 `null`）、结论（`need`：`needed` / `used, can be bypassed` / `not used by this way` / `goal not reached`） |
 | `chain[]` | 第二步的走法里每次变球或拨动机关：第几步、做了什么（`did`）、靠哪条连接（`by`）、为了后面第几步的哪条连接（`for`，之后没用到时为 `null`） |
-| `mechanisms[]` 中的 `flap` | 双向挡板：A / B 姿态的通行连接；`switched[]` 另含 `from_state`、`to_state`、通过的 `lane`（A 或 B）和操作处 `at`；切换与通过是同一步 |
-| `mechanisms[]` 中的 `float_row` | 一列箱式浮板：箱数（`boxes`）、成员摆放名（`placements`）、能否走完整列的球种上限（`passes`，不表示找到两端岸点）、侧面及末端离开明细（`exits[]`：入口区域 `from`、从入口数的箱号 `box`、离开方向 `direction`、落点区域 `to`、球种 `balls`、入口和落点坐标 `at`）、走法是否用到（`on_way`）、整列拿掉后的最少断点数（`without_breaks`，同该列的 `held_breaks`）；无状态位 |
+| `mechanisms[]` 中的 `flap` | 双向挡板：`pose A` / `pose B` 的通行连接；`switched[]` 另含 `from_state`、`to_state`、通过的 `lane`（A 或 B）和操作处 `at`；切换与通过是同一步 |
+| `mechanisms[]` 中的 `float_row` | 一列箱式浮板：箱数（`boxes`）、成员摆放名（`placements`）、能否走完整列的球种上限（`passes`，不表示找到两端岸点）、侧面及末端离开明细（`exits[]`：入口区域 `from`、从入口数的箱号 `box`、离开方向 `direction`（`side -`、`side +`、`end`）、落点区域 `to`、球种 `balls`、入口和落点坐标 `at`）、走法是否用到（`on_way`）、整列拿掉后的最少断点数（`without_breaks`，同该列的 `held_breaks`）；`states` 为 `["no state bit"]`，列名用半角连字符，如 `P_Modul_41_01-08` |
+| `mechanisms[]` 中的 `pendulum` | 单摆：`states` 为空；`crossings[]` 为有向推过连接（`from`、`to`、球种 `balls`、代表边的坐标 `at`、走法是否用这条边 `on_way`）；`blocked[]` 为限位挡掉的有向点对（木球区 `from`、`to`，同样限制其他球种，及 `at`）。`on_way` 表示该杆是否被使用（`need` 相应为 `used by this way` 或 `not used by this way`），`without_breaks` 是拿掉杆后的最少断点数（到不了为 `null`）；另有 `stopper_deg`（无目录数据为 `null`）、`sweep_radius`、`hole_warning` 和 `candidates[]`（摆放名 `name`、`type`、依据 `basis`（`ASSUMED`）和邻近的走法断点 `near_route_breaks`，不证明因果） |
 | `breaks_by_mechanisms[]` | 旁边 8 个单位以内有粗层还没接的机关的断点：从哪个区域到哪个、那个机关的名字和种类、是否在走法上、断点两端的位置 |
+
+状态字符串：栅栏 `closed` / `open`；推板和 T 型板 `up` / `down`；落石 `standing` / `dropped`；软木桥 `whole` / `broken`；双向挡板 `pose A` / `pose B`；跷跷板 `low end at (x, z)`（没有上板点的另一端用 `low end at the other end`）。`balls` 用英文球种，多个球种用逗号和空格分隔，如 `wood, stone`。说明中的依据标签为 `[READ]`、`[MEASURED]`、`[DERIVED]`、`[ASSUMED]`、`[WIKI]`、`[OWNER]`。
 
 用了假设（`--without`、`--state`、`--lock`）时，三份文件名里多一个标签（`<名字>-<标签>-regions.json` 等），文件头的 `overrides` 记着用了哪些；不用时 `overrides` 为 `null`。
 

@@ -277,7 +277,7 @@ def export_map(nmo_path, out_dir, name: str | None = None, bmap=None, templates=
     if templates is not None:
         info["hulls"] = placed_hulls(level, templates, bmap)       # the bodies' own collision shapes, where they are not the shown mesh
     info["stoppers"] = stoppers(level)                             # what stops mechanisms and props, not the ball
-    (out_dir / (name + "-map.json")).write_text(json.dumps(info, indent=1, ensure_ascii=False), encoding="utf8")
+    (out_dir / (name + "-map.json")).write_text(json.dumps(info, indent=1, ensure_ascii=True), encoding="utf8")
     return dict(name=name, objects=len(level.objects), triangles=len(mesh), rail_triangles=int(mesh.rail.sum()), entities=len(mesh.entities), tubes=len(mesh.tubes),
                 placed_parts=int(mesh.meta.get("placed_parts", 0)), placed_triangles=int(mesh.placed.sum()),
                 checkpoints=len(info["checkpoints"]), reset_points=len(info["reset_points"]), sectors=info["sectors"],

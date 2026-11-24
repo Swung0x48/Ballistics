@@ -452,6 +452,7 @@ GATE_THROUGH, GATE_OPERATE, BOARD_PUSH, BOARD_OVER, SEESAW, CORK = 1, 2, 3, 4, 5
 ROCK_OVER, T_OVER, T_CLEAR, ROCK_PUSH, T_PUSH = 7, 8, 9, 10, 11
 FLOAT_ROW = 12
 FLAP_OVER, FLAP_PUSH = 13, 14
+PENDULUM = 15
 FLOAT_KIND_BITS = len(KIND_INDEX)
 FLOAT_KIND_MASK = (1 << FLOAT_KIND_BITS) - 1
 FLOAT_THROUGH, FLOAT_MINUS, FLOAT_PLUS, FLOAT_END = range(4)
@@ -466,6 +467,8 @@ def float_exit(side):
     return divmod(side >> FLOAT_KIND_BITS, 4)
 STATE_OVER = (ROCK_OVER, T_OVER, T_CLEAR)
 OPERATE = (GATE_OPERATE, ROCK_PUSH, T_PUSH)
+GATE_WOOD = 1     # the side of a gate's operate edge when a wood ball may push it open too (the region analysis: MEASURED
+                  # that a wood ball's push opens it far enough from a fast enough hit, the run-up ASSUMED)
 _INF = 1e300
 
 
@@ -527,8 +530,8 @@ def _state_togo(n, M, bptr, bsrc, bcost, bek, bmask, bclear, tk, tcost, lptr, ls
             if typ == 1:                                   # through an open gate
                 if bit == 1:
                     preds = (s, -1)
-            elif typ == 2:                                 # a stone ball pushes the gate open
-                if bit == 1 and k == 1 and not (lock & (1 << m)):
+            elif typ == 2:                                 # a stone ball pushes the gate open (a wood one too, side GATE_WOOD)
+                if bit == 1 and (k == 1 or (k == 0 and cside[e] == 1)) and not (lock & (1 << m)):
                     preds = (s & ~(1 << m), -1)
             elif typ == 3:                                 # a wood or stone ball pushes the board over, going across it
                 if bit == 1 and k != 2:
@@ -546,8 +549,8 @@ def _state_togo(n, M, bptr, bsrc, bcost, bek, bmask, bclear, tk, tcost, lptr, ls
             elif typ == 6:                                 # over a cork bridge: a wood or paper ball (a stone one breaks it and falls)
                 if k != 1:
                     preds = (s, -1)
-            elif typ == ROCK_OVER or typ == T_OVER or typ == T_CLEAR or typ == FLOAT_ROW:
-                if typ == FLOAT_ROW or bit == 1:
+            elif typ == ROCK_OVER or typ == T_OVER or typ == T_CLEAR or typ == FLOAT_ROW or typ == PENDULUM:
+                if typ in (FLOAT_ROW, PENDULUM) or bit == 1:
                     t = tk[v]
                     if t < 0:
                         if typ != FLOAT_ROW or cside[e] & (1 << k):
@@ -623,9 +626,9 @@ class StateGraph:
     bridges: (u, v, cost, name) over cork bridges (P_Modul_29), for a wood or paper ball. A bridge has no bit: a stone
     ball breaks it and falls with it (READ), and a broken bridge is whole again only once the ball is lost, so no ball
     that goes on ever finds it broken. floats: box float rows with a mask of ball kinds allowed at entry, no bit;
-    transformation on arrival works like a plain edge."""
+    pendulums: stateless directed crossings for all three balls; transformation on arrival works like a plain edge."""
 
-    def __init__(self, rel, g, region, trafo_kind, trafo_cost: float, lifts, mechs: list, operate_cost: float, links=None, skip=(), bridges=(), guards=None, floats=()):
+    def __init__(self, rel, g, region, trafo_kind, trafo_cost: float, lifts, mechs: list, operate_cost: float, links=None, skip=(), bridges=(), guards=None, floats=(), pendulums=()):
         N = len(g.pos)
         self.g, self.N, self.mechs = g, N, list(mechs)
         self.M = len(self.mechs)
@@ -704,6 +707,14 @@ class StateGraph:
                 self.cfwd[u].append((v, c, "float_row", j, FLOAT_ROW, side))
                 cond.append((u, v, c, j, FLOAT_ROW, side))
                 cond_kind.append("float_row")
+        self.pendulums = list(pendulums)
+        for j, rod in enumerate(self.pendulums):
+            for gu, gv, c in rod["edges"]:
+                u, v = int(loc[gu]), int(loc[gv])
+                if u >= 0 and v >= 0:
+                    self.cfwd[u].append((v, c, "push_pendulum", j, PENDULUM, 0))
+                    cond.append((u, v, c, j, PENDULUM, 0))
+                    cond_kind.append("push_pendulum")
         self._base, self._lift, self._cond = base, lift, cond
         self._base_kind, self._cond_kind = base_kind, cond_kind
         self._dropped = set()
@@ -823,7 +834,7 @@ class StateGraph:
             bit = (bits >> m) & 1
             if typ == GATE_THROUGH and bit == 1:
                 out.append((s, v, c, kind))
-            elif typ in OPERATE and bit == 0 and not (lock & (1 << m)) and (k == STONE or (typ == T_PUSH and k == WOOD)):
+            elif typ in OPERATE and bit == 0 and not (lock & (1 << m)) and (k == STONE or (k == WOOD and (typ == T_PUSH or (typ == GATE_OPERATE and side == GATE_WOOD)))):
                 out.append((s | (1 << m), v, c, "operate" if typ == GATE_OPERATE else kind))
             elif typ == BOARD_PUSH and k != PAPER and (bit or not (lock & (1 << m))):
                 out.append((s | (1 << m), v, c, kind))
@@ -837,7 +848,7 @@ class StateGraph:
                 after = bits ^ (1 << m) if typ == FLAP_PUSH else bits
                 t = int(self.tk[v]) if self.tk[v] >= 0 else k
                 out.append(((t << M) | after, v, c + (self.tcost if t != k else 0.0), kind))
-            elif (typ in STATE_OVER and bit == 1) or (typ == FLOAT_ROW and side & (1 << k)):
+            elif (typ in STATE_OVER and bit == 1) or typ == PENDULUM or (typ == FLOAT_ROW and side & (1 << k)):
                 t = int(self.tk[v])
                 if t >= 0 and t != k:
                     out.append(((t << M) | bits, v, c + self.tcost, kind))

@@ -275,3 +275,17 @@ def test_a_lift_that_ends_in_a_range_on_the_way_ends_as_its_kind():
     assert togo[coarse.PAPER, 0] == 5.0 + 10.0 + 1.0
     nodes, kinds, states = sg.plan(coarse.PAPER, 0, togo)
     assert nodes == [0, 1, 2] and states[1] == coarse.STONE
+
+
+def test_a_wood_ball_pushes_a_gate_open_only_where_the_region_analysis_lets_it():
+    # place 0 is where the gate is pushed from, 0 -> 2 only once it is open; side GATE_WOOD lets a wood ball push it too
+    g = _line(3)
+    for side, wood in ((0, False), (coarse.GATE_WOOD, True)):
+        gate = dict(name="G", type="gate", edges=[(coarse.GATE_THROUGH, 0, 2, 1.0, 0, "roll"), (coarse.GATE_OPERATE, 0, 0, 0.0, side, "operate")])
+        sg = coarse.StateGraph(_Rel(3, []), g, np.ones(3, bool), np.full(3, -1), 10.0, [], [gate], 0.0)
+        togo = sg.togo(2)
+        closed = {k: k * 2 for k in (coarse.WOOD, coarse.STONE, coarse.PAPER)}
+        assert np.isfinite(togo[closed[coarse.STONE], 0])                             # a stone ball always
+        assert np.isfinite(togo[closed[coarse.WOOD], 0]) == wood                      # a wood ball only with GATE_WOOD
+        assert not np.isfinite(togo[closed[coarse.PAPER], 0])                         # a paper ball never
+        assert any(e[0] == closed[coarse.WOOD] + 1 for e in sg.step(closed[coarse.WOOD], 0)) == wood

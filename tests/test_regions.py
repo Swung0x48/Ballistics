@@ -32,7 +32,7 @@ def test_a_transformer_across_the_road_cuts_it_for_the_other_kinds_and_rolling_i
     links = regions.links_of(sg, R)
     into = [k for k in links if k[1] == R.of(W, 1)]
     assert into == [("plain", R.of(W, 1), R.of(P, 2), "roll", 0, W, P)]                         # rolled into the range: a paper ball from there
-    assert regions.describe(into[0]) == "滚进纸变的范围，变纸球"
+    assert regions.describe(into[0]) == "roll, enters paper transformer range, becomes paper"
     # from the wood ball's side before it, the far side is reached only as paper
     breaks, path, _free = regions.connect(links, (R.of(W, 0), W, 0), {R.of(W, 4), R.of(P, 4)})
     assert breaks == 0 and [(R.name(r), k) for r, k, _b, _w, _key in path] == [(R.name(R.of(W, 0)), W), (R.name(R.of(P, 2)), P)]
@@ -109,10 +109,10 @@ def test_step_3_finds_a_gate_needed_and_what_opening_it_is_for():
                sg=SimpleNamespace(bridges=[]), regions={r: dict(name=R.name(r), kind="stone", places=50) for r in range(2)}, placements=[])
     regions.mechanisms(res)
     (m,) = res["mechanisms"]
-    assert m["states"] == ["关", "开"] and m["initial"] == "关" and m["need"] == "必需" and m["held_breaks"] == 1
-    assert m["lets_through"]["开"] == [{"from": R.name(0), "to": R.name(1), "balls": "石"}]
+    assert m["states"] == ["closed", "open"] and m["initial"] == "closed" and m["need"] == "needed" and m["held_breaks"] == 1
+    assert m["lets_through"]["open"] == [{"from": R.name(0), "to": R.name(1), "balls": "stone"}]
     (c,) = res["chain"]
-    assert c["step"] == 1 and c["for"]["step"] == 2 and "开" in c["did"]
+    assert c["step"] == 1 and c["for"]["step"] == 2 and "open" in c["did"]
 
 
 def test_what_ifs_a_locked_mechanism_never_changes_and_states_are_read_by_name():
@@ -125,6 +125,13 @@ def test_what_ifs_a_locked_mechanism_never_changes_and_states_are_read_by_name()
     ov = regions.Overrides.parse(["P_Trafo_Paper_01"], ["P_Modul_01_03=开", "B=倒"], ["S"])
     assert ov and ov.without == {"P_Trafo_Paper_01"} and ov.state == {"P_Modul_01_03": "开", "B": "倒"} and ov.lock == {"S"}
     assert regions.Overrides.bit("gate", "开") == 1 and regions.Overrides.bit("board", "立") == 0 and regions.Overrides.bit("seesaw", "1") == 1
+    assert regions.Overrides.bit("gate", "OPEN") == 1 and regions.Overrides.bit("t_board", "down") == 1
+    assert regions.Overrides.bit("falling_rock", "standing") == 0
+    labels = regions._seesaw_states([seesaw], {seesaw: {"at": (0, 1)}}, np.array([[2, 0, -3], [0, 0, 0]]))
+    assert labels == ["low end at (2, -3)", "low end at the other end"]
+    assert regions.Overrides.bit("seesaw", "low end at (2, -3)", labels) == 0
+    assert regions.Overrides.bit("seesaw", "低端在另一头", labels) == 1
+    assert regions.Overrides(state={"G": "开"}).plain([dict(name="G", type="gate", initial="open")])["state"] == {"G": "open"}
     assert not regions.Overrides()
     import pytest
     with pytest.raises(ValueError):
@@ -191,8 +198,8 @@ def test_falling_rock_is_pushed_below_by_stone_opens_above_and_closes_below():
         res = regions.analyse(g, info, 1, world, "stone")
         regions.mechanisms(res)
         (rock,) = res["mechanisms"]
-        assert rock["need"] == "必需" and rock["lets_through"]["未落"] and rock["lets_through"]["已落"]
-        assert all(row["balls"] == "石" and row["at"] for row in rock["switched"])
+        assert rock["need"] == "needed" and rock["lets_through"]["standing"] and rock["lets_through"]["dropped"]
+        assert all(row["balls"] == "stone" and row["at"] for row in rock["switched"])
         assert res["chain"][0]["for"] and res["breaks"] == 0
         locked = regions.analyse(g, info, 1, world, "stone", overrides=regions.Overrides(lock=["M"]))
         assert locked["breaks"] is None and len(locked["plan"]) == 1
@@ -223,8 +230,8 @@ def test_t_board_operation_is_separate_from_the_crossbar_and_paper_cannot_push()
         res = regions.analyse(g, info, 1, world)
         regions.mechanisms(res)
         (board,) = res["mechanisms"]
-        assert board["states"] == ["立", "倒"] and board["need"] == "必需"
-        assert "助跑约 12" in board["switch_note"] and board["lets_through"]["倒"]
+        assert board["states"] == ["up", "down"] and board["need"] == "needed"
+        assert "run-up of about 12" in board["switch_note"] and board["lets_through"]["down"]
         preset = regions.analyse(g, info, 1, world, "paper", overrides=regions.Overrides(state={"M": "倒"}, lock=["M"]))
         assert preset["breaks"] == 0 and preset["start"][2] == 1
         assert not build(cork=True, without=["M"])[0].step(W, 2)
@@ -259,7 +266,7 @@ def test_box_float_rows_allow_only_the_right_balls_both_ways_and_without_any_mem
             length = (n - 1) * pitch
             sg, read = build(cork=True)
             (row,) = sg.floats
-            assert row["name"] == "P_Modul_41_01–%02d" % n
+            assert row["name"] == "P_Modul_41_01-%02d" % n
             assert sg.M == 0 and sg.loc[1] < 0
             assert sg.step(S, sg.loc[2]) == [(S, sg.loc[3], 2, "roll")]
             assert build(cork=False)[0].step(S, 1) and not build(cork=False)[0].floats
@@ -280,7 +287,7 @@ def test_box_float_rows_allow_only_the_right_balls_both_ways_and_without_any_mem
                 assert m["on_way"] == (k in allowed) and m["without_breaks"] is None and m["boxes"] == n
                 assert m["passes"] == {kind: kk in allowed for kind, kk in coarse.KIND_INDEX.items()}
                 if k in allowed:
-                    assert regions.describe(res["path"][-1][-1]) == "%s球过箱式浮板（%d 个一列）" % (regions.BALL[k], n)
+                    assert regions.describe(res["path"][-1][-1]) == "%s crosses float row (%d boxes)" % (regions.KINDS[k], n)
                 for member in [*row["placements"], row["name"]]:
                     ov = regions.Overrides.parse(without=[member])
                     removed = regions.mechanisms(regions.analyse(g, info, 1, world, name, overrides=ov))
@@ -339,8 +346,8 @@ def test_box_float_row_drops_from_far_end_within_reach_and_never_back_up():
                     assert np.isfinite(sg.togo(v)[k, sg.loc[0]]) == (v in targets)
                     assert np.isinf(sg.togo(0)[k, sg.loc[v]])
             (m,) = regions.mechanisms(regions.analyse(g, info, 1, world, "wood"))["mechanisms"]
-            assert {(e["box"], e["direction"], e["balls"]) for e in m["exits"]} == {(3, "末端", "木"), (3, "末端", "纸")}
-            assert any("从箱式浮板第 3 个（末端）落下" in regions.describe(key)
+            assert {(e["box"], e["direction"], e["balls"]) for e in m["exits"]} == {(3, "end", "wood"), (3, "end", "paper")}
+            assert any("drops from float box 3 (end)" in regions.describe(key)
                        for key in regions.analyse(g, info, 1, world)["links"] if key[0] == "mech")
 
 
@@ -442,17 +449,17 @@ def test_two_way_flap_states_pushes_guards_and_overrides():
             ov = regions.Overrides.parse(state=["M=B姿态"], lock=["M"])
             r = regions.mechanisms(regions.analyse(g, info, 1, world, overrides=ov))
             (m,) = r["mechanisms"]
-            assert r["start"][2] == 1 and m["initial"] == "B 姿态" and r["breaks"] is None
+            assert r["start"][2] == 1 and m["initial"] == "pose B" and r["breaks"] is None
             removed = regions.mechanisms(regions.analyse(g, info, 1, world, overrides=regions.Overrides.parse(without=["M"])))
             assert removed["breaks"] is None and not removed["mechanisms"]
-            assert all(set("".join(row["balls"] for row in rows)) == set("木石纸")
+            assert all({k for row in rows for k in row["balls"].split(", ")} == {"wood", "stone", "paper"}
                        for rows in m["lets_through"].values())
-            assert {row["from_state"] for row in m["switched"]} == {"A 姿态", "B 姿态"}
-            assert all(row["balls"] in ("木", "石") and row["at"] for row in m["switched"])
-            assert all(set("".join(row["balls"] for row in m["switched"] if row["from_state"] == state))
-                       == set("木石") for state in m["states"])
+            assert {row["from_state"] for row in m["switched"]} == {"pose A", "pose B"}
+            assert all(row["balls"] in ("wood", "stone") and row["at"] for row in m["switched"])
+            assert all({k for row in m["switched"] if row["from_state"] == state for k in row["balls"].split(", ")}
+                       == {"wood", "stone"} for state in m["states"])
             assert all(regions.Overrides.bit("flap", label) == value for label, value in
-                       (("A", 0), ("A 姿态", 0), ("B", 1), ("B姿态", 1)))
+                       (("A", 0), ("A 姿态", 0), ("pose A", 0), ("B", 1), ("B姿态", 1), ("pose B", 1)))
 
 
 def test_two_way_flap_region_route_must_cross_a_before_flipping():
@@ -463,12 +470,153 @@ def test_two_way_flap_region_route_must_cross_a_before_flipping():
         info["airship"] = g.pos[2]
         r = regions.mechanisms(regions.analyse(g, info, 1, world))
         assert r["breaks"] == 0 and r["mechanisms"][0]["held_breaks"] is None
-        assert r["mechanisms"][0]["need"] == "必需"
+        assert r["mechanisms"][0]["need"] == "needed"
         used = [key for *_, key in r["path"] if key and key[0] == "mech"]
         assert [(key[3], key[5]) for key in used] == [(coarse.FLAP_OVER, 0), (coarse.FLAP_PUSH, 0)]
-        assert "B 路，A 路断开" in r["chain"][0]["did"]
+        assert "lane B as lane A closes" in r["chain"][0]["did"]
         labs = r["R"]
         sg = r["sg"]
         assert regions.connect(r["links"], (labs.of(W, sg.loc[2]), W, 1), [labs.of(W, sg.loc[0])])[0] is None
         locked = regions.analyse(g, info, 1, world, overrides=regions.Overrides.parse(lock=["M"]))
         assert locked["start"][2] == 0 and locked["breaks"] is None
+
+
+def _pendulum_fixture(axis, *, limited=False, gap=False, cached=False, post=False):
+    from ballistics import things
+    from ballistics.geometry import Mesh
+    nums = things.load()["P_Modul_17"].numbers
+    reach = nums["arm_reach"]["v"]
+    x = 0.8 * reach
+
+    def floor(A, o):
+        def strip(z0, z1, y=0.):
+            return [[-reach, y, z0], [-reach, y, z1], [reach, y, z1], [reach, y, z0]]
+
+        strips = [strip(-8, -1.5), strip(1.5, 8)] if gap else [strip(-8, 8)]
+        if post:
+            strips.append(strip(-1., 1., y=1.6))   # fixed obstruction, not part of the rotating body
+        v = (np.array(strips) @ A + o)[:, [[0, 1, 2], [0, 2, 3]]].reshape(-1, 3, 3)
+        return Mesh(*v.transpose(1, 0, 2), np.zeros(len(v), int), np.zeros(len(v), bool), np.empty((0, 7)), [{}])
+
+    points = [(-x, 2, 3), (-x, 2, -3), (x, 2, 3), (x, 2, -3), (-x, 4, 3), (-x, 4, -3)]
+    hulls = [("Modul17_Dreharme", _hull_box((a, 1.4, -0.2), (b, 3., 0.2)))
+             for a, b in ((-reach, -0.75 * reach), (0.75 * reach, reach))]
+    hulls.append(("Modul17_Dreharme", _hull_box((-0.6 * reach, 1.8, -0.4), (0.6 * reach, 2.4, 0.4))))
+    old = [(4, 5, 6, "launch")]
+    if cached:
+        old += [(0, 1, 6, "rail"), (1, 0, 6, "rail")]
+    info, g, world, build = _road_state_fixture("P_Modul_17", points, old, hulls, axis, mesh=floor)
+    if cached:
+        g.kind[[0, 1]] = 1
+        g.pos[[0, 1], 1] -= 0.5  # rail ball centres are below the floor ball centres, still inside the target band
+    info["reset_points"][0] = g.pos[0]
+    info["airship"] = g.pos[1]
+    name = "M"
+    if limited:
+        # Only the catalogue lookup metadata is shared with the maps; all geometry is synthetic.
+        info["map"] = "Level_13.NMO"
+        name = next(iter(nums["l13_stopper_deg"]["v"]))
+        info["placements"][0]["name"] = name
+        for h in info["hulls"]:
+            h["placement"] = name
+    p = info["placements"][0]
+    pos = p["position"] - x * p["x_axis"] + 2 * p["y_axis"] + 2 * p["z_axis"]
+    info["placements"].append(dict(name="board", type="P_Modul_25", position=pos, sector=1))
+    g.info["launches"] = {(4, 5): dict(way=g.pos[[4, 5]])}
+    return info, g, world, build, name
+
+
+def test_pendulum_pushes_both_ways_for_every_ball_and_reports_candidates(tmp_path):
+    for axis in ROAD_AXES:
+        info, g, world, build, name = _pendulum_fixture(axis)
+        sg, read = build(cork=True)
+        assert sg.M == 0 and read("paper", None) == P
+        for k in (W, S, P):
+            for u, v in ((0, 1), (1, 0), (2, 3), (3, 2)):
+                assert any(t == k and w == v and how == "push_pendulum" for t, w, _, how in sg.step(k, u))
+                assert np.isfinite(sg.togo(v)[k, u])
+        assert not build(cork=False)[0].step(W, 0)
+        res = regions.analyse(g, info, 1, world)
+        assert res["breaks"] == 0 and "pushes past the pendulum" in regions.describe(res["path"][-1][4])
+        regions.mechanisms(res)
+        (rod,) = res["mechanisms"]
+        assert rod["name"] == name and rod["states"] == [] and rod["on_way"] and rod["without_breaks"] == 0
+        assert {e["balls"] for e in rod["crossings"]} == {"wood", "stone", "paper"}
+        assert [q["name"] for q in rod["candidates"]] == ["board"]
+        if axis == ROAD_AXES[0]:
+            picture = tmp_path / "pendulum.png"
+            regions.draw_mechanisms(world.mesh, res, picture)
+            assert picture.is_file()
+
+
+def test_pendulum_limit_is_directional_and_removing_rod_leaves_supported_road():
+    for axis in ROAD_AXES:
+        for cached in (False, True):
+            info, g, world, build, name = _pendulum_fixture(axis, limited=True, cached=cached)
+            sg, _ = build(cork=True)
+            plain, _ = build(cork=True, without=[name])
+            assert sg.M == plain.M == 0 and not plain.pendulums
+            for k in (W, S, P):
+                assert not sg.step(k, 0)  # -X end, from +Z: negative torque about the placement's Y
+                assert not sg.step(k, 3)  # +X end, from -Z: also negative torque
+                assert any(v == 0 and how == "push_pendulum" for _, v, _, how in sg.step(k, 1))
+                assert any(v == 3 and how == "push_pendulum" for _, v, _, how in sg.step(k, 2))
+                assert any(v == 5 and how == "launch" for _, v, _, how in sg.step(k, 4))
+                assert np.isinf(sg.togo(1)[k, 0]) and np.isfinite(plain.togo(1)[k, 0])
+                assert any(v == 1 and how == ("rail" if cached else "roll") for _, v, _, how in plain.step(k, 0))
+            res = regions.analyse(g, info, 1, world)
+            regions.mechanisms(res)
+            (rod,) = res["mechanisms"]
+            assert not rod["on_way"] and rod["without_breaks"] == 0 and rod["stopper_deg"] < 0 and rod["blocked"]
+
+
+def test_pendulum_does_not_bridge_empty_or_blocked_fixed_floor():
+    for axis in ROAD_AXES:
+        for gap, post in ((True, False), (False, True)):
+            _, _, _, build, name = _pendulum_fixture(axis, gap=gap, post=post)
+            for without in ([], [name]):
+                sg, _ = build(cork=True, without=without)
+                assert not sg.step(W, 0)
+
+
+def test_a_wood_ball_opens_a_gate_only_on_a_gate_wood_edge_and_the_note_reads_the_catalogue():
+    for side, wood in ((0, False), (coarse.GATE_WOOD, True)):
+        assert bool(regions._moves(("mech", 0, 0, coarse.GATE_OPERATE, 0, side, W, W), 0)) == wood
+        assert bool(regions._moves(("mech", 0, 0, coarse.GATE_OPERATE, 0, side, S, S), 0))
+        assert not regions._moves(("mech", 0, 0, coarse.GATE_OPERATE, 0, side, 2, 2), 0)
+        assert (W in regions._needs(("mech", 0, 0, coarse.GATE_OPERATE, 0, side, W, W), W, 0)[0][1]) == wood
+    note = regions._gate_note()
+    assert "10.40" in note and "2.5" in note and "[ASSUMED]" in note
+
+
+
+def test_report_vocabulary_is_ascii_and_figures_keep_chinese():
+    plain = [("plain", 0, 1, kind, 0, coarse.WOOD, coarse.WOOD)
+             for kind in ("launch", "drop", "step", *regions.ROLL, *regions.BREAK)]
+    plain += [("plain", 0, 1, "roll", 2, coarse.WOOD, coarse.PAPER, 1),
+              ("plain", 0, 1, "rail", 2, coarse.WOOD, coarse.WOOD, 5, 1)]
+    lifts = [("lift", 0, 1, coarse.PAPER), ("lift", 0, 1, coarse.STONE, 2, 1)]
+    mech = [("mech", 0, 1, typ, 0, side, k, coarse.PAPER)
+            for typ in regions.MECH if typ != coarse.FLOAT_ROW
+            for side in (0, 1) for k in (coarse.WOOD, coarse.STONE)]
+    floats = [("mech", 0, 1, coarse.FLOAT_ROW, 0, coarse.float_side(3, direction, 5), coarse.WOOD, coarse.WOOD)
+              for direction in (coarse.FLOAT_THROUGH, coarse.FLOAT_MINUS, coarse.FLOAT_PLUS, coarse.FLOAT_END)]
+    for key in plain + lifts + mech + floats:
+        text = regions.describe(key)
+        assert text and text.isascii(), (key, text)
+    assert all(state.isascii() for states in regions.STATES.values() for state in states)
+    assert regions.NO_STATE_BIT == "no state bit"
+    assert set(regions.NEED.values()) == {"needed", "used, can be bypassed", "not used by this way", "goal not reached"}
+    assert all(note.isascii() for note in regions.SWITCH_NOTES.values())
+    assert (regions.FLOAT_NOTE[0] % (8, 4)).isascii()
+    assert regions._gate_note().isascii()
+    assert regions.describe(plain[-2], "zh") == "滚，要机关位 2，要落石未落（机关位 1）进纸变的范围，变纸球"
+    assert regions.describe(lifts[0], "zh") == "纸球乘风扇上升"
+    assert regions.describe(floats[1], "zh") == "木球从箱式浮板第 3 个（侧面−）落下"
+    gate_push = ("mech", 0, 1, coarse.GATE_OPERATE, 0, 0, coarse.WOOD, coarse.WOOD)
+    assert regions.describe(gate_push, "zh") == "木球推开栅栏（要助跑【假】）（机关 0）"
+    assert [regions._chinese(state) for state in regions.STATES["flap"]] == ["A 姿态", "B 姿态"]
+    assert regions._chinese(regions.NEED["bypassable"]) == "用到，可以绕开"
+    assert regions._chinese(regions.SWITCH_NOTES["board"]) == "木球、石球推倒；不会再立起来"
+    assert regions._gate_note("zh") == (
+        "石球推开；木球撞前 10.40 以上实测推开 2.94–3.01，过了路口打开要的 2.5，也算推得开（粗层不验助跑【假】）；纸球推不动；不会再关")

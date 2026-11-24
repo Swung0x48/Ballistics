@@ -664,7 +664,7 @@ def float_rows(g, info, sector):
         end_name = names[-1][len(prefix):] if names[0].startswith(prefix) and names[-1].startswith(prefix) else names[-1]
         n = len(names)
         allowed = (1 << coarse.PAPER) | ((1 << coarse.WOOD) if n <= wood_max else 0)
-        row = dict(name=names[0] + "–" + end_name, placements=names, boxes=n, allowed=allowed,
+        row = dict(name=names[0] + "-" + end_name, placements=names, boxes=n, allowed=allowed,
                    pos=centers[order].mean(axis=0).tolist(), centers=centers[order].tolist(), edges=[], frame=frame, origin=o)
         # The prose mentions one stone box but there is no numeric limit: continue to allow none.
         row["limits"] = {coarse.PAPER: (n, paper_speed), coarse.WOOD: (wood_max, wood_speed), coarse.STONE: (0, 0.0)}
@@ -977,11 +977,241 @@ def flap_state_edges(g, rel, info, sector, region, lifts):
         yield dict(name=name, type="flap", edges=edges, deck_edges=deck_edges), guards
 
 
+def _pendulum_shape(vertices):
+    """Local XZ convex footprint (monotone chain), extruded between bottom and top."""
+    points = sorted(set(map(tuple, vertices[:, [0, 2]])))
+
+    def half(points):
+        hull = []
+        for p in points:
+            while len(hull) >= 2:
+                (x, z), (u, v) = hull[-2:]
+                if (u - x) * (p[1] - z) - (v - z) * (p[0] - x) > 1e-9:
+                    break
+                hull.pop()
+            hull.append(p)
+        return hull[:-1]
+
+    rim = np.array(half(points) + half(reversed(points)))
+    if len(rim) < 3:
+        return None
+    d = np.roll(rim, -1, axis=0) - rim
+    n = np.c_[d[:, 1], -d[:, 0]] / np.linalg.norm(d, axis=1)[:, None]
+    return (np.r_[np.c_[n[:, 0], np.zeros(len(n)), n[:, 1]], [[0, 1, 0], [0, -1, 0]]],
+            np.r_[-(n * rim).sum(axis=1), -vertices[:, 1].max(), vertices[:, 1].min()])
+
+
+def _pendulum_hit(a, b, shape):
+    """Clip a centre line to a rod piece's local XZ projection and its centre-height band."""
+    normals, offsets = shape
+    d = b - a
+    side, step = normals @ a + offsets, normals @ d
+    parallel = abs(step) < 1e-9
+    if np.any(parallel & (side > 1e-8)):
+        return None
+    t = -side[~parallel] / step[~parallel]
+    enters = step[~parallel] < 0
+    first = max(0., t[enters].max(initial=-np.inf))
+    last = min(1., t[~enters].min(initial=np.inf))
+    return a + ((first + last) / 2) * d if first <= last else None
+
+
+def pendulum_edges(g, rel, info, sector, region, mesh, without, lifts, guards, skipped):
+    """Static, supported crossings of P_Modul_17. No angle state, sweep simulation or new places."""
+    placements = [p for p in info["placements"] if p.get("sector") == sector and p["name"] not in without]
+    rods = [p for p in info["placements"] if p.get("sector") == sector and p["type"] == "P_Modul_17"]
+    if not rods:
+        return [], [], set()
+    from . import things
+    from .export import SKIP_TEMPLATES
+
+    nums = things.load()["P_Modul_17"].numbers
+    reach = float(nums["arm_reach"]["v"])
+    # The catalogue table is scoped to this map: placement names are reused across maps.
+    limits = nums["l13_stopper_deg"]["v"] if info.get("map") == "Level_13.NMO" else {}
+    hulls = {}
+    for h in info.get("hulls", ()):
+        if len(h.get("vertices", ())):
+            hulls.setdefault(h["placement"], []).append(h)
+    rows, restored, skip = [], [], set()
+    places = np.flatnonzero(region)
+    skipped = set(skipped)
+    for p in rods:
+        name = p["name"]
+        o = np.asarray(p["position"], float)
+        A = np.array([p[ax + "_axis"] for ax in "xyz"], float)
+        A /= np.linalg.norm(A, axis=1)[:, None]
+        parts = [h for h in hulls.get(name, ()) if h.get("body") == "Modul17_Dreharme"]
+        if not parts:
+            continue
+        boxes, shapes = [], []
+        for part in parts:
+            V = (np.asarray(part["vertices"], float) - o) @ A.T
+            lo, hi = V.min(0), V.max(0)
+            shape = _pendulum_shape(V)
+            if shape is not None:
+                boxes.append((lo, hi))
+                shapes.append(shape)
+        if not shapes:
+            continue
+        lo = np.min([a for a, _ in boxes], axis=0)
+        hi = np.max([b for _, b in boxes], axis=0)
+        # The central convex piece is centred on the hinge (only its height is needed).
+        mid_lo, mid_hi = min(boxes, key=lambda box: abs((box[0][0] + box[1][0]) / 2))
+        y = (mid_lo[1] + mid_hi[1]) / 2
+        centre = o + y * A[1]
+        P = (g.pos - o) @ A.T
+        edges, blocked, crossings, supported = {}, set(), set(), {}
+        limit = limits.get(name)
+        angle = np.deg2rad(limit) if limit is not None else None
+        if angle is not None:
+            cs, sn = np.cos(angle), np.sin(angle)
+            turn = np.array([[cs, -sn], [sn, cs]])  # row vectors (local X, Z), about +Y
+
+        def allowed(a, b, hit):
+            if angle is None:
+                return True
+            push = (b - a)[[0, 2]]
+            x, z = r = hit[[0, 2]]
+            torque = z * push[0] - x * push[1]
+            if torque * angle <= 0 or not np.linalg.norm(push):
+                return True
+            # ASSUMED: movement of the struck part along the push must clear one diameter.
+            return (r @ turn - r) @ push / np.linalg.norm(push) >= 2 * BALL_R
+
+        def hits(a, b):
+            return [h for s in shapes if (h := _pendulum_hit(a, b, s)) is not None]
+
+        def held(point, clearance=True):
+            if mesh is None:
+                return False
+            # ASSUMED: the same height clearance as a vacated T-board foot. Keep the post, base,
+            # other placements and any fixed stopper in the test for obstruction.
+            contacts = [q for q in mesh.contacts(point, radius=BALL_R, margin=0.35)
+                        if not (mesh.entities[q.entity].get("placement") == name
+                                and mesh.entities[q.entity].get("name") == "Modul17_Dreharme")]
+            fixed = [q for q in contacts if not mesh.entities[q.entity].get("placed")
+                     or mesh.entities[q.entity].get("type") in coarse.FIXED_TYPES]
+            return (not clearance or not any(q.gap < -0.35 for q in contacts)) and coarse._held(mesh, fixed)
+
+        def add(u, v, c, points):
+            if not all(allowed(P[u], P[v], q) for q in points):
+                blocked.add((u, v))
+            else:
+                edges[u, v] = c
+
+        # A cached rolling/rail edge can already cross (notably analytic rails). Turn just that
+        # crossing into a push. Leave cached locations, overpasses and hypothetical breaks alone.
+        for u in places:
+            for v, c, kind in g.adj[u]:
+                if (kind not in ("roll", "rail", "rail end", "step") or not region[v] or (u, v, kind) in guards
+                        or (u, v) in skipped or (u, v, kind) in skipped):
+                    continue
+                if np.any(np.maximum(P[u], P[v]) < lo) or np.any(np.minimum(P[u], P[v]) > hi):
+                    continue
+                points = hits(P[u], P[v])
+                if not points:
+                    continue
+                if kind == "step":
+                    if name not in without and not all(allowed(P[u], P[v], q) for q in points):
+                        skip.add((u, v, kind))
+                        blocked.add((u, v))
+                    continue
+                crossings.add((u, v))
+                if name not in without:
+                    skip.add((u, v, kind))
+                    add(u, v, c, points)
+
+        # ASSUMED bank matching as for a T-board foot, but with the actual ball-centre heights
+        # on the two banks (including rails/grooves). Try the nearest supported opposite bank.
+        for low, high in boxes:
+            for ax in (0, 2):
+                cross = 2 - ax
+                bank = (region & (abs(P[:, 1] - (low[1] + high[1]) / 2) <= (high[1] - low[1]) / 2 + _MECH_HEIGHT)
+                        & (P[:, cross] >= low[cross] - _MECH_ALIGN) & (P[:, cross] <= high[cross] + _MECH_ALIGN))
+                l = np.flatnonzero(bank & (P[:, ax] < low[ax]) & (P[:, ax] >= low[ax] - BALL_R - _MECH_BANK))
+                r = np.flatnonzero(bank & (P[:, ax] > high[ax]) & (P[:, ax] <= high[ax] + BALL_R + _MECH_BANK))
+                for starts, ends in ((l, r), (r, l)):
+                    for u in starts:
+                        vs = ends[(abs(P[ends, cross] - P[u, cross]) <= _MECH_ALIGN)
+                                  & (abs(P[ends, 1] - P[u, 1]) <= _MECH_HEIGHT)]
+                        for v in sorted(vs, key=lambda v: np.linalg.norm(P[v] - P[u])):
+                            if (u, v) in crossings:
+                                break
+                            if any(k in ("roll", "rail", "rail end") and w == v for w, _, k in rel.fwd[u]):
+                                continue   # a genuinely existing, independent edge
+                            points = hits(P[u], P[v])
+                            if not points:
+                                continue
+                            pair = tuple(sorted((u, v)))
+                            if pair not in supported:
+                                c = float(np.linalg.norm(g.pos[v] - g.pos[u]))
+                                way = g.pos[u] + np.linspace(0, 1, int(np.ceil(c / 0.5)) + 1)[:, None] * (g.pos[v] - g.pos[u])
+                                supported[pair] = c if all(held(q) for q in way) else None
+                            c = supported[pair]
+                            if c is None:
+                                continue
+                            for a, b in ((u, v), (v, u)):
+                                if (a, b) in crossings or any(k in ("roll", "rail", "rail end") and w == b for w, _, k in rel.fwd[a]):
+                                    continue
+                                if name in without:
+                                    restored.append((int(a), int(b), c, "roll"))
+                                else:
+                                    add(a, b, c, points)
+                            break
+        if name in without:
+            continue
+        # For trajectories only consider a catalogue limit and actual contact along a recorded path.
+        if limit is not None:
+            for pairs, kind in ((g.info.get("launches", {}), "launch"),
+                                ({(u, v): g.info["lifts"][u, v] for u, v, *_ in lifts}, "lift")):
+                for (u, v), e in pairs.items():
+                    if (u, v) in skipped or (u, v, kind) in skipped or not (region[u] and region[v]) or e.get("way") is None:
+                        continue
+                    path = (np.asarray(e["way"]) - o) @ A.T
+                    if np.any(path.max(0) < lo) or np.any(path.min(0) > hi):
+                        continue
+                    if any(not allowed(a, b, q) for a, b in zip(path, path[1:]) for q in hits(a, b)):
+                        skip.add((u, v, kind))
+                        blocked.add((u, v))
+        candidates = []
+        for other in placements:
+            typ, nm = other["type"], other["name"]
+            if nm == name or typ.startswith(SKIP_TEMPLATES) or not typ.startswith(("P_Modul_", "P_Box", "P_Ball_")):
+                continue
+            geometry = [h["vertices"] for h in hulls.get(nm, ())] or [[other["position"]]]
+            for vertices in geometry:
+                V = (np.asarray(vertices, float) - o) @ A.T
+                mn, mx = V.min(0), V.max(0)
+                # ASSUMED: broad-phase sweep disk and height envelope; a placement without
+                # hulls supplies only its origin, with a ball radius of proximity margin.
+                margin = 0. if hulls.get(nm) else BALL_R
+                if (np.linalg.norm(np.clip(0., mn[[0, 2]], mx[[0, 2]])) <= reach + margin
+                        and mn[1] <= hi[1] + margin and mx[1] >= lo[1] - margin):
+                    candidates.append(dict(name=nm, type=typ, basis="ASSUMED"))
+                    break
+        theta = np.linspace(0, 2 * np.pi, 73)
+        sweep = centre + reach * (np.cos(theta)[:, None] * A[0] + np.sin(theta)[:, None] * A[2])
+        # ASSUMED: a clear ring around the axle is not needed for routing; report unsupported
+        # ball-centre samples here as a hole warning, not as a constraint on any edge.
+        circle = centre + (reach / 2) * (np.cos(theta[::9])[:, None] * A[0] + np.sin(theta[::9])[:, None] * A[2])
+        # ASSUMED: flag a broad gap (at least half the ring), not a local notch.
+        # Terrain changes up to one radius lower are not a hole.
+        below = [np.array([0., h, 0.]) for h in np.linspace(0, BALL_R, 5)]
+        hole = mesh is not None and 2 * sum(not any(held(q - d, clearance=False) for d in below)
+                                             for q in circle[:-1]) >= len(circle) - 1
+        rows.append(dict(name=name, pos=o.tolist(), sweep=sweep, reach=reach, limit=limit, hole=hole, candidates=candidates,
+                         edges=[(int(u), int(v), c) for (u, v), c in sorted(edges.items())],
+                         blocked=[(int(u), int(v)) for u, v in sorted(blocked)]))
+    return rows, sorted(set(restored)), skip
+
+
+
 def state_graph_for(g, info: dict, sector: int, world, operate_cost: float, cork: bool = False, without=()):
     """The coarse level of a sector over the ball's kind and its mechanisms' states (`coarse.StateGraph`), and how to
     read those states from the kernel's scene: (graph, reader(kind name, scene) -> state index). Only the places
     of the sector's region take part: its reset point, its goal and what is placed in it, 60 wider. cork: with the
-    region-only cork bridges, falling rocks, T boards, two-way flaps and box float rows; the solver that rolls leaves them out. without: names of placements taken as not there (a what-if): a transformer has no range, a fan no lifts, a
+    region-only cork bridges, falling rocks, T boards, two-way flaps, box float rows and pendulums; the solver that rolls leaves them out. without: names of placements taken as not there (a what-if): a transformer has no range, a fan no lifts, a
     cork bridge, push board or seesaw no way over it; a gate is no obstacle (the ways it clears are always there).
     A removed rock has no upper bridge and never seals the lower route; a removed T board leaves only the
     supported crossings of its old foot. No change to the cached places or edges."""
@@ -1021,13 +1251,18 @@ def state_graph_for(g, info: dict, sector: int, world, operate_cost: float, cork
             rel = rel.with_edges([(u, v, c, k) for u, v, c, k in d["edges"]])
             continue
         edges = [(coarse.GATE_THROUGH, u, v, c, 0, k) for u, v, c, k in d["edges"]]
-        if d["operate"] >= 0:
-            edges.append((coarse.GATE_OPERATE, d["operate"], d["operate"], 0.0, 0, "operate"))
+        op = d["operate"]
+        if cork:
+            # the region analysis: the place in front of the target plate may be on a rail (the lower road is a rail
+            # at some gates), and a wood ball may push it open too (coarse.GATE_WOOD)
+            op = g.nearest(np.asarray(d["face"], float) - (BALL_R + 0.3) * np.asarray(d["axis"], float), 3.0, floor_only=False)
+        if op >= 0:
+            edges.append((coarse.GATE_OPERATE, op, op, 0.0, coarse.GATE_WOOD if cork else 0, "operate"))
         k = next((i for i, p in enumerate(props) if p["name"].startswith(name + "/P_Modul_01_Pusher") and p.get("leader") == i), None)
         if k is None:
             continue
         axis, rest = np.array(d["axis"], float), np.array(props[k]["rest"], float)
-        mechs.append(dict(name=name, type="gate", edges=edges, axis=axis, operate=d["operate"], pieces=d.get("pieces")))
+        mechs.append(dict(name=name, type="gate", edges=edges, axis=axis, operate=op, pieces=d.get("pieces")))
         readers.append(lambda sc, k=k, axis=axis, rest=rest: int((sc[k, :3] - rest) @ axis >= GATE_FULL))
     for name, d in sorted(g.info.get("boards", {}).items()):
         if d["sector"] != sector or not d["edges"] or name.split("/")[0] in without:
@@ -1079,13 +1314,22 @@ def state_graph_for(g, info: dict, sector: int, world, operate_cost: float, cork
     skip.extend(screened)
     if screened:
         lifts = [e for e in lifts if (*e[:2], "lift") not in screened]
+    pendulums = []
+    if cork:
+        pendulums, restored, screened = pendulum_edges(g, rel, info, sector, region, getattr(world, "mesh", None),
+                                                       without, lifts, guards, skip)
+        skip.extend(screened)
+        if screened:
+            lifts = [e for e in lifts if (*e[:2], "lift") not in screened]
+        if restored:
+            rel = rel.with_edges(restored)
     active_floats = [r for r in floats if not without.intersection([r["name"], *r["placements"]])]
     if active_floats:
         _float_departures(g, region, active_floats)
     sg = coarse.StateGraph(rel, g, region, tk, cost, lifts, mechs, operate_cost, guards=guards,
                            links=_link_rules(rel, g, region, tk, trafos, R.radius, mechs), skip=skip,
                            bridges=[b for b in cork_edges(g, info, sector) if b[3] not in without] if cork else (),
-                           floats=active_floats)
+                           floats=active_floats, pendulums=pendulums)
     sg.float_row_names = {r["name"] for r in floats}
     M = len(mechs)
 

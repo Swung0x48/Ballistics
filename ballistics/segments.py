@@ -503,7 +503,7 @@ def write(out_dir, level: int, data: dict) -> Path:
     import json
     path = Path(out_dir) / ("L%02d.segments.json" % int(level))
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+    path.write_text(json.dumps(data, ensure_ascii=True, indent=1), encoding="utf-8")
     return path
 
 

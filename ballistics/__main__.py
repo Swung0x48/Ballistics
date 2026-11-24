@@ -6,6 +6,10 @@ from pathlib import Path
 
 
 def main(argv=None):
+    import sys
+    for out in (sys.stdout, sys.stderr):                  # Preserve the console encoding.
+        if hasattr(out, "reconfigure") and (out.encoding or "").lower().replace("-", "") != "utf8":
+            out.reconfigure(errors="replace")
     ap = argparse.ArgumentParser(prog="python -m ballistics")
     sub = ap.add_subparsers(dest="command", required=True)
     e = sub.add_parser("export", help="read a map file (.nmo) and write its collision mesh and anchors")
@@ -34,7 +38,7 @@ def main(argv=None):
     v.add_argument("--png", type=Path, help="folder for a top view of each sector (of each step)")
     for p_ in (v,):
         p_.add_argument("--without", action="append", metavar="NAME", help="what-if: this placement is not there (a transformer, fan, cork bridge, push board, seesaw; a gate: always open); repeatable")
-        p_.add_argument("--state", action="append", metavar="NAME=STATE", help="what-if: this mechanism starts in that state (0/1; gate 关/开, board 立/倒, seesaw 1 = tipped); repeatable")
+        p_.add_argument("--state", action="append", metavar="NAME=STATE", help="what-if: this mechanism starts in that state (0/1; gate closed/open, board and T-board up/down, falling rock standing/dropped, flap pose A/pose B, seesaw 1 = tipped or use its reported low-end label); repeatable")
         p_.add_argument("--lock", action="append", metavar="NAME", help="what-if: this mechanism's state never changes; repeatable")
         p_.add_argument("--tag", help="with what-ifs: the files are <name>-<tag>-... (default what-if)")
     k = sub.add_parser("coarse", help="the coarse level's plan alone: per sector the cheapest way over the coarse graph and the links it needs; nothing is rolled or searched")
@@ -57,7 +61,7 @@ def main(argv=None):
     q.add_argument("--out", type=Path, default=Path("data"), help="folder of the coarse graph (<name>-coarse-solid.pkl) and for <name>-regions.json, <name>-links.json")
     q.add_argument("--png", type=Path, help="folder for a top view of each sector (of each step)")
     q.add_argument("--without", action="append", metavar="NAME", help="as for solve")
-    q.add_argument("--state", action="append", metavar="NAME=STATE", help="as for solve")
+    q.add_argument("--state", action="append", metavar="NAME=STATE", help="set the initial state (0/1, or an English state name; see solve --help)")
     q.add_argument("--lock", action="append", metavar="NAME", help="as for solve")
     q.add_argument("--tag", help="as for solve")
     t = sub.add_parser("things", help="the catalogue of balls, loose objects, mechanisms, triggers, pickups and level rules: list it, print one entry, or check it")
@@ -137,7 +141,7 @@ def main(argv=None):
                                      launches=[{k2: plain(v) for k2, v in e.items()} for e in p["launches"]],
                                      steps=[{k2: plain(v) for k2, v in e.items()} for e in p["steps"]],
                                      links=[{k2: plain(v) for k2, v in e.items()} for e in p["links"]]) for p in plans]),
-                  open(a.out / (name + "-coarse-plan.json"), "w", encoding="utf8"), ensure_ascii=False)
+                  open(a.out / (name + "-coarse-plan.json"), "w", encoding="utf8"), ensure_ascii=True)
         if a.png:
             import numpy as np
 
@@ -277,7 +281,7 @@ def main(argv=None):
             have = [pickle.load(open(p, "rb")) for p in done if p.exists()]
             extras.annotate(have, info)
             if have:                                              # every route of every sector solved so far, for other tools
-                json.dump(shortcut.listing(name, have), open(a.out / (name + "-routes.json"), "w", encoding="utf8"), ensure_ascii=False, indent=1)
+                json.dump(shortcut.listing(name, have), open(a.out / (name + "-routes.json"), "w", encoding="utf8"), ensure_ascii=True, indent=1)
         if a.png and not a.whole and all(p.exists() for p in done):       # every sector has a result: the whole level on one view
             from .render import draw_level
             n = len(info["checkpoints"])
@@ -303,5 +307,23 @@ def main(argv=None):
             "found" if r["airship"] else "not found", r["placements"], a.out))
 
 
+class _AsciiOutput:
+    """Escape non-ASCII input echoed in paths, errors, and tracebacks without changing the code page."""
+
+    def __init__(self, stream):
+        self.stream = stream
+
+    def __getattr__(self, name):
+        return getattr(self.stream, name)
+
+    def write(self, text):
+        self.stream.write(text.encode("ascii", "backslashreplace").decode("ascii"))
+        return len(text)
+
+
 if __name__ == "__main__":
+    import sys
+
+    if sys.argv[1:2] != ["things"]:
+        sys.stdout, sys.stderr = _AsciiOutput(sys.stdout), _AsciiOutput(sys.stderr)
     raise SystemExit(main())
