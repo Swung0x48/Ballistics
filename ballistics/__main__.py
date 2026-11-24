@@ -37,7 +37,8 @@ def main(argv=None):
     v.add_argument("--out", type=Path, default=Path("data"), help="folder for the results and the coarse graph")
     v.add_argument("--png", type=Path, help="folder for a top view of each sector (of each step)")
     for p_ in (v,):
-        p_.add_argument("--without", action="append", metavar="NAME", help="what-if: this placement is not there (a transformer, fan, cork bridge, push board, seesaw; a gate: always open); repeatable")
+        p_.add_argument("--without", action="append", metavar="NAME", help="what-if: this placement is not there (e.g. transformer, fan, cork bridge, push board, seesaw, swing; "
+                             "a gate is always open, a sandbag leaves its supported road open); repeatable")
         p_.add_argument("--state", action="append", metavar="NAME=STATE", help="what-if: this mechanism starts in that state (0/1; gate closed/open, board and T-board up/down, falling rock standing/dropped, flap pose A/pose B, seesaw 1 = tipped or use its reported low-end label); repeatable")
         p_.add_argument("--lock", action="append", metavar="NAME", help="what-if: this mechanism's state never changes; repeatable")
         p_.add_argument("--tag", help="with what-ifs: the files are <name>-<tag>-... (default what-if)")

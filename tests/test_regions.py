@@ -831,3 +831,84 @@ def test_elevator_chain_must_land_on_a_loaded_platform():
         assert res["path"][-1][2] == 3
         for ov in (regions.Overrides(state={"M2": "used"}), regions.Overrides(without={"M2"})):
             assert regions.analyse(g, info, 1, world, overrides=ov)["breaks"] is None
+
+
+def test_swing_joins_two_banks_for_all_balls_and_without_removes_only_the_ride():
+    from ballistics.things import load
+
+    nums = load()["P_Modul_08"].numbers
+    x = max(nums["end_reach_record"]["v"])
+    xyz = [(-x, 3.5, 0), (x, 3.5, 0)]
+    hulls = [("P_Modul_08_Schaukel", _hull_box((-3, -0.4, -1.8), (3, 0.1, 1.8)))]
+    for axis in ROAD_AXES:
+        info, g, world, build = _road_state_fixture("P_Modul_08", xyz, [(0, 1, 18, "gap")], hulls, axis)
+        sg, _ = build(cork=True)
+        assert sg.M == 0
+        for k in (W, S, P):
+            for u, v in ((0, 1), (1, 0)):
+                assert any((t, w, how) == (k, v, "ride_swing") for t, w, _, how in sg.step(k, u))
+                assert np.isfinite(sg.togo(v)[k, u])
+        res = regions.mechanisms(regions.analyse(g, info, 1, world))
+        m, = res["mechanisms"]
+        assert res["breaks"] == 0 and m["without_breaks"] == 1 and m["on_way"]
+        assert m["states"] == [] and len(m["crossings"]) == 6
+        assert regions._chinese(m["need"]) == "用到"
+        assert m["timing"]["bank_window_steps_132"] == nums["bank_window_steps_132"]["v"]
+        key = res["path"][-1][4]
+        assert "keys held for wood and paper" in regions.describe(key, lang="en")
+        assert regions.describe(key, lang="en").isascii() and "秋千" in regions.describe(key, lang="zh")
+        assert all(row.isascii() for row in regions._timed_notes(m))
+        assert not build(cork=True, without=["M"])[0].timed
+        assert not build(cork=False)[0].timed
+
+
+def test_sandbag_windows_require_fixed_support_and_removal_restores_normal_roll():
+    from ballistics.geometry import Mesh
+
+    def floor(gap):
+        def mesh(A, o):
+            strips = [(-6, -1), (1, 6)] if gap else [(-6, 6)]
+            pts = np.array([[(a, 0, -2), (a, 0, 2), (b, 0, 2), (b, 0, -2)] for a, b in strips]) @ A + o
+            v = pts[:, [[0, 1, 2], [0, 2, 3]]].reshape(-1, 3, 3)
+            return Mesh(*v.transpose(1, 0, 2), np.zeros(len(v), int), np.zeros(len(v), bool), np.empty((0, 7)), [{}])
+        return mesh
+
+    xyz = [(-3.5, 2, 0), (3.5, 2, 0)]
+    hulls = [("P_Modul_26_Sack", _hull_box((-1.4, -0.5, -1.9), (1.4, 3.6, 1.9)))]
+    for axis in ROAD_AXES:
+        info, g, world, build = _road_state_fixture("P_Modul_26", xyz, [], hulls, axis, mesh=floor(False))
+        sg, _ = build(cork=True)
+        removed, _ = build(cork=True, without=["M"])
+        assert sg.M == removed.M == 0
+        for k in (W, S, P):
+            for u, v in ((0, 1), (1, 0)):
+                assert [(t, w, h) for t, w, _, h in sg.step(k, u)] == [(k, v, "pass_sandbag")]
+                assert np.isfinite(sg.togo(v)[k, u])
+                assert [(t, w, h) for t, w, _, h in removed.step(k, u)] == [(k, v, "roll")]
+        res = regions.mechanisms(regions.analyse(g, info, 1, world))
+        m, = res["mechanisms"]
+        assert m["states"] == [] and m["without_breaks"] == res["breaks"] == 0 and len(m["crossings"]) == 6
+        assert all(row.isascii() for row in regions._timed_notes(m))
+        key = res["path"][-1][4]
+        assert regions.describe(key, lang="en").isascii() and "沙袋" in regions.describe(key, lang="zh")
+        assert not build(cork=False)[0].step(W, 0)
+        *_, unsupported = _road_state_fixture("P_Modul_26", xyz, [], hulls, axis, mesh=floor(True))
+        assert not unsupported(cork=True)[0].step(W, 0)
+        assert not unsupported(cork=True, without=["M"])[0].step(W, 0)
+
+
+def test_sandbag_cuts_cached_rail_only_in_regions_and_only_at_the_cross_section():
+    xyz = [(-3.5, 2, 0), (-1, 2, 0), (1, 2, 0), (3.5, 2, 0)]
+    hulls = [("P_Modul_26_Sack", _hull_box((-1.4, -0.5, -1.9), (1.4, 3.6, 1.9)))]
+    rails = [(u, v, abs(xyz[u][0] - xyz[v][0]), "rail") for i in range(3) for u, v in ((i, i + 1), (i + 1, i))]
+    for axis in ROAD_AXES:
+        _, g, _, build = _road_state_fixture("P_Modul_26", xyz, rails, hulls, axis)
+        g.kind[:] = 1
+        g.lane[:] = 0
+        active, _ = build(cork=True)
+        assert (W, 1, 2.5, "rail") in active.step(W, 0)
+        assert (W, 2, 2, "rail") not in active.step(W, 1)
+        assert any((t, v, how) == (W, 3, "pass_sandbag") and np.isclose(c, 7) for t, v, c, how in active.step(W, 0))
+        for plain in (build(cork=True, without=["M"])[0], build(cork=False)[0]):
+            assert (W, 2, 2, "rail") in plain.step(W, 1)
+            assert not plain.timed

@@ -455,6 +455,8 @@ FLAP_OVER, FLAP_PUSH = 13, 14
 PENDULUM = 15
 PENDULUM_BOARD, PENDULUM_BOX = 16, 17
 ELEVATOR = 18
+SWING, SANDBAG = 19, 20
+TIMED = (SWING, SANDBAG)
 # Elevator side: ball mask (3 bits), blocks (4 bits), then the destination elevator's bit mask.
 ELEVATOR_SHIFT = 7
 
@@ -564,8 +566,8 @@ def _state_togo(n, M, bptr, bsrc, bcost, bek, bmask, bclear, tk, tcost, lptr, ls
             elif typ == 6:                                 # over a cork bridge: a wood or paper ball (a stone one breaks it and falls)
                 if k != 1:
                     preds = (s, -1)
-            elif typ == ROCK_OVER or typ == T_OVER or typ == T_CLEAR or typ == FLOAT_ROW or typ == PENDULUM:
-                if typ in (FLOAT_ROW, PENDULUM) or bit == 1:
+            elif typ == ROCK_OVER or typ == T_OVER or typ == T_CLEAR or typ == FLOAT_ROW or typ == PENDULUM or typ == SWING or typ == SANDBAG:
+                if typ in (FLOAT_ROW, PENDULUM, SWING, SANDBAG) or bit == 1:
                     t = tk[v]
                     if t < 0:
                         if typ != FLOAT_ROW or cside[e] & (1 << k):
@@ -655,9 +657,9 @@ class StateGraph:
     bridges: (u, v, cost, name) over cork bridges (P_Modul_29), for a wood or paper ball. A bridge has no bit: a stone
     ball breaks it and falls with it (READ), and a broken bridge is whole again only once the ball is lost, so no ball
     that goes on ever finds it broken. floats: box float rows with a mask of ball kinds allowed at entry, no bit;
-    pendulums: stateless directed crossings for all three balls; transformation on arrival works like a plain edge."""
+    pendulums and timed mechanisms: stateless directed crossings for all three balls; transformation on arrival works like a plain edge."""
 
-    def __init__(self, rel, g, region, trafo_kind, trafo_cost: float, lifts, mechs: list, operate_cost: float, links=None, skip=(), bridges=(), guards=None, floats=(), pendulums=()):
+    def __init__(self, rel, g, region, trafo_kind, trafo_cost: float, lifts, mechs: list, operate_cost: float, links=None, skip=(), bridges=(), guards=None, floats=(), pendulums=(), timed=()):
         N = len(g.pos)
         self.g, self.N, self.mechs = g, N, list(mechs)
         self.M = len(self.mechs)
@@ -744,6 +746,15 @@ class StateGraph:
                     self.cfwd[u].append((v, c, "push_pendulum", j, PENDULUM, 0))
                     cond.append((u, v, c, j, PENDULUM, 0))
                     cond_kind.append("push_pendulum")
+        self.timed = list(timed)
+        for j, mc in enumerate(self.timed):
+            typ, kind = (SWING, "ride_swing") if mc["type"] == "swing" else (SANDBAG, "pass_sandbag")
+            for gu, gv, c in mc["edges"]:
+                u, v = int(loc[gu]), int(loc[gv])
+                if u >= 0 and v >= 0:
+                    self.cfwd[u].append((v, c, kind, j, typ, 0))
+                    cond.append((u, v, c, j, typ, 0))
+                    cond_kind.append(kind)
         self._base, self._lift, self._cond = base, lift, cond
         self._base_kind, self._cond_kind = base_kind, cond_kind
         self._dropped = set()
@@ -882,7 +893,7 @@ class StateGraph:
                 after = bits ^ (1 << m) if typ == FLAP_PUSH else bits
                 t = int(self.tk[v]) if self.tk[v] >= 0 else k
                 out.append(((t << M) | after, v, c + (self.tcost if t != k else 0.0), kind))
-            elif (typ in STATE_OVER and bit == 1) or typ == PENDULUM or (typ == FLOAT_ROW and side & (1 << k)):
+            elif (typ in STATE_OVER and bit == 1) or typ in (PENDULUM, *TIMED) or (typ == FLOAT_ROW and side & (1 << k)):
                 t = int(self.tk[v])
                 if t >= 0 and t != k:
                     out.append(((t << M) | bits, v, c + self.tcost, kind))

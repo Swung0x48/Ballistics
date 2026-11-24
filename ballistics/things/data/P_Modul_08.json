@@ -128,6 +128,13 @@
    "basis": "DERIVED",
    "how_zh": "四段 0.5 游戏秒首尾相接，两推两停"
   },
+  "bank_window_steps_132": {
+   "label_zh": "空斗对本地 x ±7.5 岸沿的进出窗口（132 fps）",
+   "v": {"lip_abs_x": 7.5, "plus_x": [112, 173], "minus_x": [244, 41]},
+   "unit": "物理步",
+   "basis": "DERIVED",
+   "how_zh": "沿用目录进出窗的空斗模型，以 +x 开推为零点；负侧跨周期。对 ±7.75 的岸窗口短几步，不作为过关门槛。"
+  },
   "first_push_after_death": {
    "label_zh": "判死后第一下推力的帧（132 fps）",
    "v": 141,

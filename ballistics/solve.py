@@ -1549,11 +1549,187 @@ def _elevator_edges(g, info, sector, region, mesh, without, first_bit):
     return decks, points
 
 
+# ASSUMED: allowances for coarse floor/rail samples, not timing or game thresholds.
+_SWING_LIP = 1.5
+_TIMED_SUPPORT_MARGIN = 0.35
+_TIMED_SUPPORT_STEP = 0.5
+_TIMED_ROLL = ("roll", "rail", "rail end")
+
+
+def _timed_fixed_support(mesh, point):
+    if mesh is None:
+        return False
+    contacts = [q for q in mesh.contacts(point, radius=BALL_R, margin=_TIMED_SUPPORT_MARGIN)
+                if not mesh.entities[q.entity].get("placed") or mesh.entities[q.entity].get("type") in coarse.FIXED_TYPES]
+    return not any(q.gap < -_TIMED_SUPPORT_MARGIN for q in contacts) and coarse._held(mesh, contacts)
+
+
+def _swing_banks(g, P, region, parts, numbers):
+    """Project each open end to the catalogue reach; match the nearby fixed-road samples."""
+    reach = max(numbers["end_reach_record"]["v"])
+    half = numbers["bucket_half_length"]["v"]
+    hinge = numbers["hinge_above_origin"]["v"]
+    angle = np.radians(max(numbers["amplitude_record"]["v"]))
+    # The two broad bottom pieces extend to the open ends; the narrow side pieces are not entrances.
+    deck = [V for V in parts if V[:, 2].min() < 0 < V[:, 2].max()]
+    if not deck:
+        return []
+    lo, hi = np.vstack(deck).min(0), np.vstack(deck).max(0)
+    y = hinge + (hi[1] - hinge) * np.cos(angle) + half * np.sin(angle)
+    bank = (region & (abs(P[:, 0]) >= reach - _SWING_LIP) & (abs(P[:, 0]) <= reach + _SWING_LIP)
+            & (P[:, 2] >= lo[2] - _MECH_ALIGN) & (P[:, 2] <= hi[2] + _MECH_ALIGN)
+            & (abs(P[:, 1] - y - BALL_R) <= 2 * _SWING_LIP))
+    left, right = (np.flatnonzero(bank & (sign * P[:, 0] > 0)) for sign in (-1, 1))
+    pairs = set()
+    for starts, ends in ((left, right), (right, left)):
+        for u in starts:
+            vs = ends[abs(P[ends, 2] - P[u, 2]) <= _MECH_ALIGN]
+            if len(vs):
+                v = min(vs, key=lambda v: (abs(P[v, 2] - P[u, 2]), abs(P[v, 0])))
+                pairs.add(tuple(sorted((int(u), int(v)))))
+    return [(a, b, float(np.linalg.norm(g.pos[a] - g.pos[b])))
+            for u, v in sorted(pairs) for a, b in ((u, v), (v, u))]
+
+
+def _sandbag_banks(g, rel, P, region, V, mesh, guards, skipped):
+    """Find genuinely supported crossings transverse to the local Z drive, not across a gap."""
+    shape = _pendulum_shape(V)
+    if shape is None:
+        return [], set(), False
+    lo, hi = V.min(0) - BALL_R, V.max(0) + BALL_R
+    shape = (shape[0], shape[1] - BALL_R)
+
+    def hits(u, v):
+        return _pendulum_hit(P[u], P[v], shape) is not None
+
+    bank = (region & (P[:, 1] >= lo[1]) & (P[:, 1] <= hi[1]) & (P[:, 2] >= lo[2]) & (P[:, 2] <= hi[2]))
+    left = np.flatnonzero(bank & (P[:, 0] <= lo[0]) & (P[:, 0] >= lo[0] - _MECH_BANK))
+    right = np.flatnonzero(bank & (P[:, 0] >= hi[0]) & (P[:, 0] <= hi[0] + _MECH_BANK))
+    def rail_supported(u, v):
+        # Analytic rails already have sampled support, including sloping sections where a
+        # straight chord does not touch both rails. Require a continuous, near-aligned run.
+        lane = g.lane[u]
+        if lane < 0 or g.lane[v] != lane:
+            return False
+        a, b = sorted((P[u, 0], P[v, 0]))
+        seen, todo = {u}, [u]
+        while todo:
+            w = todo.pop()
+            if w == v:
+                return True
+            for q, _, kind in rel.fwd[w]:
+                if (kind == "rail" and q not in seen and region[q] and g.lane[q] == lane
+                        and a <= P[q, 0] <= b and abs(P[q, 2] - P[u, 2]) <= _MECH_ALIGN
+                        and (w, q, kind) not in guards and (w, q, kind) not in skipped and (w, q) not in skipped):
+                    seen.add(q)
+                    todo.append(q)
+        return False
+
+    supported = {}
+    pairs = set()
+    for starts, ends in ((left, right), (right, left)):
+        for u in starts:
+            vs = ends[abs(P[ends, 2] - P[u, 2]) <= _MECH_ALIGN]
+            # Match like to like (sampled floor or analytic rail), taking the nearest supported opposite site.
+            vs = vs[g.kind[vs] == g.kind[u]]
+            for v in sorted(vs, key=lambda v: np.linalg.norm(P[v] - P[u])):
+                if not hits(u, v):
+                    continue
+                pair = tuple(sorted((int(u), int(v))))
+                if pair not in supported:
+                    c = float(np.linalg.norm(g.pos[u] - g.pos[v]))
+                    way = np.linspace(g.pos[u], g.pos[v], int(np.ceil(c / _TIMED_SUPPORT_STEP)) + 1)
+                    supported[pair] = c if (rail_supported(u, v) and rail_supported(v, u)
+                                            or all(_timed_fixed_support(mesh, q) for q in way)) else None
+                if supported[pair] is not None:
+                    pairs.add(pair)
+                    break
+    if not pairs:
+        return [], set(), False
+
+    # A nearby cached rolling detour around the *stationary* bag proves this is not a road cut.
+    # Do not use jumps, conditionals or any path that intersects the inflated sack.
+    nearby = (region & (P[:, 0] >= lo[0] - _MECH_BANK) & (P[:, 0] <= hi[0] + _MECH_BANK)
+              & (P[:, 2] >= lo[2] - _MECH_BANK) & (P[:, 2] <= hi[2] + _MECH_BANK)
+              & (P[:, 1] >= lo[1]) & (P[:, 1] <= hi[1]))
+    screen, local = set(), {}
+    mid_x = (lo[0] + hi[0]) / 2
+    for u in np.flatnonzero(nearby):
+        for v, _, kind in rel.fwd[u]:
+            key = (int(u), int(v), kind)
+            if kind not in _TIMED_ROLL or not region[v] or key in guards or key in skipped or key[:2] in skipped:
+                continue
+            if hits(u, v):
+                # Cut the cached road at one cross-section. Do not isolate its intermediate
+                # samples (keep other attachments); the window edge still spans the whole sack.
+                if (P[u, 0] < mid_x) != (P[v, 0] < mid_x):
+                    screen.add(key)
+            elif nearby[v]:
+                local.setdefault(u, []).append(v)
+
+    # Require a detour for each supported pair on its own road layer. A parallel track
+    # or higher road is not a bypass for a blocked lane.
+    def bypass(u, v):
+        low, high = sorted((P[u, 1], P[v, 1]))
+        seen, todo = {u}, [u]
+        while todo:
+            w = todo.pop()
+            if w == v:
+                return True
+            for q in local.get(w, ()):
+                if (q not in seen and g.kind[q] == g.kind[u]
+                        and low - _MECH_HEIGHT <= P[q, 1] <= high + _MECH_HEIGHT):
+                    seen.add(q)
+                    todo.append(q)
+        return False
+
+    if all(bypass(u, v) and bypass(v, u) for u, v in pairs):
+        return [], set(), True
+    return [(a, b, supported[u, v]) for u, v in sorted(pairs) for a, b in ((u, v), (v, u))], screen, False
+
+
+def _timed_edges(g, rel, info, sector, region, mesh, without, guards, skipped):
+    from .things import load
+
+    out, restored, screened = [], [], set()
+    skipped = set(skipped)
+    for p in info["placements"]:
+        typ, name = p["type"], p["name"]
+        if typ not in ("P_Modul_08", "P_Modul_26") or p.get("sector") != sector:
+            continue
+        swing = typ == "P_Modul_08"
+        if swing and name in without:
+            continue
+        A, o = _placement_frame(p), np.asarray(p["position"], float)
+        P = (g.pos - o) @ A.T
+        body = "P_Modul_08_Schaukel" if swing else "P_Modul_26_Sack"
+        parts = [(np.asarray(h["vertices"], float) - o) @ A.T for h in info.get("hulls", ())
+                 if h.get("placement") == name and h.get("body") == body and len(h["vertices"])]
+        numbers = load()[typ].numbers
+        edges, screen, bypass, safety = [], set(), False, False
+        if swing:
+            if parts:
+                edges = _swing_banks(g, P, region, parts, numbers)
+            depth = np.mean(numbers["l8_safety_floor_depth"]["v"])
+            safety = _timed_fixed_support(mesh, o + (BALL_R - depth) * A[1])
+        elif parts:
+            edges, screen, bypass = _sandbag_banks(g, rel, P, region, np.vstack(parts), mesh, guards, skipped)
+        if name in without:
+            # Let the original roll/rail edges through and restore any missing supported span.
+            restored.extend((u, v, c, "roll") for u, v, c in edges
+                            if not any(w == v and k in _TIMED_ROLL for w, _, k in rel.fwd[u]))
+        else:
+            screened.update(screen)
+            out.append(dict(name=name, type="swing" if swing else "sandbag", pos=p["position"], edges=edges,
+                            bypass=bypass, safety=safety))
+    return out, restored, screened
+
+
 def state_graph_for(g, info: dict, sector: int, world, operate_cost: float, cork: bool = False, without=()):
     """The coarse level of a sector over the ball's kind and its mechanisms' states (`coarse.StateGraph`), and how to
     read those states from the kernel's scene: (graph, reader(kind name, scene) -> state index). Only the places
     of the sector's region take part: its reset point, its goal and what is placed in it, 60 wider. cork: with the
-    region-only cork bridges, falling rocks, T boards, two-way flaps, box float rows, pendulums and elevators; the solver that rolls leaves them out. without: names of placements taken as not there (a what-if): a transformer has no range, a fan no lifts, a
+    region-only cork bridges, falling rocks, T boards, two-way flaps, box float rows, pendulums, elevators, swings and sandbags; the solver that rolls leaves them out. without: names of placements taken as not there (a what-if): a transformer has no range, a fan no lifts, a
     cork bridge, push board or seesaw no way over it; a gate is no obstacle (the ways it clears are always there).
     A removed rock has no upper bridge and never seals the lower route; a removed T board leaves only the
     supported crossings of its old foot. No change to the cached places or edges."""
@@ -1673,6 +1849,12 @@ def state_graph_for(g, info: dict, sector: int, world, operate_cost: float, cork
     if active_floats:
         _float_departures(g, region, active_floats)
     bridges = [b for b in cork_edges(g, info, sector) if b[3] not in without] if cork else ()
+    timed = []
+    if cork:
+        timed, restored, screened = _timed_edges(g, rel, info, sector, region, getattr(world, "mesh", None), without, guards, skip)
+        skip.extend(screened)
+        if restored:
+            rel = rel.with_edges(restored)
     links = _link_rules(rel, g, region, tk, trafos, R.radius, mechs)
     if cork:
         elevators, points = _elevator_edges(g, info, sector, region, getattr(world, "mesh", None), without, len(mechs))
@@ -1692,7 +1874,7 @@ def state_graph_for(g, info: dict, sector: int, world, operate_cost: float, cork
             readers.extend((lambda _scene: 0) for _ in elevators)
     sg = coarse.StateGraph(rel, g, region, tk, cost, lifts, mechs, operate_cost, guards=guards,
                            links=links, skip=skip, bridges=bridges,
-                           floats=active_floats, pendulums=pendulums)
+                           floats=active_floats, pendulums=pendulums, timed=timed)
     sg.float_row_names = {r["name"] for r in floats}
     M = len(mechs)
 
