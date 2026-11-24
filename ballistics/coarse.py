@@ -453,6 +453,8 @@ ROCK_OVER, T_OVER, T_CLEAR, ROCK_PUSH, T_PUSH = 7, 8, 9, 10, 11
 FLOAT_ROW = 12
 FLAP_OVER, FLAP_PUSH = 13, 14
 PENDULUM = 15
+PENDULUM_BOARD, PENDULUM_BOX = 16, 17
+PENDULUM_OPERATE = (PENDULUM_BOARD, PENDULUM_BOX)
 FLOAT_KIND_BITS = len(KIND_INDEX)
 FLOAT_KIND_MASK = (1 << FLOAT_KIND_BITS) - 1
 FLOAT_THROUGH, FLOAT_MINUS, FLOAT_PLUS, FLOAT_END = range(4)
@@ -578,8 +580,8 @@ def _state_togo(n, M, bptr, bsrc, bcost, bek, bmask, bclear, tk, tcost, lptr, ls
                         if nd2 < togo[s2, u]:
                             togo[s2, u] = nd2
                             heapq.heappush(heap, (nd2, s2, u))
-            elif typ == ROCK_PUSH or typ == T_PUSH:
-                if bit == 1 and not (lock & (1 << m)) and (k == STONE or (typ == T_PUSH and k == WOOD)):
+            elif typ == ROCK_PUSH or typ == T_PUSH or typ == PENDULUM_BOARD or typ == PENDULUM_BOX:
+                if bit == 1 and not (lock & (1 << m)) and (k == STONE or (typ != ROCK_PUSH and k == WOOD)):
                     preds = (s & ~(1 << m), -1)
             for s2 in preds:
                 if s2 >= 0 and nd < togo[s2, u]:
@@ -683,7 +685,7 @@ class StateGraph:
                 u, v = int(loc[gu]), int(loc[gv])
                 if u < 0 or v < 0:
                     continue
-                c = float(c) + (operate_cost if typ in (*OPERATE, FLAP_PUSH) else 0.0)
+                c = float(c) + (operate_cost if typ in (*OPERATE, FLAP_PUSH, *PENDULUM_OPERATE) else 0.0)
                 self.cfwd[u].append((v, c, kind, m, typ, side))
                 cond.append((u, v, c, m, typ, side))
                 cond_kind.append(kind)
@@ -836,6 +838,8 @@ class StateGraph:
                 out.append((s, v, c, kind))
             elif typ in OPERATE and bit == 0 and not (lock & (1 << m)) and (k == STONE or (k == WOOD and (typ == T_PUSH or (typ == GATE_OPERATE and side == GATE_WOOD)))):
                 out.append((s | (1 << m), v, c, "operate" if typ == GATE_OPERATE else kind))
+            elif typ in PENDULUM_OPERATE and bit == 0 and k != PAPER and not (lock & (1 << m)):
+                out.append((s | (1 << m), v, c, kind))
             elif typ == BOARD_PUSH and k != PAPER and (bit or not (lock & (1 << m))):
                 out.append((s | (1 << m), v, c, kind))
             elif typ == BOARD_OVER and bit == 1:

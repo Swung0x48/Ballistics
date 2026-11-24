@@ -620,3 +620,115 @@ def test_report_vocabulary_is_ascii_and_figures_keep_chinese():
     assert regions._chinese(regions.SWITCH_NOTES["board"]) == "木球、石球推倒；不会再立起来"
     assert regions._gate_note("zh") == (
         "石球推开；木球撞前 10.40 以上实测推开 2.94–3.01，过了路口打开要的 2.5，也算推得开（粗层不验助跑【假】）；纸球推不动；不会再关")
+
+
+def _pendulum_target(info, name, typ, pos, hull=None):
+    rod = info["placements"][0]
+    frame = np.asarray([rod[a + "_axis"] for a in "xyz"])
+    o = rod["position"]
+    placement = dict(rod, name=name, type=typ, position=np.asarray(pos) @ frame + o)
+    info["placements"].append(placement)
+    if hull is not None:
+        info["hulls"].append(dict(placement=name, body=name, vertices=hull @ frame + o))
+    return placement
+
+
+def test_pendulum_remote_board_uses_opposite_end_turn_and_lock():
+    import json
+
+    for axis in ROAD_AXES:
+        info, g, world, build, rod = _pendulum_fixture(axis)
+        info["placements"].pop()  # replace the candidate-only board with collision geometry
+        b = "P_Modul_25_01"
+        board = _pendulum_target(info, b, "P_Modul_25", (-11, 2, 2),
+                                 _hull_box((-12, 0, 1.5), (-10, 3, 2.5)))
+        # A target without a cached crossing still has a state when remotely operated.
+        g.info["boards"] = {b: dict(sector=1, edges=[], back=[], fall=board["z_axis"])}
+        sg, state_of = build(cork=True)
+        assert sg.M == 1 and build(cork=False)[0].M == 0
+        for k, kind in enumerate(regions.KINDS):
+            s = state_of(kind, None)
+            for gu in range(4):
+                moves = [(after, v) for after, v, _, how in sg.step(s, sg.loc[gu]) if how == "pendulum_board"]
+                # Local +X hit, motion toward -Z gives a positive Y torque.
+                assert moves == ([(s | 1, sg.loc[gu])] if gu == 2 and k != coarse.PAPER else [])
+                assert not any(how == "pendulum_board" for _, _, _, how in sg.step(s, sg.loc[gu], lock=1))
+        assert not build(cork=True, without=(rod,))[0].pendulums
+        assert build(cork=True, without=(b,))[0].M == 0
+        res = regions.analyse(g, info, 1, world)
+        keys = [k for k in res["links"] if k[0] == "mech" and k[3] == coarse.PENDULUM_BOARD]
+        assert {k[6] for k in keys} == {coarse.WOOD, coarse.STONE}
+        for key in keys:
+            assert regions.describe(key, lang="en").isascii()
+            assert "另一端推倒推板" in regions.describe(key, lang="zh")
+            assert not regions._moves(key, 0, lock=1)
+        report = regions.summary_mechanisms(regions.mechanisms(res))
+        assert json.dumps(report, ensure_ascii=False).isascii()
+        pend = next(m for m in report["mechanisms"] if m["name"] == rod)
+        target = next(m for m in report["mechanisms"] if m["name"] == b)
+        assert pend["linked"] and target["switched"] == pend["linked"]
+        assert {r["target"] for r in pend["linked"]} == {b}
+        assert all(line.isascii() for line in regions._pendulum_notes(pend, lang="en"))
+        assert any("远程推倒" in line for line in regions._pendulum_notes(pend, lang="zh"))
+        # A target wholly inside the swept disk but not on its rim remains candidate-only.
+        h = info["hulls"][-1]
+        h["vertices"] += board["x_axis"] * 5
+        assert build(cork=True)[0].M == 0
+
+
+def test_pendulum_remote_board_respects_tangent_and_stopper():
+    for axis in ROAD_AXES:
+        for limited, fall in ((False, -1), (False, 1), (True, -1)):
+            info, g, _, build, _ = _pendulum_fixture(axis, limited=limited, cached=True)
+            info["placements"].pop()
+            board = _pendulum_target(info, "B", "P_Modul_25", (-11, 2, -0.6),
+                                     _hull_box((-12, 0, -1), (-10, 3, -0.3)))
+            g.info["boards"] = {"B": dict(sector=1, edges=[], fall=fall * board["z_axis"])}
+            sg, _ = build(cork=True)
+            # Negative turn would push this target. Its contact is before the stopper,
+            # but the mover's negative crossing does not have room for a ball to pass.
+            assert bool(sg.M) == (fall < 0 and not limited)
+
+
+def test_pendulum_clears_fan_stack_and_all_members_alias_overrides():
+    for axis in ROAD_AXES:
+        info, g, world, build, rod = _pendulum_fixture(axis)
+        fan = _pendulum_target(info, "F", "P_Modul_18", (-11, -4, 2))
+        _pendulum_target(info, "B1", "P_Box", (-11, 1, 2), _hull_box((-12, -1, 1), (-10, 3, 3)))
+        _pendulum_target(info, "B2", "P_Box", (-11, 5, 2), _hull_box((-12, 3, 1), (-10, 7, 3)))
+        g.info["lifts"] = {(1, 5): dict(sector=1, cost=2., fan=fan["position"], way=g.pos[[1, 5]])}
+        sg, state_of = build(cork=True)
+        assert sg.M == 1 and sg.mechs[0]["placements"] == ("B1", "B2")
+        u, v = sg.loc[[1, 5]]
+        p = state_of("paper", None)
+        assert sg.lift_guards[u, v] == (1, 0)
+        assert not any(how == "lift" for _, _, _, how in sg.step(p, u))
+        assert any(w == v and how == "lift" for _, w, _, how in sg.step(p | 1, u))
+        assert not np.isfinite(sg.togo(5)[p, 1]) and np.isfinite(sg.togo(5)[p | 1, 1])
+        k = state_of("stone", None)
+        assert any(after == k | 1 and how == "pendulum_box" for after, _, _, how in sg.step(k, sg.loc[2]))
+        assert not any(how == "pendulum_box" for _, _, _, how in sg.step(p, sg.loc[2]))
+        for name in ("B1", "B2"):
+            other, st = build(cork=True, without=(name,))
+            assert not other.lift_guards and not other.M
+            assert all(c["name"] not in ("B1", "B2") for c in other.pendulums[0]["candidates"])
+            assert any(how == "lift" for _, _, _, how in other.step(st("paper", None), other.loc[1]))
+            locked = regions.scan(g, info, 1, world, overrides=regions.Overrides(lock=[name]))
+            assert locked["lock"] == 1
+            assert not any(how == "pendulum_box" for _, _, _, how in sg.step(k, sg.loc[2], lock=locked["lock"]))
+        other, _ = build(cork=True, without=(rod,))
+        assert not other.pendulums and other.lift_guards == sg.lift_guards
+        plain, _ = build(cork=False)
+        assert not plain.M and not plain.lift_guards
+        res = regions.analyse(g, info, 1, world)
+        key = next(k for k in res["links"] if k[0] == "mech" and k[3] == coarse.PENDULUM_BOX)
+        lift = next(k for k in res["links"] if k[0] == "lift")
+        assert not regions._moves(lift, 0) and not regions._moves(key, 0, lock=1)
+        assert regions._moves(lift, regions._moves(key, 0)[0][1])
+        assert regions.describe(key, lang="en").isascii() and "推开" in regions.describe(key, lang="zh")
+        report = regions.mechanisms(res)["mechanisms"]
+        box = next(m for m in report if m["type"] == "box")
+        assert box["initial"] == "present" and box["lets_through"]["cleared"]
+        assert any(r["pendulum"] == rod for r in box["switched"])
+        assert regions._stack_note(box, lang="en").isascii() and "箱子" in regions._stack_note(box, lang="zh")
+        assert box["switch_note"].isascii()

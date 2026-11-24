@@ -1016,6 +1016,55 @@ def _pendulum_hit(a, b, shape):
     return a + ((first + last) / 2) * d if first <= last else None
 
 
+def _placement_frame(p):
+    a = np.array([p[ax + "_axis"] for ax in "xyz"], float)
+    return a / np.linalg.norm(a, axis=1)[:, None]
+
+
+def _pendulum_contacts(vertices, reach, end, height):
+    """First circle/AABB contacts in the local half on this end, for each signed turn.
+
+    ASSUMED: bounds of each target hull and overlap with the wooden target's height band.
+    Phase zero is local +/-X. Positive angles follow the right hand about placement +Y.
+    """
+    lo, hi = np.min(vertices, axis=0), np.max(vertices, axis=0)
+    if lo[1] > height[1] or hi[1] < height[0]:
+        return
+    # The circle enters the box at rest or on one of its four boundary lines.
+    bounds = np.array([lo[[0, 2]], hi[[0, 2]]]) * end / reach
+    low, high = bounds.min(0), bounds.max(0)
+    for sign in (-1, 1):
+        angles = [0.0]
+        angles += [np.arccos(x) for x in (low[0], high[0]) if 0 <= x <= 1]
+        angles += [np.arcsin(-sign * z) for z in (low[1], high[1]) if 0 <= -sign * z <= 1]
+        for angle in sorted(angles):
+            xz = np.array([np.cos(angle), -sign * np.sin(angle)])
+            if np.all(xz >= low - 1e-9) and np.all(xz <= high + 1e-9):
+                x, z = end * reach * xz
+                yield sign, angle, sign * np.array([z, 0., -x])
+                break
+
+
+def _fan_box_stacks(info, sector):
+    """Placement centres above a fan and within its catalogue horizontal box, in its frame."""
+    from . import fans
+
+    half = fans.rules().half
+    placed = [p for p in info["placements"] if p.get("sector") == sector]
+    boxes = [p for p in placed if p["type"] == "P_Box"]
+    for fan in placed:
+        if fan["type"] != fans.TYPE:
+            continue
+        o, frame = np.asarray(fan["position"], float), _placement_frame(fan)
+        stack = []
+        for p in boxes:
+            x, y, z = (p["position"] - o) @ frame.T
+            if y > 0 and max(abs(x), abs(z)) <= half:
+                stack.append(p["name"])
+        if stack:
+            yield fan, tuple(sorted(stack))
+
+
 def pendulum_edges(g, rel, info, sector, region, mesh, without, lifts, guards, skipped):
     """Static, supported crossings of P_Modul_17. No angle state, sweep simulation or new places."""
     placements = [p for p in info["placements"] if p.get("sector") == sector and p["name"] not in without]
@@ -1039,8 +1088,7 @@ def pendulum_edges(g, rel, info, sector, region, mesh, without, lifts, guards, s
     for p in rods:
         name = p["name"]
         o = np.asarray(p["position"], float)
-        A = np.array([p[ax + "_axis"] for ax in "xyz"], float)
-        A /= np.linalg.norm(A, axis=1)[:, None]
+        A = _placement_frame(p)
         parts = [h for h in hulls.get(name, ()) if h.get("body") == "Modul17_Dreharme"]
         if not parts:
             continue
@@ -1062,6 +1110,7 @@ def pendulum_edges(g, rel, info, sector, region, mesh, without, lifts, guards, s
         centre = o + y * A[1]
         P = (g.pos - o) @ A.T
         edges, blocked, crossings, supported = {}, set(), set(), {}
+        pushes = {}
         limit = limits.get(name)
         angle = np.deg2rad(limit) if limit is not None else None
         if angle is not None:
@@ -1099,6 +1148,11 @@ def pendulum_edges(g, rel, info, sector, region, mesh, without, lifts, guards, s
                 blocked.add((u, v))
             else:
                 edges[u, v] = c
+                dx, dz = (P[v] - P[u])[[0, 2]]
+                for x, _, z in points:
+                    torque = z * dx - x * dz
+                    if abs(torque) > 1e-9 and abs(x) > 1e-9:
+                        pushes.setdefault((int(np.sign(x)), int(np.sign(torque))), set()).add(int(u))
 
         # A cached rolling/rail edge can already cross (notably analytic rails). Turn just that
         # crossing into a push. Leave cached locations, overpasses and hypothetical breaks alone.
@@ -1174,12 +1228,25 @@ def pendulum_edges(g, rel, info, sector, region, mesh, without, lifts, guards, s
                     if any(not allowed(a, b, q) for a, b in zip(path, path[1:]) for q in hits(a, b)):
                         skip.add((u, v, kind))
                         blocked.add((u, v))
-        candidates = []
+        candidates, contacts = [], {}
+        board_fall = {nm.split("/")[0]: d["fall"] for nm, d in g.info.get("boards", {}).items()
+                      if d["sector"] == sector and "fall" in d}
+        # Use each wooden end's vertical envelope, not the pivot's or the fixed base's.
+        tips = {end: max(boxes, key=lambda b: end * (b[1] if end > 0 else b[0])[0])
+                for end in (-1, 1)}
         for other in placements:
             typ, nm = other["type"], other["name"]
             if nm == name or typ.startswith(SKIP_TEMPLATES) or not typ.startswith(("P_Modul_", "P_Box", "P_Ball_")):
                 continue
             geometry = [h["vertices"] for h in hulls.get(nm, ())] or [[other["position"]]]
+            for vertices in geometry:
+                V = (np.asarray(vertices, float) - o) @ A.T
+                if nm in board_fall or (typ == "P_Box" and nm in hulls):
+                    for end, (tip_lo, tip_hi) in tips.items():
+                        for sign, a, tangent in _pendulum_contacts(V, reach, end, (tip_lo[1], tip_hi[1])):
+                            key = (nm, end, sign)
+                            if key not in contacts or a < contacts[key][0]:
+                                contacts[key] = a, tangent
             for vertices in geometry:
                 V = (np.asarray(vertices, float) - o) @ A.T
                 mn, mx = V.min(0), V.max(0)
@@ -1190,6 +1257,14 @@ def pendulum_edges(g, rel, info, sector, region, mesh, without, lifts, guards, s
                         and mn[1] <= hi[1] + margin and mx[1] >= lo[1] - margin):
                     candidates.append(dict(name=nm, type=typ, basis="ASSUMED"))
                     break
+        operations = {}
+        for (nm, end, sign), (a, tangent) in contacts.items():
+            if angle is not None and sign * angle > 0 and a >= abs(angle):
+                continue
+            if nm in board_fall and (tangent @ A) @ board_fall[nm] <= 1e-9:
+                continue
+            if sites := pushes.get((-end, sign)):
+                operations.setdefault(nm, set()).update(sites)
         theta = np.linspace(0, 2 * np.pi, 73)
         sweep = centre + reach * (np.cos(theta)[:, None] * A[0] + np.sin(theta)[:, None] * A[2])
         # ASSUMED: a clear ring around the axle is not needed for routing; report unsupported
@@ -1201,9 +1276,59 @@ def pendulum_edges(g, rel, info, sector, region, mesh, without, lifts, guards, s
         hole = mesh is not None and 2 * sum(not any(held(q - d, clearance=False) for d in below)
                                              for q in circle[:-1]) >= len(circle) - 1
         rows.append(dict(name=name, pos=o.tolist(), sweep=sweep, reach=reach, limit=limit, hole=hole, candidates=candidates,
-                         edges=[(int(u), int(v), c) for (u, v), c in sorted(edges.items())],
+                         edges=[(int(u), int(v), c) for (u, v), c in sorted(edges.items())], operations=operations,
                          blocked=[(int(u), int(v)) for u, v in sorted(blocked)]))
     return rows, sorted(set(restored)), skip
+
+
+
+def _pendulum_mechanisms(g, sector, without, pendulums, stacks, mechs, readers, guards, lifts):
+    """Attach in-place operations to target bits and require cleared stacks for the cached lifts."""
+    boards = {d["name"].split("/")[0]: d for d in mechs if d["type"] == "board"}
+    by_board = {nm.split("/")[0]: (nm, d) for nm, d in g.info.get("boards", {}).items() if d["sector"] == sector}
+    lift_data = g.info.get("lifts", {})
+    by_box = {}
+    for fan, stack in stacks:
+        if fan["name"] in without or without.intersection(stack):
+            continue
+        bit = 1 << len(mechs)
+        mc = dict(name=stack[0], type="box", edges=[], placements=stack, fan=fan["name"])
+        mechs.append(mc)
+        readers.append(lambda _scene: 0)
+        for nm in stack:
+            by_box.setdefault(nm, []).append(mc)
+        o = np.asarray(fan["position"], float)
+        for u, v, *_ in lifts:
+            e = lift_data[u, v]
+            columns = [e["fan"]]
+            if e.get("chain") and e.get("legs"):
+                columns.append(e["legs"][1][2])  # this leg leads to the second fan's recorded origin
+            if any(np.allclose(o, p, rtol=0, atol=1e-6) for p in columns):
+                edge = (u, v, "lift")
+                on, off = guards.get(edge, (0, 0))
+                guards[edge] = (on | bit, off)
+    for j, rod in enumerate(pendulums):
+        linked, by_target = set(), {}
+        for nm, sites in sorted(rod["operations"].items()):
+            if nm in by_board:
+                if nm not in boards:
+                    # A target can fall even if the cache contains no crossing over it.
+                    name, d = by_board[nm]
+                    boards[nm] = dict(name=name, type="board", edges=[], pieces=d.get("pieces"))
+                    mechs.append(boards[nm])
+                    readers.append(lambda _scene: 0)
+                targets = [boards[nm]]
+            else:
+                targets = by_box.get(nm, ())
+            for mc in targets:
+                _, push_sites = by_target.setdefault(mc["name"], (mc, set()))
+                push_sites.update(sites)
+                linked.update(mc.get("placements", (nm,)))
+        for mc, sites in by_target.values():
+            typ, kind = ((coarse.PENDULUM_BOARD, "pendulum_board") if mc["type"] == "board"
+                         else (coarse.PENDULUM_BOX, "pendulum_box"))
+            mc["edges"].extend((typ, u, u, 0., j, kind) for u in sorted(sites))
+        rod["candidates"] = [c for c in rod["candidates"] if c["name"] not in linked]
 
 
 
@@ -1216,6 +1341,9 @@ def state_graph_for(g, info: dict, sector: int, world, operate_cost: float, cork
     A removed rock has no upper bridge and never seals the lower route; a removed T board leaves only the
     supported crossings of its old foot. No change to the cached places or edges."""
     without = {str(w) for w in without}
+    stacks = list(_fan_box_stacks(info, sector)) if cork else []
+    absent = {nm for _, stack in stacks if without.intersection(stack) for nm in stack}
+    without.update(absent)
     from . import trafo
     from .kernel import _hinge_angle
     from .launch import FOLLOW_SPEED
@@ -1323,6 +1451,7 @@ def state_graph_for(g, info: dict, sector: int, world, operate_cost: float, cork
             lifts = [e for e in lifts if (*e[:2], "lift") not in screened]
         if restored:
             rel = rel.with_edges(restored)
+        _pendulum_mechanisms(g, sector, without, pendulums, stacks, mechs, readers, guards, lifts)
     active_floats = [r for r in floats if not without.intersection([r["name"], *r["placements"]])]
     if active_floats:
         _float_departures(g, region, active_floats)

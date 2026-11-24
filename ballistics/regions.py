@@ -68,7 +68,8 @@ MECH = {coarse.GATE_THROUGH: "through_gate", coarse.GATE_OPERATE: "push_gate_ope
         coarse.BOARD_OVER: "over_board", coarse.SEESAW: "over_seesaw", coarse.CORK: "over_cork_bridge", coarse.FLOAT_ROW: "over_float_row",
         coarse.ROCK_OVER: "over_falling_rock", coarse.ROCK_PUSH: "drop_falling_rock",
         coarse.T_OVER: "over_t_board", coarse.T_PUSH: "push_t_board", coarse.T_CLEAR: "past_t_board",
-        coarse.FLAP_OVER: "over_flap", coarse.FLAP_PUSH: "push_flap", coarse.PENDULUM: "push_pendulum"}
+        coarse.FLAP_OVER: "over_flap", coarse.FLAP_PUSH: "push_flap", coarse.PENDULUM: "push_pendulum",
+        coarse.PENDULUM_BOARD: "pendulum_board", coarse.PENDULUM_BOX: "pendulum_box"}
 BIG = 30                  # a region of fewer places is drawn only where a way goes through it (and its breaks are not listed)
 
 
@@ -198,14 +199,14 @@ def links_of(sg, R: Regions) -> dict:
                         masks = lift_guards.get((u, v))
                         add(("lift", a, b, t) + (masks or ()), c, u, v)
             for v, c, _kind, m, typ, side in sg.cfwd[u]:
-                if (typ == coarse.ROCK_PUSH and k != coarse.STONE) or (typ == coarse.GATE_OPERATE and k != coarse.STONE and not (k == coarse.WOOD and side == coarse.GATE_WOOD)) or (typ in (coarse.BOARD_PUSH, coarse.T_PUSH, coarse.FLAP_PUSH) and k == coarse.PAPER) \
+                if (typ == coarse.ROCK_PUSH and k != coarse.STONE) or (typ == coarse.GATE_OPERATE and k != coarse.STONE and not (k == coarse.WOOD and side == coarse.GATE_WOOD)) or (typ in (coarse.BOARD_PUSH, coarse.T_PUSH, coarse.FLAP_PUSH, *coarse.PENDULUM_OPERATE) and k == coarse.PAPER) \
                         or (typ == coarse.CORK and k == coarse.STONE) or (typ == coarse.FLOAT_ROW and not (side & (1 << k))):
                     continue
-                t = int(sg.tk[v]) if sg.tk[v] >= 0 else k
+                t = int(sg.tk[v]) if sg.tk[v] >= 0 and typ not in coarse.PENDULUM_OPERATE else k
                 b = R.of(t, v)
                 if b >= 0 and (b != a or typ not in (*coarse.STATE_OVER, coarse.FLAP_OVER)):
                     e = add(("mech", a, b, int(typ), int(m), int(side), k, t), c, u, v)
-                    if typ in (coarse.ROCK_PUSH, coarse.T_PUSH, coarse.FLAP_PUSH):
+                    if typ in (coarse.ROCK_PUSH, coarse.T_PUSH, coarse.FLAP_PUSH, *coarse.PENDULUM_OPERATE):
                         e.setdefault("sites", set()).add(int(u))
     return out
 
@@ -235,6 +236,8 @@ def _moves_free(key, bits: int):
     if typ in (coarse.GATE_THROUGH, *coarse.STATE_OVER) and bit == 1:
         return [(t, bits, MECH[typ])]
     if typ in coarse.OPERATE and bit == 0 and (k == coarse.STONE or (k == coarse.WOOD and (typ == coarse.T_PUSH or (typ == coarse.GATE_OPERATE and side == coarse.GATE_WOOD)))):
+        return [(t, bits | (1 << m), MECH[typ])]
+    if typ in coarse.PENDULUM_OPERATE and bit == 0 and k != coarse.PAPER:
         return [(t, bits | (1 << m), MECH[typ])]
     if bit == side and (typ == coarse.FLAP_OVER or (typ == coarse.FLAP_PUSH and k != coarse.PAPER)):
         return [(t, bits ^ (1 << m) if typ == coarse.FLAP_PUSH else bits, MECH[typ])]
@@ -307,15 +310,17 @@ def scan(g, info, sector: int, world, entry_kind: str = "wood", operate_cost: fl
     lock = 0
     for m, mc in enumerate(sg.mechs):
         nm = mc["name"].split("/")[0]
-        if nm in ov.state:
-            value = ov.state[nm]
+        names = mc.get("placements", (nm,)) if mc["type"] == "box" else (nm,)
+        state_name = next((n for n in names if n in ov.state), None)
+        if state_name is not None:
+            value = ov.state[state_name]
             labels = ()
             if mc["type"] == "seesaw" and str(value).strip().lower().startswith(("low end at ", "低端在")):
                 links = links_of(sg, R)
                 keys = (k for k in links if k[0] == "mech" and k[3] == coarse.SEESAW and k[4] == m)
                 labels = _seesaw_states(keys, links, P)
             s0 = (s0 & ~(1 << m)) | (ov.bit(mc["type"], value, labels) << m)
-        if nm in ov.lock:
+        if ov.lock.intersection(names):
             lock |= 1 << m
     togo = sg.togo(goal, lock=lock)
     reset = np.array(info["reset_points"][sector - 1], float)
@@ -408,7 +413,8 @@ class Overrides:
 
     def plain(self, mechanisms=()) -> dict:
         """Report state aliases using the same labels as the mechanism report."""
-        by_name = {m["name"]: m for m in mechanisms if m.get("initial") is not None}
+        by_name = {n: m for m in mechanisms if m.get("initial") is not None
+                   for n in (m["placements"] if m["type"] == "box" else (m["name"],))}
         states = {}
         for name, value in self.state.items():
             m = by_name.get(name)
@@ -465,6 +471,10 @@ def describe(key, lang="en") -> str:
         desc = (tr("%s pushes the flap from local +X and crosses lane B; lane A closes", "%s球从本地 +X 一侧推翻双向挡板并过 B 路，A 路断开") if side == 0 else
                 tr("%s pushes the flap back from local -X and crosses lane A; lane B closes [DERIVED: not measured]",
                    "%s球从本地 −X 一侧推回双向挡板并过 A 路，B 路断开【推：未实测】")) % ball[k]
+    elif typ == coarse.PENDULUM_BOARD:
+        desc = tr("%s pushes pendulum, its other end pushes board down", "%s球推单摆，另一端推倒推板") % ball[k]
+    elif typ == coarse.PENDULUM_BOX:
+        desc = tr("%s pushes pendulum, its other end clears fan boxes", "%s球推单摆，另一端推开风扇上的箱子") % ball[k]
     elif typ == coarse.PENDULUM:
         return tr("%s pushes past the pendulum", "%s球推开单摆过去") % ball[k] + transform
     elif typ == coarse.CORK:
@@ -599,6 +609,12 @@ def run(mesh, info, g, name: str, out, png=None, log=print, overrides=None, tag:
             if m["type"] != "float_row":
                 log("      %s (%s): %s; starts %s; held so: %s -> %s" % (m["name"], m["type"], " / ".join(m["states"]), m["initial"],
                                                                  "no way" if m["held_breaks"] is None else "%d breaks" % m["held_breaks"], m["need"]))
+            if m["type"] == "box":
+                log("         " + m["switch_note"])
+                log("         " + _stack_note(m))
+            for row in m.get("switched", ()):
+                if "pendulum" in row:
+                    log("      " + _remote_note(row))
             if m["type"] == "float_row":
                 log("      %s (box float row): %s Way: %s; without the row: %s." % (
                     m["name"], m["switch_note"], "used" if m["on_way"] else "not used",
@@ -649,6 +665,7 @@ def run(mesh, info, g, name: str, out, png=None, log=print, overrides=None, tag:
 STATES = {
     "gate": (_Text("closed", "关"), _Text("open", "开")),
     "board": (_Text("up", "立"), _Text("down", "倒")),
+    "box": (_Text("present", "在"), _Text("cleared", "推开")),
     "cork_bridge": (_Text("whole", "完好"), _Text("broken", "断开")),
     "falling_rock": (_Text("standing", "未落"), _Text("dropped", "已落")),
     "flap": (_Text("pose A", "A 姿态"), _Text("pose B", "B 姿态")),
@@ -679,8 +696,9 @@ SWITCH_NOTES = {
                   "石球可推，木球要助跑【假：粗层不验】，纸球不能推；死亡复位回 A。"),
     "cork_bridge": _Text("Wood and paper can cross. Stone breaks the bridge on contact and falls with it. The bridge resets only after a ball is lost in this sector, so a live ball never encounters a broken bridge.",
                          "木球、纸球能过，石球一上去就压断、随桥掉下去（断了的桥要在本小节丢一次球才复原），所以活着的球不会遇到断桥"),
-    "pendulum": _Text("Wood can push [MEASURED]; stone and paper can push [DERIVED]. No speed threshold; no linked effects are simulated.",
-                      "木球可推【测】，石、纸球可推【推】；无速度门槛，不排联动。"),
+    "pendulum": _Text("Wood can push [MEASURED]; stone and paper can push past [DERIVED]. No speed threshold. Only wood and stone can operate linked targets [OWNER][DERIVED]; no swing or force is simulated.",
+                      "木球可推【测】；石、纸球可推过【推】，无速度门槛。仅木球、石球可触发联动【项目主人】【推】；不模拟摆动和力。"),
+    "box": _Text("The stack blocks this fan's lift until cleared [OWNER][DERIVED].", "箱子推开前封住该风扇的上升边【项目主人】【推】。"),
 }
 FLOAT_NOTE = (
     "%d boxes in a row. From either end, paper can reach the full row; wood can reach the first %d boxes [ASSUMED: enough run-up]. "
@@ -702,6 +720,10 @@ def _mech_links(res, typ_m):
         if (group, key[4]) == typ_m:
             out.append(key)
     return out
+
+
+def _box_lift_links(res, m):
+    return [k for k in res["links"] if k[0] == "lift" and len(k) > 4 and k[4] & (1 << m)]
 
 
 def _flap_deck_links(res, m):
@@ -733,6 +755,8 @@ def _needs(key, k: int, bits: int):
     if typ in coarse.OPERATE:
         wood = typ == coarse.T_PUSH or (typ == coarse.GATE_OPERATE and side == coarse.GATE_WOOD)
         return [("kind", {coarse.WOOD, coarse.STONE} if wood else {coarse.STONE}), ("bit", m, 0)]
+    if typ in coarse.PENDULUM_OPERATE:
+        return [("kind", {coarse.WOOD, coarse.STONE}), ("bit", m, 0)]
     if typ == coarse.FLAP_PUSH:
         return [("kind", {coarse.WOOD, coarse.STONE}), ("bit", m, side)]
     if typ == coarse.FLAP_OVER:
@@ -785,6 +809,10 @@ def _pendulum_notes(m, details=True, lang="en"):
             groups = sorted({(e["from"], e["to"]) for e in m["blocked"]})
             yield tr("  Blocked directions (wood region IDs; stone and paper are also blocked): ",
                      "  被挡方向（木球区域编号，同样限制石、纸球）：") + sep.join(arrow % pair for pair in groups)
+    if not m["linked"]:
+        yield tr("  Actual linked operations: none", "  实际联动：无")
+    for row in m["linked"]:
+        yield _remote_note(row, lang)
     yield tr("  Possible linked mechanisms [ASSUMED: unverified]: ", "  联动候选【假，未验证】：") + (sep.join(
         c["name"] + (tr(" (near a break on the way: %s; may be related)", "（靠近走法断点 %s，可能相关）") %
         ", ".join(arrow % (b["from"], b["to"]) for b in c["near_route_breaks"]) if c["near_route_breaks"] else "")
@@ -801,6 +829,44 @@ def _near_break(q, a, b):
     return np.hypot(*(q - c)[[0, 2]]) <= NEAR_BREAK and abs(q[1] - c[1]) <= 10.0
 
 
+def _remote_switches(res, keys):
+    """Report concrete operation links and all their supported push sites."""
+    R, P, sg = res["R"], res["places"], res["sg"]
+    used = {key for *_x, key in res["path"]}
+    groups = {}
+    for key in sorted(keys):
+        _, a, b, typ, m, j, k, _ = key
+        row = groups.setdefault((a, b, typ, m, j), (set(), set(), set()))
+        row[0].add(k)
+        row[1].update(res["links"][key]["sites"])
+        row[2].add(key)
+    for (a, b, typ, m, j), (balls, sites, links) in groups.items():
+        rod, target = sg.pendulums[j]["name"], sg.mechs[m]["name"].split("/")[0]
+        effect = (_Text.format("remotely pushed down by pendulum %s", "由单摆 %s 远程推倒", rod)
+                  if typ == coarse.PENDULUM_BOARD else
+                  _Text.format("remotely cleared by pendulum %s", "由单摆 %s 远程推开", rod))
+        yield dict(**{"from": R._label(a), "to": R._label(b)}, balls=_ball_list(balls),
+                   at=[_r1(P[u]) for u in sorted(sites)], pendulum=rod, target=target,
+                   effect=effect, basis=["OWNER", "DERIVED", "ASSUMED"], on_way=bool(links & used),
+                   locked=bool(res.get("lock", 0) & (1 << m)))
+
+
+def _stack_note(m, lang="en"):
+    return ("风扇 %s；箱子：%s" % (m["fan"], "、".join(m["placements"])) if lang == "zh" else
+            "Fan %s; stack: %s" % (m["fan"], ", ".join(m["placements"])))
+
+
+def _remote_note(row, lang="en"):
+    if lang == "zh":
+        r = _chinese(row)
+        return "  %s：%s，%s球从 %s 推（例如 %s，共 %d 处）【项目主人】【推】【假：几何】%s" % (
+            r["target"], r["effect"], r["balls"], r["from"], r["at"][0], len(r["at"]),
+            "；目标锁定" if r["locked"] else "")
+    return "  %s: %s; %s can push in %s (e.g. %s; %d sites) [OWNER][DERIVED][ASSUMED: geometry]%s" % (
+        row["target"], row["effect"], row["balls"], row["from"], row["at"][0], len(row["at"]),
+        "; target locked" if row["locked"] else "")
+
+
 def _pendulum_reports(res, used):
     sg, R, P = res["sg"], res["R"], res["places"]
     if not getattr(sg, "pendulums", ()):
@@ -812,6 +878,8 @@ def _pendulum_reports(res, used):
     for j, rod in enumerate(sg.pendulums):
         name = rod["name"]
         keys = _mech_links(res, ("pendulum", j))
+        remote = [k for k in res["links"] if k[0] == "mech" and k[3] in coarse.PENDULUM_OPERATE and k[5] == j]
+        on_way = bool(used.intersection(keys + remote))
         what_if = Overrides(ov.without | {name}, ov.state, ov.lock)
         alternate = scan(sg.g, info, res["sector"], world, res["entry_kind"], cost, what_if)
         nb, _, _ = connect(links_of(alternate["sg"], alternate["R"]), alternate["start"], alternate["goal_regions"], alternate["lock"])
@@ -829,12 +897,12 @@ def _pendulum_reports(res, used):
 
         blocked = [dict(**{"from": wood_region(u), "to": wood_region(v)},
                         at=[_r1(sg.g.pos[u]), _r1(sg.g.pos[v])]) for u, v in rod["blocked"]]
-        out.append(dict(name=name, type="pendulum", states=[], on_way=any(k in used for k in keys), pos=rod["pos"],
-                        need=_Text("used by this way", "走法用到") if any(k in used for k in keys) else
+        out.append(dict(name=name, type="pendulum", states=[], on_way=on_way, pos=rod["pos"],
+                        need=_Text("used by this way", "走法用到") if on_way else
                         _Text("not used by this way", "走法没用到"), without_breaks=nb,
                         switch_note=SWITCH_NOTES["pendulum"],
                         crossings=crossings, blocked=blocked, stopper_deg=rod["limit"], sweep_radius=rod["reach"],
-                        hole_warning=rod["hole"], candidates=candidates))
+                        hole_warning=rod["hole"], candidates=candidates, linked=list(_remote_switches(res, remote))))
     return out
 
 
@@ -907,6 +975,12 @@ def mechanisms(res: dict) -> dict:
             opens = {1: pairs(lambda k: k[3] == coarse.BOARD_OVER)}
             switch = pairs(lambda k: k[3] == coarse.BOARD_PUSH)
             changes = [k for k in keys if k[3] == coarse.BOARD_PUSH]
+        elif typ == "box":
+            states = list(STATES[typ])
+            lift_keys = _box_lift_links(res, m)
+            opens = {0: [], 1: rows_of({(R._label(k[1]), R._label(k[2])): {coarse.PAPER} for k in lift_keys})}
+            switch, changes = [], []
+            keys += lift_keys
         elif typ in ("falling_rock", "t_board"):
             states = list(STATES[typ])
             changes = [k for k in keys if k[3] in coarse.OPERATE]
@@ -959,6 +1033,10 @@ def mechanisms(res: dict) -> dict:
             opens = {0: pairs(lambda k: True)}
             switch = []
             changes = list(keys)                       # held 'as it starts' is not the question for a bridge: take it away
+        if typ in ("board", "box"):
+            remote = [k for k in keys if k[0] == "mech" and k[3] in coarse.PENDULUM_OPERATE]
+            switch.extend(_remote_switches(res, remote))
+            changes.extend(remote)
         initial = (b0 >> m) & 1 if what == "m" else 0
         # held: the links that would switch it out (for a bridge: all of its links)
         held = {k: e for k, e in res["links"].items() if k not in set(changes)}
@@ -977,6 +1055,9 @@ def mechanisms(res: dict) -> dict:
                         lets_through={states[k]: v for k, v in opens.items()}, switched=switch,
                         switch_note=_gate_note() if typ == "gate" else SWITCH_NOTES.get(typ),
                         held_breaks=hb, need=need, pos=placed["position"] if placed else None))
+        if typ == "box":
+            d = res["sg"].mechs[m]
+            out[-1].update(placements=d["placements"], fan=d["fan"])
         if what == "float":
             row = res["sg"].floats[m]
             passes = {kind: bool(row["allowed"] & (1 << k)) for k, kind in enumerate(KINDS)}
@@ -1257,10 +1338,12 @@ def draw_mechanisms(mesh, res: dict, path, title: str = ""):
         keys = _mech_links(res, what)
         if m["type"] == "flap":
             keys += list(_flap_deck_links(res, what[1]))
+        elif m["type"] == "box":
+            keys += _box_lift_links(res, what[1])
         for key in keys:
             e = res["links"][key]
             a, b = P[e["at"][0]], P[e["at"][1]]
-            if key[3] in (*coarse.OPERATE, coarse.FLAP_PUSH):
+            if key[0] == "mech" and key[3] in (*coarse.OPERATE, coarse.FLAP_PUSH, *coarse.PENDULUM_OPERATE):
                 for u in e.get("sites", (e["at"][0],)):
                     a = P[u]
                     x, y = v.P(a[0], a[2])
@@ -1313,8 +1396,10 @@ def draw_mechanisms(mesh, res: dict, path, title: str = ""):
         if m["type"] == "pendulum":
             rows.extend(_pendulum_notes(m, details=False, lang="zh"))
             continue
-        rows.append("%s（%s）：%s；开局%s；%s。%s" % (m["name"], {"gate": "栅栏", "board": "推板", "seesaw": "跷跷板", "cork_bridge": "软木桥", "falling_rock": "落石", "t_board": "T 型板", "flap": "双向挡板"}[m["type"]],
+        rows.append("%s（%s）：%s；开局%s；%s。%s" % (m["name"], {"gate": "栅栏", "board": "推板", "box": "箱子", "seesaw": "跷跷板", "cork_bridge": "软木桥", "falling_rock": "落石", "t_board": "T 型板", "flap": "双向挡板"}[m["type"]],
                                                    " / ".join(m["states"]), m["initial"], m["need"], m["switch_note"]))
+        if m["type"] == "box":
+            rows.append("  " + _stack_note(m, lang="zh"))
     for c in chain:
         rows.append("第 %d 步 %s%s" % (c["step"], c["did"], "，为了第 %d 步：%s" % (c["for"]["step"], c["for"]["link"]) if c["for"] else ""))
     for b in breaks_by_mechanisms:
