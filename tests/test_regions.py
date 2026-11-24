@@ -732,3 +732,102 @@ def test_pendulum_clears_fan_stack_and_all_members_alias_overrides():
         assert any(r["pendulum"] == rod for r in box["switched"])
         assert regions._stack_note(box, lang="en").isascii() and "箱子" in regions._stack_note(box, lang="zh")
         assert box["switch_note"].isascii()
+
+
+def _elevator_fixture(axis, *, chain=False):
+    from ballistics import things
+    cat = things.load()["P_Modul_03"]
+    loaded = cat.numbers["full_load_eq"]["v"]
+    rise = cat.numbers["per_block"]["v"]
+    sink = cat.numbers["ball_sink"]["v"]
+    tops = cat.numbers["all_off_top_by_ball"]["v"]
+    # A straight approach, a same-height bank at the wrong wall, and several isolated exits.
+    xyz = [(11, loaded + 2, 0), (0, loaded + 2, -11),
+           (-11, loaded + rise - sink["wood"] + 2, 0),
+           (0, loaded + 1.5 * rise - sink["wood"] + 2, 11),
+           (0, max(tops.values()) + 2 + 3, -11),
+           (-16, tops["wood"] + 2, 0)]
+    hulls = [("Floor", _hull_box((-10, -9, -10), (10, -8, 10))),
+             ("Gate", _hull_box((8, -8, -4), (9, -2, -2.5))),
+             ("Gate", _hull_box((8, -8, 2.5), (9, -2, 4))),
+             ("Gate", _hull_box((8, -2, -4), (9, -1, 4))),
+             ("Wall01", _hull_box((-9, -8, -3), (-8, -1, 3))),
+             ("Wall02", _hull_box((-3, -8, 8), (3, -1, 9))),
+             ("Wall03", _hull_box((-3, -8, 6), (3, -1, 7))),
+             ("Wall04", _hull_box((-3, -8, -9), (3, -1, -8)))]
+    if chain:
+        delta = np.array([-20.5, tops["wood"] - loaded, 0.])
+        xyz = [xyz[0], np.array([-16, tops["wood"] + 2, 0]) + delta]
+    info, g, world, build = _road_state_fixture("P_Modul_03", xyz, [],
+                                                [("P_Modul_03_" + name, v) for name, v in hulls], axis)
+    if chain:
+        p = info["placements"][0]
+        d = delta @ np.array([p[a + "_axis"] for a in "xyz"])
+        info["placements"].append(dict(p, name="M2", position=p["position"] + d))
+        info["hulls"] += [dict(h, placement="M2", vertices=h["vertices"] + d) for h in info["hulls"]]
+    return info, g, world, build
+
+
+def test_elevator_doorway_balls_wall_count_and_height_in_three_orientations():
+    import json
+
+    for axis in ROAD_AXES:
+        info, g, world, build = _elevator_fixture(axis)
+        sg, read = build(cork=True)
+        assert sg.M == 1 and build(cork=False)[0].M == 0
+        assert len(g.pos) == len(g._relaxed.fwd) == 6
+        d = sg.mechs[0]
+        assert d["entries"] == [0]
+        assert not any(e[1] == 1 or e[2] == 4 for e in d["edges"])
+        for k in (W, S, P):
+            s = read(regions.KINDS[k], None)
+            moves = sg.step(s, sg.loc[0])
+            goal = 5 if k == P else 2  # paper is lighter, so its height matches a different exit
+            assert any(v == sg.loc[goal] for _, v, _, _ in moves)
+            assert np.isfinite(sg.togo(goal)[s, 0])
+            assert all(st == s | 1 and how == "ride_elevator" for st, _, _, how in moves)
+            assert not sg.step(s | 1, sg.loc[0]) and not sg.step(s, sg.loc[0], lock=1)
+        assert {ride["blocks"] for (_, v, side), ride in d["rides"].items() if v == 3 and side & (1 << W)} == {2}
+        assert all(len(ride["walls"]) == 2 for (_, v, _), ride in d["rides"].items() if v == 3)
+        extra_wall = next(h for h in info["hulls"] if h["body"].endswith("Wall03"))
+        info["hulls"].remove(extra_wall)
+        one_wall = build(cork=True)[0].mechs[0]
+        assert {ride["blocks"] for (_, v, side), ride in one_wall["rides"].items() if v == 3 and side & (1 << W)} == {1, 2}
+        info["hulls"].append(extra_wall)
+        assert np.isfinite(sg.togo(2)[read("wood", None), 0])
+        assert not np.isfinite(sg.togo(2, lock=1)[read("wood", None), 0])
+        assert build(cork=True, without=("M",))[0].M == 0
+        res = regions.mechanisms(regions.analyse(g, info, 1, world))
+        m = res["mechanisms"][0]
+        assert res["breaks"] == 0 and m["on_way"] and m["without_breaks"] is None
+        for key, link in res["links"].items():
+            assert regions.describe(key, lang="en", ride=link.get("elevator")).isascii()
+            assert "乘升降机" in regions.describe(key, lang="zh", ride=link.get("elevator"))
+            if key[6] == P:
+                assert all(tag in regions.describe(key) for tag in ("[WIKI]", "[OWNER]", "[ASSUMED]"))
+                assert "助跑" in regions.describe(key, lang="zh")
+        assert json.dumps(regions.summary_mechanisms(res), ensure_ascii=False).isascii()
+        assert json.dumps(regions.summary_links(res), ensure_ascii=False).isascii()
+        assert all(row.isascii() for row in regions._elevator_notes(m))
+        assert any(r.startswith("P") for e in m["entries"] for r in e["regions"])
+        assert any("[OWNER]" in row for row in regions._elevator_notes(m) if row.startswith("P") and " -> " in row)
+        paper = regions.analyse(g, info, 1, world, entry_kind="paper")
+        assert paper["breaks"] == 0 and paper["path"][-1][3] == "ride_elevator"
+        assert any("要飞过" in row for row in regions._elevator_notes(regions._chinese(m), lang="zh"))
+        for ov in (regions.Overrides(lock={"M"}), regions.Overrides(state={"M": "used"}), regions.Overrides(without={"M"})):
+            assert regions.analyse(g, info, 1, world, overrides=ov)["breaks"] is None
+
+
+def test_elevator_chain_must_land_on_a_loaded_platform():
+    for axis in ROAD_AXES:
+        info, g, world, build = _elevator_fixture(axis, chain=True)
+        sg, read = build(cork=True)
+        s = read("wood", None)
+        assert np.isfinite(sg.togo(1)[s, 0])
+        assert not np.isfinite(sg.togo(1)[s | 2, 0])
+        assert not sg.step(s | 2, sg.loc[0])
+        res = regions.analyse(g, info, 1, world)
+        assert [p[3] for p in res["path"]] == ["start", "ride_elevator", "ride_elevator"]
+        assert res["path"][-1][2] == 3
+        for ov in (regions.Overrides(state={"M2": "used"}), regions.Overrides(without={"M2"})):
+            assert regions.analyse(g, info, 1, world, overrides=ov)["breaks"] is None

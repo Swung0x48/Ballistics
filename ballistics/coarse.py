@@ -454,6 +454,19 @@ FLOAT_ROW = 12
 FLAP_OVER, FLAP_PUSH = 13, 14
 PENDULUM = 15
 PENDULUM_BOARD, PENDULUM_BOX = 16, 17
+ELEVATOR = 18
+# Elevator side: ball mask (3 bits), blocks (4 bits), then the destination elevator's bit mask.
+ELEVATOR_SHIFT = 7
+
+
+def elevator_side(k, blocks, target_bit=0):
+    return (target_bit << ELEVATOR_SHIFT) | (blocks << 3) | (1 << k)
+
+
+def elevator_blocks(side):
+    return (side >> 3) & 15
+
+
 PENDULUM_OPERATE = (PENDULUM_BOARD, PENDULUM_BOX)
 FLOAT_KIND_BITS = len(KIND_INDEX)
 FLOAT_KIND_MASK = (1 << FLOAT_KIND_BITS) - 1
@@ -566,6 +579,18 @@ def _state_togo(n, M, bptr, bsrc, bcost, bek, bmask, bclear, tk, tcost, lptr, ls
                             if nd2 < togo[s2, u]:
                                 togo[s2, u] = nd2
                                 heapq.heappush(heap, (nd2, s2, u))
+            elif typ == ELEVATOR:
+                side = cside[e]
+                if bit == 1 and not bits & (side >> ELEVATOR_SHIFT) and not lock & (1 << m):
+                    t = tk[v]
+                    for k2 in range(3):
+                        if not side & (1 << k2) or k != (t if t >= 0 else k2):
+                            continue
+                        s2 = (k2 << M) | (bits & ~(1 << m))
+                        nd2 = nd + (tcost if k2 != k else 0.0)
+                        if nd2 < togo[s2, u]:
+                            togo[s2, u] = nd2
+                            heapq.heappush(heap, (nd2, s2, u))
             elif typ == FLAP_OVER or typ == FLAP_PUSH:
                 side = cside[e]  # required state before crossing
                 push = typ == FLAP_PUSH
@@ -621,6 +646,8 @@ class StateGraph:
       with guards {(u, v, edge kind): (required set bits, required clear bits)}.
     * two-way flaps (region analysis only): over the lane in the current pose, or push from the supported side
       and cross the other lane in the same move. The latter toggles the bit each time.
+    * elevators (region analysis only): through the loaded doorway and up to an exit in one move, setting the
+      used bit. Another elevator at the exit must still be loaded.
     mechs: [dict(name, type, ...edges)] as `solve` makes them. links: {(u, v): (kind
     index or -1, bits mask)} for the relaxed graph's links that pass through a transformer's range or a mechanism
     (`solve._link_rules`). lifts: (u, v, cost[, the kind index it ends as when that is a transformer's it enters on the
@@ -685,7 +712,7 @@ class StateGraph:
                 u, v = int(loc[gu]), int(loc[gv])
                 if u < 0 or v < 0:
                     continue
-                c = float(c) + (operate_cost if typ in (*OPERATE, FLAP_PUSH, *PENDULUM_OPERATE) else 0.0)
+                c = float(c) + (operate_cost if typ in (*OPERATE, FLAP_PUSH, *PENDULUM_OPERATE, ELEVATOR) else 0.0)
                 self.cfwd[u].append((v, c, kind, m, typ, side))
                 cond.append((u, v, c, m, typ, side))
                 cond_kind.append(kind)
@@ -846,6 +873,9 @@ class StateGraph:
                 out.append((s, v, c, kind))
             elif typ == SEESAW and bit == side:
                 out.append(((s & ~(1 << m)) | ((1 - side) << m) if k == STONE and not (lock & (1 << m)) else s, v, c, kind))
+            elif typ == ELEVATOR and not (bits & ((1 << m) | (side >> ELEVATOR_SHIFT)) or lock & (1 << m)) and side & (1 << k):
+                t = int(self.tk[v]) if self.tk[v] >= 0 else k
+                out.append(((t << M) | bits | (1 << m), v, c + (self.tcost if t != k else 0.0), kind))
             elif typ in (FLAP_OVER, FLAP_PUSH) and bit == side:
                 if typ == FLAP_PUSH and (k == PAPER or lock & (1 << m)):
                     continue

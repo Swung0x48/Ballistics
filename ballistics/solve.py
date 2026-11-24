@@ -1332,11 +1332,228 @@ def _pendulum_mechanisms(g, sector, without, pendulums, stacks, mechs, readers, 
 
 
 
+# ASSUMED coarse geometry: allow a one-sample band at a road lip, and try exits across
+# up to four ball radii. Beyond one radius without support we report an unmeasured flight.
+_ELEVATOR_LIP = 1.5
+_ELEVATOR_REACH = 4 * BALL_R
+_ELEVATOR_STEP = 1.4  # ASSUMED: catalog prose estimate for a ball coming with speed, not a tabulated limit
+
+
+def _elevator_floor_lip(tri, direction, support, rim):
+    """First inward road boundary on this radial line, with the height of the actual face there."""
+    if not len(tri):
+        return support
+    q = tri[:, :, [0, 2]]
+    across = q @ np.array([-direction[1], direction[0]])
+    nxt = np.roll(across, -1, axis=1)
+    hit = ((across <= 0) & (nxt > 0)) | ((across > 0) & (nxt <= 0))
+    valid = hit.sum(axis=1) == 2
+    a, b = tri[valid], np.roll(tri[valid], -1, axis=1)
+    rows = across[valid]
+    t = np.divide(rows, rows - nxt[valid], out=np.zeros_like(rows), where=hit[valid])
+    p = (a + (b - a) * t[:, :, None])[hit[valid]].reshape(-1, 2, 3)
+    along = p[:, :, [0, 2]] @ direction
+    order = along.argsort(axis=1)
+    x, y = np.take_along_axis(along, order, 1), np.take_along_axis(p[:, :, 1], order, 1)
+    r = float(support[[0, 2]] @ direction)
+    h = float(support[1])
+    # Walk adjacent faces on the same surface; a lower/upper deck is not the continuation of this lip.
+    while True:
+        f = np.clip((r - x[:, 0]) / np.maximum(x[:, 1] - x[:, 0], 1e-9), 0, 1)
+        match = ((x[:, 0] < r - 1e-6) & (x[:, 1] >= r - 1e-6) &
+                 (abs(y[:, 0] + f * (y[:, 1] - y[:, 0]) - h) <= 0.05))  # ASSUMED contact tolerance
+        if not match.any():
+            return np.array([r * direction[0], h, r * direction[1]])
+        j = np.argmin(np.where(match, x[:, 0], np.inf))
+        if x[j, 0] <= rim:
+            h = float(np.interp(rim, x[j], y[j]))
+            return np.array([rim * direction[0], h, rim * direction[1]])
+        r, h = x[j, 0], y[j, 0]
+
+
+def _elevator_sites(g, P, o, frame, region, deck, low, high, mesh):
+    """Fixed floor/rail lips near the footprint, sampled by the unchanged coarse graph."""
+    span = -deck[1][:-2].min() + _ELEVATOR_REACH + BALL_R
+    radial = np.linalg.norm(P[:, [0, 2]], axis=1)
+    trial = np.flatnonzero(region & (radial > 0) & (radial <= span) &
+                           (P[:, 1] >= low - BALL_R) & (P[:, 1] <= high + BALL_R * 2))
+    triangles = np.empty((0, 3, 3))
+    if mesh is not None and len(trial):
+        keep = (~mesh.placed & ~mesh.rail & (mesh.N[:, 1] > 0.5))
+        A, B, C = (v[keep] - o for v in (mesh.A, mesh.B, mesh.C))
+        keep = ((np.minimum(np.minimum(A, B), C) <= [span, high + BALL_R, span]) &
+                (np.maximum(np.maximum(A, B), C) >= [-span, low - BALL_R, -span])).all(axis=1)
+        triangles = np.stack([A[keep], B[keep], C[keep]], axis=1) @ frame.T
+    for u in trial:
+        q = P[u].copy()
+        if g.kind[u] == 1:
+            lane = g.lanes[g.lane[u]]
+            if any(g.lane[v] == g.lane[u] and radial[v] < radial[u] - 1e-6 for v, _c, _k in g.adj[u]):
+                continue  # not the platform-facing end of this rail
+            tube = lane["radius"]
+            rise = np.sqrt(max(0.05, (BALL_R + tube) ** 2 - (lane["gauge"] / 2) ** 2))
+            q[1] += tube - rise
+        elif mesh is not None:
+            contacts = [c for c in mesh.contacts(g.pos[u], margin=0.05)
+                        if not (mesh.placed[c.triangle] or mesh.rail[c.triangle]) and c.normal[1] > 0.5
+                        and mesh.N[c.triangle, 1] > 0.5]
+            if not contacts:
+                continue
+            q = (contacts[0].point - o) @ frame.T
+        else:
+            q[1] -= BALL_R
+        r = np.linalg.norm(q[[0, 2]])
+        if r < 1e-6:
+            continue
+        direction = q[[0, 2]] / r
+        v = np.array([direction[0], 0., direction[1]])
+        normals, offsets = deck
+        advance = normals @ v
+        rim = (-offsets[advance > 1e-9] / advance[advance > 1e-9]).min()
+        if g.kind[u] == 0:
+            q = _elevator_floor_lip(triangles, direction, q, rim)
+        gap = float(q @ v - rim)
+        # A cached edge sample can be a ball radius back from the lip (e.g. on a ramp).
+        edge_nodes = g.info.get("edge_node", ())
+        snap = _ELEVATOR_LIP + (BALL_R if u < len(edge_nodes) and edge_nodes[u] else 0.0)
+        if -1e-6 <= gap <= _ELEVATOR_REACH and r - q @ v <= snap and low <= q[1] <= high:
+            yield int(u), q, max(0., gap)
+
+
+def _elevator_edges(g, info, sector, region, mesh, without, first_bit):
+    """Build region-only ride edges. Temporary places stand for the loaded platforms in a chain."""
+    from . import things
+    type_id = "P_Modul_03"
+    placed = [p for p in info.get("placements", ()) if p["type"] == type_id and p.get("sector") == sector]
+    if not placed:
+        return [], []
+    catalog = things.load()[type_id]
+    nums = {k: n["v"] for k, n in catalog.numbers.items()}
+    loaded, rise, band = (nums[k] for k in ("full_load_eq", "per_block", "rest_band"))
+    tolerance = band + _ELEVATOR_STEP
+    # The catalogue says paper can push with a run-up. Like the T-board, do not check the run-up here.
+    kinds = [k for k in coarse.KIND_INDEX if catalog.by_ball[k]["verdict"] == "pushes"]
+    tops = {k: nums["all_off_top_by_ball"][k] for k in kinds}
+    blocks = len(catalog.bodies) - 1  # all placed bodies except the floor
+    low = min(loaded, *(loaded + rise - nums["ball_sink"][k] for k in kinds)) - tolerance
+    high = max(tops.values()) + tolerance
+    hulls = {}
+    for h in info.get("hulls", ()):
+        hulls.setdefault(h.get("placement"), []).append(h)
+    decks = []
+    for p in placed:
+        name = p["name"]
+        if name in without:
+            continue
+        o, frame = np.asarray(p["position"], float), _placement_frame(p)
+        bodies = {}
+        for h in hulls.get(name, ()):
+            bodies.setdefault(h["body"], []).append((np.asarray(h["vertices"]) - o) @ frame.T)
+        floors = bodies.pop(type_id + "_Floor", ())
+        gates = bodies.get(type_id + "_Gate", ())
+        deck = _pendulum_shape(np.vstack(floors)) if floors else None
+        d = dict(name=name, type="elevator", edges=[], rides={}, pos=p["position"], origin=o, frame=frame,
+                 deck=deck, node=len(g.pos) + len(decks), bit=1 << (first_bit + len(decks)))
+        decks.append(d)
+        if deck is None or len(gates) < 3:
+            continue
+        gate = np.vstack(gates)
+        centre = (gate.max(0) + gate.min(0)) / 2
+        outward = centre[[0, 2]] / np.linalg.norm(centre[[0, 2]])
+        tangent = np.array([-outward[1], outward[0]])
+        posts = sorted((part[:, [0, 2]] @ tangent for part in gates if part[:, 1].min() < centre[1]),
+                       key=lambda a: a.mean())
+        if len(posts) != 2:
+            continue
+        aperture = (posts[0].max() + BALL_R, posts[1].min() - BALL_R)
+        gate_plane = max(part[:, [0, 2]].dot(outward).max() for part in gates)
+
+        def doorway(q, outward=outward, tangent=tangent, plane=gate_plane, aperture=aperture):
+            r = float(q[[0, 2]] @ outward)
+            if r < plane:
+                return False
+            z = (q[[0, 2]] @ tangent) * plane / r
+            return aperture[0] <= z <= aperture[1]
+
+        d["doorway"] = doorway
+        d["walls"] = {n: [_pendulum_shape(v) for v in parts] for n, parts in bodies.items()}
+        P = (g.pos - o) @ frame.T
+        d["sites"] = list(_elevator_sites(g, P, o, frame, region, deck, low, high, mesh))
+        d["entries"] = [u for u, q, gap in d["sites"] if doorway(q) and gap <= BALL_R + _ELEVATOR_LIP
+                        and abs(q[1] - loaded) <= tolerance]
+    points = [d["origin"] + (loaded + BALL_R) * d["frame"][1] for d in decks]
+    for d in decks:
+        if "entries" not in d:
+            continue
+        o, frame = d["origin"], d["frame"]
+        normals, offsets = d["deck"]
+        entries = list(d["entries"])
+        exits = [(u, q, gap, 0, None) for u, q, gap in d["sites"] if u not in d["entries"]]
+        for other in decks:
+            if other is d or "doorway" not in other:
+                continue
+            delta = other["origin"] - o
+            q = delta @ frame.T
+            t = -delta @ other["frame"].T
+            distance = np.linalg.norm(q[[0, 2]])
+            if distance < 1e-6 or not other["doorway"](t):
+                continue
+            dn, do = other["deck"]
+            step = dn @ np.array([t[0], 0., t[2]])
+            f = (-do[step > 1e-9] / step[step > 1e-9]).min()
+            q = (delta + f * (t * [1, 0, 1]) @ other["frame"] + loaded * other["frame"][1]) @ frame.T
+            step = normals @ np.array([q[0], 0., q[2]])
+            gap = np.linalg.norm(q[[0, 2]]) * (1 - (-offsets[step > 1e-9] / step[step > 1e-9]).min())
+            if -_ELEVATOR_LIP <= gap <= _ELEVATOR_REACH and low <= q[1] <= high:
+                exits.append((other["node"], q, max(0., float(gap)), other["bit"], other["name"]))
+        # Include the platform as an input only where an earlier ride can land; add those edges below.
+        d["exits"] = exits
+        d["entries"] = entries
+    for d in decks:
+        if "exits" not in d:
+            continue
+        o, frame = d["origin"], d["frame"]
+        for v, q, gap, bit, target in d["exits"]:
+            ray = np.array([q[0], 0., q[2]])
+            blockers = []
+            for name, parts in d["walls"].items():
+                if name == type_id + "_Gate" and d["doorway"](q):
+                    continue
+                if any(shape is not None and _pendulum_hit(np.zeros(3), ray, (shape[0][:-2], shape[1][:-2]))
+                       is not None for shape in parts):
+                    blockers.append(name)
+            for kind in kinds:
+                k = coarse.KIND_INDEX[kind]
+                for n in range(max(1, len(blockers)), blocks + 1):
+                    top = tops[kind] if n == blocks else loaded + rise * n - nums["ball_sink"][kind]
+                    if abs(top - q[1]) > tolerance:
+                        continue
+                    side = coarse.elevator_side(k, n, bit)
+                    for u in (*d["entries"], d["node"]):
+                        if u == v:
+                            continue
+                        a = points[u - len(g.pos)] if u >= len(g.pos) else g.pos[u]
+                        b = points[v - len(g.pos)] if v >= len(g.pos) else g.pos[v]
+                        c = np.linalg.norm(a - o) + np.linalg.norm(b - o)  # ASSUMED planning cost, not travel time
+                        d["edges"].append((coarse.ELEVATOR, u, v, c, side, "ride_elevator"))
+                        d["rides"][u, v, side] = dict(blocks=n, walls=sorted(blockers), platform_top=float(o[1] + top),
+                                                      exit_top=float(o[1] + q[1]), gap=gap, flight=gap > BALL_R,
+                                                      with_speed=bool(q[1] > top + band),
+                                                      exit_at=(o + q @ frame).tolist(), target_elevator=target)
+    # Remove only virtual inputs that cannot be landed on by any ride. No fabricated relaxed gaps to these places.
+    incoming = {v for d in decks for _, _, v, _, _, _ in d["edges"] if v >= len(g.pos)}
+    for d in decks:
+        if d["node"] not in incoming:
+            d["edges"] = [e for e in d["edges"] if e[1] != d["node"]]
+            d["rides"] = {key: ride for key, ride in d["rides"].items() if key[0] != d["node"]}
+    return decks, points
+
+
 def state_graph_for(g, info: dict, sector: int, world, operate_cost: float, cork: bool = False, without=()):
     """The coarse level of a sector over the ball's kind and its mechanisms' states (`coarse.StateGraph`), and how to
     read those states from the kernel's scene: (graph, reader(kind name, scene) -> state index). Only the places
     of the sector's region take part: its reset point, its goal and what is placed in it, 60 wider. cork: with the
-    region-only cork bridges, falling rocks, T boards, two-way flaps, box float rows and pendulums; the solver that rolls leaves them out. without: names of placements taken as not there (a what-if): a transformer has no range, a fan no lifts, a
+    region-only cork bridges, falling rocks, T boards, two-way flaps, box float rows, pendulums and elevators; the solver that rolls leaves them out. without: names of placements taken as not there (a what-if): a transformer has no range, a fan no lifts, a
     cork bridge, push board or seesaw no way over it; a gate is no obstacle (the ways it clears are always there).
     A removed rock has no upper bridge and never seals the lower route; a removed T board leaves only the
     supported crossings of its old foot. No change to the cached places or edges."""
@@ -1455,9 +1672,26 @@ def state_graph_for(g, info: dict, sector: int, world, operate_cost: float, cork
     active_floats = [r for r in floats if not without.intersection([r["name"], *r["placements"]])]
     if active_floats:
         _float_departures(g, region, active_floats)
+    bridges = [b for b in cork_edges(g, info, sector) if b[3] not in without] if cork else ()
+    links = _link_rules(rel, g, region, tk, trafos, R.radius, mechs)
+    if cork:
+        elevators, points = _elevator_edges(g, info, sector, region, getattr(world, "mesh", None), without, len(mechs))
+        if points:
+            # A local view, never stored in the cached graph or seen by the rolling solver.
+            n = len(points)
+            g = coarse.Graph(np.vstack((g.pos, points)), np.r_[g.kind, np.zeros(n, dtype=g.kind.dtype)],
+                             np.r_[g.lane, np.full(n, -1)], g.adj + [[] for _ in points], g.lanes, g.info)
+            rel = rel.with_edges(())
+            rel.g = g
+            rel.fwd.extend([] for _ in points)
+            rel.back.extend([] for _ in points)
+            targets = {v for d in elevators for _, _, v, _, _, _ in d["edges"]}
+            region = np.r_[region, [d["node"] in targets for d in elevators]]
+            tk = np.r_[tk, np.full(n, -1)]
+            mechs.extend(elevators)
+            readers.extend((lambda _scene: 0) for _ in elevators)
     sg = coarse.StateGraph(rel, g, region, tk, cost, lifts, mechs, operate_cost, guards=guards,
-                           links=_link_rules(rel, g, region, tk, trafos, R.radius, mechs), skip=skip,
-                           bridges=[b for b in cork_edges(g, info, sector) if b[3] not in without] if cork else (),
+                           links=links, skip=skip, bridges=bridges,
                            floats=active_floats, pendulums=pendulums)
     sg.float_row_names = {r["name"] for r in floats}
     M = len(mechs)

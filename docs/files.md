@@ -60,12 +60,13 @@ python -m ballistics export <地图.nmo> --out data
 
 | 内容 | 含义 |
 |---|---|
-| `mechanisms[]` | 每个机关：名字、种类（`gate`、`board`、`seesaw`、`cork_bridge`、`falling_rock`、`t_board`、`flap`、`float_row`、`pendulum`、`box`）、状态（`states`）、开局的状态（`initial`）、每个状态放行的连接（`lets_through`：状态 → 从哪个区域到哪个、哪几种球）、在哪里由哪种球拨动（`switched`、`switch_note`；落石、T 型板和双向挡板的 `switched[].at` 是该区域里的操作处坐标列表）、固定在开局状态时到目标最少几个断点（`held_breaks`，到不了为 `null`）、结论（`need`：`needed` / `used, can be bypassed` / `not used by this way` / `goal not reached`） |
+| `mechanisms[]` | 每个机关：名字、种类（`gate`、`board`、`seesaw`、`cork_bridge`、`falling_rock`、`t_board`、`flap`、`float_row`、`pendulum`、`elevator`、`box`）、状态（`states`）、开局的状态（`initial`）、每个状态放行的连接（`lets_through`：状态 → 从哪个区域到哪个、哪几种球）、在哪里由哪种球拨动（`switched`、`switch_note`；落石、T 型板和双向挡板的 `switched[].at` 是该区域里的操作处坐标列表）、固定在开局状态时到目标最少几个断点（`held_breaks`，到不了为 `null`）、结论（`need`：`needed` / `used, can be bypassed` / `not used by this way` / `goal not reached`） |
 | `chain[]` | 第二步的走法里每次变球或拨动机关：第几步、做了什么（`did`）、靠哪条连接（`by`）、为了后面第几步的哪条连接（`for`，之后没用到时为 `null`） |
 | `mechanisms[]` 中的 `flap` | 双向挡板：`pose A` / `pose B` 的通行连接；`switched[]` 另含 `from_state`、`to_state`、通过的 `lane`（A 或 B）和操作处 `at`；切换与通过是同一步 |
 | `mechanisms[]` 中的 `float_row` | 一列箱式浮板：箱数（`boxes`）、成员摆放名（`placements`）、能否走完整列的球种上限（`passes`，不表示找到两端岸点）、侧面及末端离开明细（`exits[]`：入口区域 `from`、从入口数的箱号 `box`、离开方向 `direction`（`side -`、`side +`、`end`）、落点区域 `to`、球种 `balls`、入口和落点坐标 `at`）、走法是否用到（`on_way`）、整列拿掉后的最少断点数（`without_breaks`，同该列的 `held_breaks`）；`states` 为 `["no state bit"]`，列名用半角连字符，如 `P_Modul_41_01-08` |
 | `mechanisms[]` 中的 `pendulum` | 单摆：`states` 为空；`crossings[]` 为有向推过连接（`from`、`to`、球种 `balls`、代表边的坐标 `at`、走法是否用这条边 `on_way`）；`blocked[]` 为限位挡掉的有向点对（木球区 `from`、`to`，同样限制其他球种，及 `at`）。`on_way` 表示该杆是否被用于推过或联动（`need` 相应为 `used by this way` 或 `not used by this way`），`without_breaks` 是拿掉杆后的最少断点数（到不了为 `null`）；另有 `stopper_deg`（无目录数据为 `null`）、`sweep_radius`、`hole_warning` 和 `candidates[]`（未接入的几何候选，摆放名 `name`、`type`、依据 `basis`（`ASSUMED`）和邻近的走法断点 `near_route_breaks`，不证明因果） |
 | `mechanisms[]` 中的 `box` | 风扇上的一摞箱子，以排序后的第一个成员命名，`placements` 列全部成员，`fan` 是关联的风扇；开局 `present`，`cleared` 才放行对应的纸球上升边 |
+| `mechanisms[]` 中的 `elevator` | 升降机状态为 `loaded` / `used`；`entries[]` 记门洞来路的 `regions` 和坐标 `at`。`exits[]` 按球种 `ball` 和出口样本列 `from` / `to` 区域、`blocks` 推掉几块、`walls` 挡墙门刚体名、世界高度 `platform_top` / `exit_top`、水平空档 `gap`、`flight` 是否需飞过、`with_speed` 是否需带速度上台阶、路唇或下一台平台边坐标 `exit_at`、图路点坐标 `at`、下一台摆放名 `target_elevator`（无则 `null`）及是否为选中走法的代表 `on_way`。机关总表的 `on_way` 表示是否用到这一台；`without_breaks` 是拿掉平台后最少断点数（到不了为 `null`）。 |
 | 单摆的 `linked[]`、推板和箱子的 `switched[]` 中的联动项 | 同一条原地操作：`pendulum` 为发起摆放名、`target` 为目标机关名、`effect` 为远程推倒或推开的说明；`from` / `to` 为同一球种区域，`balls` 为球种、`at` 为操作处坐标列表，`basis` 为 `OWNER`、`DERIVED`、`ASSUMED`，`on_way` 表示走法用到，`locked` 表示目标锁定时该操作不可用 |
 | `breaks_by_mechanisms[]` | 旁边 8 个单位以内有粗层还没接的机关的断点：从哪个区域到哪个、那个机关的名字和种类、是否在走法上、断点两端的位置 |
 
