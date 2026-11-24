@@ -513,6 +513,222 @@ def _box_span(way, lo, hi):
     return bool(((enter <= leave) & ~np.any(flat & ((a < lo) | (a > hi)), axis=1)).any())
 
 
+# ASSUMED: coarse geometry matching only, not game rules.
+_FLOAT_PITCH_TOL = 0.25
+_FLOAT_LINE_TOL = 0.25
+_FLOAT_AXIS_COS = 0.98
+_FLOAT_BANK_MIN, _FLOAT_BANK_MAX = 0.5, 4.0
+_FLOAT_BANK_WIDTH, _FLOAT_BANK_HEIGHT = 2.0, 2.5
+_FLOAT_TOP_TOL = 0.8
+_FLOAT_EXIT_MARGIN = BALL_R  # ASSUMED: allow one ball radius beyond the ballistic bound
+
+
+def _float_footprint(vertices):
+    """Counterclockwise horizontal convex hull in the row frame (monotone chain)."""
+    points = sorted(set(map(tuple, vertices[:, [0, 2]])))
+
+    def half(seq):
+        out = []
+        for x, z in seq:
+            while len(out) > 1:
+                (ax, az), (bx, bz) = out[-2:]
+                if (bx - ax) * (z - az) > (bz - az) * (x - ax):
+                    break
+                out.pop()
+            out.append((x, z))
+        return out[:-1]
+
+    return np.array(half(points) + half(reversed(points)))
+
+
+def _float_departures(g, region, rows):
+    """Geometric witnesses only, from each end's banks to the screened coarse floor."""
+    floor = np.flatnonzero(region & (g.kind == 0))
+    for row in rows:
+        if "banks" not in row:
+            continue
+        P = (g.pos - row["origin"]) @ row["frame"].T
+        footprint = row["footprint"]
+        if len(footprint) < 3:
+            continue
+        XZ = P[floor][:, [0, 2]]
+        # A landing must be strictly outside the convex footprint. Compute distance to its edges.
+        inside, dist = np.ones(len(XZ), bool), np.full(len(XZ), np.inf)
+        for a, b in zip(footprint, np.roll(footprint, -1, axis=0)):
+            d, q = b - a, XZ - a
+            inside &= d[0] * q[:, 1] - d[1] * q[:, 0] >= -1e-8
+            f = np.clip((q @ d) / (d @ d), 0, 1)
+            dist = np.minimum(dist, np.linalg.norm(q - f[:, None] * d, axis=1))
+        floor_out = floor[~inside]
+        x, y, z = P[floor_out].T
+        dist = dist[~inside]
+        row["departures"] = []
+        for end, sign in enumerate((1, -1)):
+            banks = [(int(u), P[u, 0]) for u in row["banks"][end] if region[u]]
+            if not banks:
+                continue
+            candidates = []
+            boxes = row["bounds"] if end == 0 else row["bounds"][::-1]
+            for n, (lo, hi) in enumerate(boxes, 1):
+                drop = hi[1] + BALL_R - y
+                # ASSUMED optimistic upper bound: use maximum departure speed, ignore drag and collisions.
+                dt = np.sqrt(2 * np.maximum(drop, 0) / ph.GRAVITY)
+                max_along = np.clip(x, lo[0], hi[0])
+                faces = [(coarse.FLOAT_MINUS, z < lo[2], max_along, z - lo[2]),
+                         (coarse.FLOAT_PLUS, z > hi[2], max_along, z - hi[2])]
+                if n == row["boxes"]:
+                    face = hi[0] if sign > 0 else lo[0]
+                    faces.append((coarse.FLOAT_END, sign * (x - face) > 0, face, z - np.clip(z, lo[2], hi[2])))
+                for direction, outside, along, across in faces:
+                    # The side segment spans the box's axial half-width on either side of its centre.
+                    air = np.hypot(x - along, across)
+                    mask = np.zeros(len(floor_out), int)
+                    for k, (limit, speed) in row["limits"].items():
+                        if n <= limit:
+                            reach = speed * dt + _FLOAT_EXIT_MARGIN
+                            mask[outside & (drop >= -_FLOAT_BANK_HEIGHT) & (dist <= reach) & (air <= reach)] |= 1 << k
+                    # ASSUMED cost: axial travel from the entry to the departure face, plus horizontal flight.
+                    cost = sign * along + air
+                    candidates.extend((int(floor_out[i]), float(cost[i]), coarse.float_side(n, direction, int(mask[i])))
+                                      for i in np.flatnonzero(mask))
+            if candidates:
+                row["departures"].append((banks, sign, candidates))
+
+
+def float_rows(g, info, sector):
+    """Straight runs of adjacent P_Modul_41 placements, with geometry in the row's own frame."""
+    boxes = sorted((p for p in info.get("placements", ()) if p["type"] == "P_Modul_41"
+                    and p.get("sector") == sector), key=lambda p: p["name"])
+    if len(boxes) < 2:
+        return []
+    from . import things
+    catalogue = things.load()
+    nums = catalogue["P_Modul_41"].numbers
+    pitch = nums["pitch"]["v"]
+    time_factor = catalogue.rules["units"]["numbers"]["time_factor"]["v"]
+
+    def speed(kind):
+        seconds = nums[kind + "_seconds_per_box"]["v"]
+        # Upper bound on speed = shortest measured time, converted from game to physics seconds.
+        return pitch / ((min(seconds) if isinstance(seconds, list) else seconds) * time_factor)
+    # The catalogue has no separate numeric short-row limit. Take the lower bound of the
+    # measured multi-box outcomes (not the failed, one-box run), as its short-row guidance does.
+    wood_max = min(min(v) for v in nums["wood_boxes_by_entry"]["v"].values() if isinstance(v, list))
+    paper_speed, wood_speed = speed("paper"), speed("wood")
+    centers = np.array([p["position"] for p in boxes], float)
+    axes = np.array([p["x_axis"] for p in boxes])[:, [0, 2]]  # local X runs across the gap; the hinge is transverse
+    neighbors = [[] for _ in boxes]
+    for i, a in enumerate(centers):
+        for j in range(i + 1, len(boxes)):
+            d = centers[j] - a
+            flat = np.linalg.norm(d[[0, 2]])
+            if (abs(np.linalg.norm(d) - pitch) <= _FLOAT_PITCH_TOL and flat > 0
+                    and abs(d[1]) <= _FLOAT_LINE_TOL
+                    and np.all(abs(axes[[i, j]] @ (d[[0, 2]] / flat)) >= _FLOAT_AXIS_COS)):
+                neighbors[i].append(j)
+                neighbors[j].append(i)
+    hulls = {}
+    for h in info.get("hulls", ()):
+        if len(h.get("vertices", ())):
+            hulls.setdefault(h.get("placement"), []).append(h["vertices"])
+    rows, seen = [], set()
+    for i in range(len(boxes)):
+        if i in seen:
+            continue
+        group, todo = {i}, [i]
+        while todo:
+            for j in neighbors[todo.pop()]:
+                if j not in group:
+                    group.add(j)
+                    todo.append(j)
+        seen.update(group)
+        ends = sorted(j for j in group if len(neighbors[j]) == 1)
+        if len(ends) != 2 or any(len(neighbors[j]) > 2 for j in group):
+            continue  # isolated boxes or ambiguous branches do not make a row
+        first, last = ends
+        o = centers[first]
+        ax = centers[last] - o
+        ax[1] = 0.0
+        if not np.linalg.norm(ax):
+            continue
+        ax /= np.linalg.norm(ax)
+        frame = np.array([ax, [0., 1., 0.], np.cross([0., 1., 0.], ax)])
+        Q = (centers[list(group)] - o) @ frame.T
+        if np.any(abs(Q[:, 2]) > _FLOAT_LINE_TOL) or np.ptp(Q[:, 1]) > _FLOAT_LINE_TOL:
+            continue
+        order = sorted(group, key=lambda j: (centers[j] - o) @ ax)
+        if order[0] != first or order[-1] != last or any(b not in neighbors[a] for a, b in zip(order, order[1:])):
+            continue
+        names = [boxes[j]["name"] for j in order]
+        prefix = "P_Modul_41_"
+        end_name = names[-1][len(prefix):] if names[0].startswith(prefix) and names[-1].startswith(prefix) else names[-1]
+        n = len(names)
+        allowed = (1 << coarse.PAPER) | ((1 << coarse.WOOD) if n <= wood_max else 0)
+        row = dict(name=names[0] + "–" + end_name, placements=names, boxes=n, allowed=allowed,
+                   pos=centers[order].mean(axis=0).tolist(), centers=centers[order].tolist(), edges=[], frame=frame, origin=o)
+        # The prose mentions one stone box but there is no numeric limit: continue to allow none.
+        row["limits"] = {coarse.PAPER: (n, paper_speed), coarse.WOOD: (wood_max, wood_speed), coarse.STONE: (0, 0.0)}
+        rows.append(row)
+        if not all(name in hulls for name in names):
+            continue  # report the row, but do not guess the outline of a missing hull
+        V = [(np.vstack(hulls[name]) - o) @ frame.T for name in names]
+        lo, hi = V[0][:, 0].min(), V[-1][:, 0].max()
+        # The top plane of each end box supplies its bank height.
+        tops = [v[:, 1].max() + BALL_R for v in V]
+        all_v = np.vstack(V)
+        row["footprint"] = _float_footprint(all_v)
+        row["bounds"] = [(v.min(axis=0), v.max(axis=0)) for v in V]
+        row["top_slab"] = (np.array([lo, min(tops) - _FLOAT_TOP_TOL, all_v[:, 2].min()]),
+                           np.array([hi, max(tops) + _FLOAT_TOP_TOL, all_v[:, 2].max()]))
+        P = (g.pos - o) @ frame.T
+        banks = []
+        for dist, top in ((lo - P[:, 0], tops[0]), (P[:, 0] - hi, tops[-1])):
+            banks.append(np.flatnonzero((g.kind == 0) & (dist >= _FLOAT_BANK_MIN) & (dist <= _FLOAT_BANK_MAX)
+                                        & (abs(P[:, 2]) <= _FLOAT_BANK_WIDTH) & (abs(P[:, 1] - top) <= _FLOAT_BANK_HEIGHT)))
+        row["banks"] = banks
+        for a, b in (banks, banks[::-1]):
+            if not len(b):
+                continue
+            for u in a:
+                # Lateral alignment first; use length to break ties along the same lane.
+                v = min(b, key=lambda v: (abs(P[v, 2] - P[u, 2]), np.linalg.norm(P[v] - P[u])))
+                row["edges"].append((int(u), int(v), float(np.linalg.norm(P[v] - P[u]))))
+    return rows
+
+
+def _float_screen(g, rel, region, lifts, rows):
+    """Exclude top places and pre-existing crossings of a row, even in the without counterfactual.
+
+    Screen at ball-centre height (ASSUMED), not at the base of the boxes: unrelated lower roads
+    and paths over the row stay. For launches and lifts use the cached way, never run one again.
+    """
+    slabs = [r for r in rows if "top_slab" in r]
+    if not slabs:
+        return region, set()
+    keep = region.copy()
+    skip = set()
+    edges = [(int(u), v, k) for u in np.flatnonzero(region) for v, _c, k in rel.fwd[u] if region[v]]
+    flight = [(u, v, k) for u, v, k in edges if k == "launch"] + [(u, v, "lift") for u, v, *_ in lifts if region[u] and region[v]]
+    direct = [(u, v, k) for u, v, k in edges if k != "launch"]
+    uv = np.array([(u, v) for u, v, _k in direct], dtype=int).reshape(-1, 2)
+    for r in slabs:
+        o, A = r["origin"], r["frame"]
+        lo, hi = r["top_slab"]
+        P = (g.pos - o) @ A.T
+        keep &= ~np.all((P >= lo) & (P <= hi), axis=1)
+        a, b = P[uv[:, 0]], P[uv[:, 1]]
+        candidates = np.flatnonzero(np.all((np.minimum(a, b) <= hi) & (np.maximum(a, b) >= lo), axis=1))
+        for i in candidates:
+            if _box_span(P[uv[i]], lo, hi):
+                skip.add(direct[i])
+        for u, v, k in flight:
+            e = g.info.get("launches" if k == "launch" else "lifts", {}).get((u, v), {})
+            way = e.get("way", ())
+            if _box_span((np.asarray(way) - o) @ A.T if len(way) > 1 else P[[u, v]], lo, hi):
+                skip.add((u, v, k))
+    return keep, skip
+
+
 def _t_clear_edges(g, P, floor, pieces, fallen, mesh, name):
     """Conservatively restore a short supported floor crossing of the vacated upright foot.
 
@@ -647,7 +863,7 @@ def state_graph_for(g, info: dict, sector: int, world, operate_cost: float, cork
     """The coarse level of a sector over the ball's kind and its mechanisms' states (`coarse.StateGraph`), and how to
     read those states from the kernel's scene: (graph, reader(kind name, scene) -> state index). Only the places
     of the sector's region take part: its reset point, its goal and what is placed in it, 60 wider. cork: with the
-    region-only cork bridges, falling rocks and T boards; the solver that rolls leaves them out. without: names of placements taken as not there (a what-if): a transformer has no range, a fan no lifts, a
+    region-only cork bridges, falling rocks, T boards and box float rows; the solver that rolls leaves them out. without: names of placements taken as not there (a what-if): a transformer has no range, a fan no lifts, a
     cork bridge, push board or seesaw no way over it; a gate is no obstacle (the ways it clears are always there).
     A removed rock has no upper bridge and never seals the lower route; a removed T board leaves only the
     supported crossings of its old foot. No change to the cached places or edges."""
@@ -729,9 +945,19 @@ def state_graph_for(g, info: dict, sector: int, world, operate_cost: float, cork
                 guards[edge] = (a | (bit if on else 0), b | (bit if off else 0))
             mechs.append(mc)
             readers.append(lambda _scene: 0)  # the region-only bits start at rest; never read from physics
+    floats = float_rows(g, info, sector) if cork else []
+    region, screened = _float_screen(g, rel, region, lifts, floats)
+    skip.extend(screened)
+    if screened:
+        lifts = [e for e in lifts if (*e[:2], "lift") not in screened]
+    active_floats = [r for r in floats if not without.intersection([r["name"], *r["placements"]])]
+    if active_floats:
+        _float_departures(g, region, active_floats)
     sg = coarse.StateGraph(rel, g, region, tk, cost, lifts, mechs, operate_cost, guards=guards,
                            links=_link_rules(rel, g, region, tk, trafos, R.radius, mechs), skip=skip,
-                           bridges=[b for b in cork_edges(g, info, sector) if b[3] not in without] if cork else ())
+                           bridges=[b for b in cork_edges(g, info, sector) if b[3] not in without] if cork else (),
+                           floats=active_floats)
+    sg.float_row_names = {r["name"] for r in floats}
     M = len(mechs)
 
     def state_of(kind: str, scene) -> int:

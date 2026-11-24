@@ -450,6 +450,19 @@ WOOD, STONE, PAPER = 0, 1, 2                 # the ball's kind, as a state of th
 KIND_INDEX = {"wood": WOOD, "stone": STONE, "paper": PAPER}
 GATE_THROUGH, GATE_OPERATE, BOARD_PUSH, BOARD_OVER, SEESAW, CORK = 1, 2, 3, 4, 5, 6
 ROCK_OVER, T_OVER, T_CLEAR, ROCK_PUSH, T_PUSH = 7, 8, 9, 10, 11
+FLOAT_ROW = 12
+FLOAT_KIND_BITS = len(KIND_INDEX)
+FLOAT_KIND_MASK = (1 << FLOAT_KIND_BITS) - 1
+FLOAT_THROUGH, FLOAT_MINUS, FLOAT_PLUS, FLOAT_END = range(4)
+
+
+def float_side(n, direction, allowed):
+    return ((n * 4 + direction) << FLOAT_KIND_BITS) | allowed
+
+
+def float_exit(side):
+    """(Box number from entry, exit direction); through edges use the full row length."""
+    return divmod(side >> FLOAT_KIND_BITS, 4)
 STATE_OVER = (ROCK_OVER, T_OVER, T_CLEAR)
 OPERATE = (GATE_OPERATE, ROCK_PUSH, T_PUSH)
 _INF = 1e300
@@ -532,13 +545,16 @@ def _state_togo(n, M, bptr, bsrc, bcost, bek, bmask, bclear, tk, tcost, lptr, ls
             elif typ == 6:                                 # over a cork bridge: a wood or paper ball (a stone one breaks it and falls)
                 if k != 1:
                     preds = (s, -1)
-            elif typ == ROCK_OVER or typ == T_OVER or typ == T_CLEAR:
-                if bit == 1:
+            elif typ == ROCK_OVER or typ == T_OVER or typ == T_CLEAR or typ == FLOAT_ROW:
+                if typ == FLOAT_ROW or bit == 1:
                     t = tk[v]
                     if t < 0:
-                        preds = (s, -1)
+                        if typ != FLOAT_ROW or cside[e] & (1 << k):
+                            preds = (s, -1)
                     elif k == t:
                         for k2 in range(3):
+                            if typ == FLOAT_ROW and not (cside[e] & (1 << k2)):
+                                continue
                             s2 = (k2 << M) | bits
                             nd2 = nd + (0.0 if k2 == t else tcost)
                             if nd2 < togo[s2, u]:
@@ -586,12 +602,13 @@ class StateGraph:
     mechs: [dict(name, type, ...edges)] as `solve` makes them. links: {(u, v): (kind
     index or -1, bits mask)} for the relaxed graph's links that pass through a transformer's range or a mechanism
     (`solve._link_rules`). lifts: (u, v, cost[, the kind index it ends as when that is a transformer's it enters on the
-    way, not one v is in]). skip: (u, v) edges of the relaxed graph that are not there in this sector.
+    way, not one v is in]). skip: (u, v) or (u, v, edge kind) edges of the relaxed graph omitted in this sector.
     bridges: (u, v, cost, name) over cork bridges (P_Modul_29), for a wood or paper ball. A bridge has no bit: a stone
     ball breaks it and falls with it (READ), and a broken bridge is whole again only once the ball is lost, so no ball
-    that goes on ever finds it broken."""
+    that goes on ever finds it broken. floats: box float rows with a mask of ball kinds allowed at entry, no bit;
+    transformation on arrival works like a plain edge."""
 
-    def __init__(self, rel, g, region, trafo_kind, trafo_cost: float, lifts, mechs: list, operate_cost: float, links=None, skip=(), bridges=(), guards=None):
+    def __init__(self, rel, g, region, trafo_kind, trafo_cost: float, lifts, mechs: list, operate_cost: float, links=None, skip=(), bridges=(), guards=None, floats=()):
         N = len(g.pos)
         self.g, self.N, self.mechs = g, N, list(mechs)
         self.M = len(self.mechs)
@@ -613,7 +630,7 @@ class StateGraph:
             u = int(loc[gu])
             for v_, c, k in rel.fwd[gu]:
                 v = int(loc[v_])
-                if v >= 0 and (int(gu), int(v_)) not in skip:
+                if v >= 0 and (int(gu), int(v_)) not in skip and (int(gu), int(v_), k) not in skip:
                     ek, mask = links.get((int(gu), int(v_)), (-1, 0)) if k in ("gap", "bridge") else (-1, 0)
                     on, off = guards.get((int(gu), int(v_), k), (0, 0))
                     mask |= on
@@ -655,10 +672,66 @@ class StateGraph:
             self.cfwd[u].append((v, float(c), "roll", j, CORK, 0))
             cond.append((u, v, float(c), j, CORK, 0))
             cond_kind.append("roll")
+        self.floats = list(floats)
+        self.float_roll_labels = None
+        if any("departures" in row for row in self.floats):
+            # Float exits are reduced using exactly the rolling regions used by the region analysis.
+            from .regions import roll_labels
+            self.float_roll_labels = roll_labels(self)
+        for j, row in enumerate(self.floats):
+            for u, v, c, side in self._float_edges(row):
+                self.cfwd[u].append((v, c, "float_row", j, FLOAT_ROW, side))
+                cond.append((u, v, c, j, FLOAT_ROW, side))
+                cond_kind.append("float_row")
         self._base, self._lift, self._cond = base, lift, cond
         self._base_kind, self._cond_kind = base_kind, cond_kind
         self._dropped = set()
         self._arrays()
+
+    def _float_edges(self, row):
+        """Keep at most one exit per entry place, direction and destination region for each kind.
+
+        Kind regions can split differently (and a landing can transform the ball). Combine masks only
+        when they select the very same edge. Prefer a witness usable by more kinds, then lower cost.
+        The old opposite-bank edges take precedence for the same kind and destination at the far end.
+        """
+        labs = self.float_roll_labels
+        through = set()
+
+        def target(v, k):
+            t = int(self.tk[v]) if self.tk[v] >= 0 else k
+            return t, int(labs[t, v])
+
+        allowed = row["allowed"]
+        for gu, gv, c in row["edges"]:
+            u, v = int(self.loc[gu]), int(self.loc[gv])
+            if u >= 0 and v >= 0:
+                yield u, v, c, float_side(row["boxes"], FLOAT_THROUGH, allowed)
+                if labs is not None:
+                    through.update((u, k, target(v, k)) for k in range(FLOAT_KIND_BITS) if allowed & (1 << k))
+        for banks, sign, candidates in row.get("departures", ()):
+            # Costs differ between banks on this end only by their axial distance to the row.
+            choices = {}
+            for gv, c, side in candidates:
+                v = int(self.loc[gv])
+                n, direction = float_exit(side)
+                mask = side & FLOAT_KIND_MASK
+                rank = (-mask.bit_count(), c, v, n)
+                for k in range(FLOAT_KIND_BITS):
+                    if mask & (1 << k):
+                        key = direction, k, target(v, k)
+                        if key not in choices or rank < choices[key][0]:
+                            choices[key] = rank, v, c, n
+            for gu, x in banks:
+                u = int(self.loc[gu])
+                exits = {}
+                for (direction, k, dst), (_, v, c, n) in choices.items():
+                    if direction == FLOAT_END and (u, k, dst) in through:
+                        continue
+                    key = v, c, n, direction
+                    exits[key] = exits.get(key, 0) | (1 << k)
+                for (v, c, n, direction), mask in exits.items():
+                    yield u, v, c - sign * x, float_side(n, direction, mask)
 
     def _arrays(self):
         n = self.n
@@ -734,7 +807,7 @@ class StateGraph:
                 out.append((s, v, c, kind))
             elif typ == SEESAW and bit == side:
                 out.append(((s & ~(1 << m)) | ((1 - side) << m) if k == STONE and not (lock & (1 << m)) else s, v, c, kind))
-            elif typ in STATE_OVER and bit == 1:
+            elif (typ in STATE_OVER and bit == 1) or (typ == FLOAT_ROW and side & (1 << k)):
                 t = int(self.tk[v])
                 if t >= 0 and t != k:
                     out.append(((t << M) | bits, v, c + self.tcost, kind))

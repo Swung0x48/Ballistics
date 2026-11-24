@@ -58,8 +58,9 @@ python -m ballistics export <地图.nmo> --out data
 
 | 内容 | 含义 |
 |---|---|
-| `mechanisms[]` | 每个机关：名字、种类（`gate`、`board`、`seesaw`、`cork_bridge`、`falling_rock`、`t_board`）、状态（`states`）、开局的状态（`initial`）、每个状态放行的连接（`lets_through`：状态 → 从哪个区域到哪个、哪几种球）、在哪里由哪种球拨动（`switched`、`switch_note`；落石和 T 型板的 `switched[].at` 是该区域里的操作处坐标列表）、固定在开局状态时到目标最少几个断点（`held_breaks`，到不了为 `null`）、结论（`need`：必需 / 用到，可以绕开 / 这条走法没用到） |
+| `mechanisms[]` | 每个机关：名字、种类（`gate`、`board`、`seesaw`、`cork_bridge`、`falling_rock`、`t_board`、`float_row`）、状态（`states`）、开局的状态（`initial`）、每个状态放行的连接（`lets_through`：状态 → 从哪个区域到哪个、哪几种球）、在哪里由哪种球拨动（`switched`、`switch_note`；落石和 T 型板的 `switched[].at` 是该区域里的操作处坐标列表）、固定在开局状态时到目标最少几个断点（`held_breaks`，到不了为 `null`）、结论（`need`：必需 / 用到，可以绕开 / 这条走法没用到） |
 | `chain[]` | 第二步的走法里每次变球或拨动机关：第几步、做了什么（`did`）、靠哪条连接（`by`）、为了后面第几步的哪条连接（`for`，之后没用到时为 `null`） |
+| `mechanisms[]` 中的 `float_row` | 一列箱式浮板：箱数（`boxes`）、成员摆放名（`placements`）、能否走完整列的球种上限（`passes`，不表示找到两端岸点）、侧面及末端离开明细（`exits[]`：入口区域 `from`、从入口数的箱号 `box`、离开方向 `direction`、落点区域 `to`、球种 `balls`、入口和落点坐标 `at`）、走法是否用到（`on_way`）、整列拿掉后的最少断点数（`without_breaks`，同该列的 `held_breaks`）；无状态位 |
 | `breaks_by_mechanisms[]` | 旁边 8 个单位以内有粗层还没接的机关的断点：从哪个区域到哪个、那个机关的名字和种类、是否在走法上、断点两端的位置 |
 
 用了假设（`--without`、`--state`、`--lock`）时，三份文件名里多一个标签（`<名字>-<标签>-regions.json` 等），文件头的 `overrides` 记着用了哪些；不用时 `overrides` 为 `null`。

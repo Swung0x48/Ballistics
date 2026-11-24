@@ -250,3 +250,116 @@ def test_t_board_restores_only_supported_floor_under_its_old_foot():
         assert build(cork=True, without=["M"])[0].step(W, 0)[0][3] == "roll"
         *_, unsupported = _road_state_fixture("P_Modul_37", xyz, [], hulls, axis)
         assert not unsupported(cork=True)[0].step(1, 0)
+
+
+def test_box_float_rows_allow_only_the_right_balls_both_ways_and_without_any_member():
+    for axis in ROAD_AXES:
+        for n, allowed in ((2, {P, W}), (5, {P})):
+            info, g, world, build, pitch = _float_row_fixture(n, axis)
+            length = (n - 1) * pitch
+            sg, read = build(cork=True)
+            (row,) = sg.floats
+            assert row["name"] == "P_Modul_41_01–%02d" % n
+            assert sg.M == 0 and sg.loc[1] < 0
+            assert sg.step(S, sg.loc[2]) == [(S, sg.loc[3], 2, "roll")]
+            assert build(cork=False)[0].step(S, 1) and not build(cork=False)[0].floats
+            for name, k in coarse.KIND_INDEX.items():
+                assert read(name, None) == k
+                for u, v in ((0, 4), (4, 0)):
+                    got = sg.step(k, sg.loc[u])
+                    remaining = sg.togo(v)[k, u]
+                    if k in allowed:
+                        ((t, w, cost, how),) = got
+                        assert (t, w, how) == (k, sg.loc[v], "float_row")
+                        assert np.isclose(cost, length + 8) and np.isclose(remaining, cost)
+                    else:
+                        assert not got and np.isinf(remaining)
+                res = regions.mechanisms(regions.analyse(g, info, 1, world, name))
+                assert res["breaks"] == (0 if k in allowed else None)
+                (m,) = res["mechanisms"]
+                assert m["on_way"] == (k in allowed) and m["without_breaks"] is None and m["boxes"] == n
+                assert m["passes"] == {kind: kk in allowed for kind, kk in coarse.KIND_INDEX.items()}
+                if k in allowed:
+                    assert regions.describe(res["path"][-1][-1]) == "%s球过箱式浮板（%d 个一列）" % (regions.BALL[k], n)
+                for member in [*row["placements"], row["name"]]:
+                    ov = regions.Overrides.parse(without=[member])
+                    removed = regions.mechanisms(regions.analyse(g, info, 1, world, name, overrides=ov))
+                    assert removed["breaks"] is None and not removed["mechanisms"]
+
+
+def _float_row_fixture(n, axis, xyz=None, edges=()):
+    from ballistics import things
+
+    pitch = things.load()["P_Modul_41"].numbers["pitch"]["v"]
+    if xyz is None:
+        length = (n - 1) * pitch
+        points = [(-4, 2, 0), (0, 2, 0), (length / 2, -3, -1), (length / 2, -3, 1), (length + 4, 2, 0)]
+        edges = [(0, 1, 4, "roll"), (1, 4, length + 4, "step"),
+                 (0, 4, length + 8, "bridge"), (4, 0, length + 8, "launch"),
+                 (2, 3, 2, "roll"), (3, 2, 2, "roll")]
+    else:
+        points = xyz(pitch)
+    info, g, world, build = _road_state_fixture("P_Modul_41", points, edges, [], axis)
+    template = info["placements"].pop()
+    for i in reversed(range(n)):
+        a = np.array(axis)
+        o = template["position"] + i * pitch * a
+        name = "P_Modul_41_%02d" % (i + 1)
+        # Some hulls face the other way; the centre line and outside ends are unchanged.
+        x = (-1)**i * a
+        A = np.array([x, [0, 1, 0], np.cross(x, [0, 1, 0])])
+        info["placements"].append(dict(template, name=name, position=o, x_axis=x))
+        info["hulls"].append(dict(placement=name, vertices=_hull_box((-2.5, -1.5, -5), (2.5, 0, 5)) @ A + o))
+    return info, g, world, build, pitch
+
+
+def test_box_float_row_drops_from_far_end_within_reach_and_never_back_up():
+    from ballistics import physics, things
+    from ballistics.geometry import BALL_R
+
+    catalogue = things.load()
+    nums = catalogue["P_Modul_41"].numbers
+    factor = catalogue.rules["units"]["numbers"]["time_factor"]["v"]
+    t = np.sqrt(2 * 10 / physics.GRAVITY)
+    for axis in ROAD_AXES:
+        for reverse in (False, True):
+            def xyz(pitch):
+                wood = pitch / (factor * nums["wood_seconds_per_box"]["v"]) * t + BALL_R
+                paper = pitch / (factor * min(nums["paper_seconds_per_box"]["v"])) * t + BALL_R
+                points = [(-4, 2, 0), (2 * pitch + 2.5 + wood - 0.1, -8, 0),
+                          (2 * pitch + 2.5 + (wood + paper) / 2, -8, 0), (2 * pitch + 2.5 + paper + 0.1, -8, 0)]
+                return [(2 * pitch - x, y, z) for x, y, z in points] if reverse else points
+
+            info, g, world, build, _ = _float_row_fixture(3, axis, xyz)
+            sg, _ = build(cork=True)
+            for k, targets in ((P, {1, 2}), (W, {1}), (S, set())):
+                assert {sg.glob[v] for _, v, _, how in sg.step(k, sg.loc[0]) if how == "float_row"} == targets
+                for v in (1, 2, 3):
+                    assert not sg.step(k, sg.loc[v])
+                    assert np.isfinite(sg.togo(v)[k, sg.loc[0]]) == (v in targets)
+                    assert np.isinf(sg.togo(0)[k, sg.loc[v]])
+            (m,) = regions.mechanisms(regions.analyse(g, info, 1, world, "wood"))["mechanisms"]
+            assert {(e["box"], e["direction"], e["balls"]) for e in m["exits"]} == {(3, "末端", "木"), (3, "末端", "纸")}
+            assert any("从箱式浮板第 3 个（末端）落下" in regions.describe(key)
+                       for key in regions.analyse(g, info, 1, world)["links"] if key[0] == "mech")
+
+
+def test_box_float_row_side_exits_count_from_either_bank_and_prune_by_region():
+    def xyz(pitch):
+        return [(-4, 2, 0), (pitch, 1, 8), (pitch, 1, 8.2), (4 * pitch + 1, 1, 9.6),
+                (5 * pitch + 4, 2, 0), (pitch, 2, -6.5), (pitch, 5, -6.5), (pitch, -8, 0)]
+
+    for axis in ROAD_AXES:
+        _, _, _, build, _ = _float_row_fixture(6, axis, xyz, [(1, 2, 0.2, "roll"), (2, 1, 0.2, "roll")])
+        sg, _ = build(cork=True)
+
+        def departures(u, k):
+            return {sg.glob[v]: (n, direction) for v, _, _, _, _, side in sg.cfwd[sg.loc[u]]
+                    if side & (1 << k) for n, direction in [coarse.float_exit(side)] if direction != coarse.FLOAT_THROUGH}
+
+        left_p, left_w, right_w = departures(0, P), departures(0, W), departures(4, W)
+        assert set(left_w) == {1, 5} and left_w[1][0] <= 3
+        assert set(left_p) == {1, 3, 5} and left_p[3][0] == 5
+        assert left_p[3][1] == left_w[1][1] != left_w[5][1]
+        assert set(right_w) == {3} and right_w[3][0] == 2
+        assert not departures(0, S) and not departures(4, S)
