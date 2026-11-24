@@ -319,3 +319,101 @@ def convex_hull(points, eps: float = 1e-4):
                 t[1], t[2] = t[2], t[1]
             tris.append(t)
     return P, np.array(tris, np.int64).reshape(-1, 3)
+
+
+def vertical_candidates(mesh, centre, reach):
+    """Triangle indices in an XZ footprint, at any height, from the mesh grid."""
+    ox, oz, cell, nx, nz, offsets, items = mesh._grid
+    lo = np.floor((centre[[0, 2]] - reach - (ox, oz)) / cell).astype(int)
+    hi = np.floor((centre[[0, 2]] + reach - (ox, oz)) / cell).astype(int)
+    ids = [items[offsets[i * nz + j]:offsets[i * nz + j + 1]]
+           for i in range(max(lo[0], 0), min(hi[0] + 1, nx))
+           for j in range(max(lo[1], 0), min(hi[1] + 1, nz))]
+    return np.unique(np.concatenate(ids)) if ids else np.empty(0, int)
+
+
+def _sphere_top(tri, n, centre, radius):
+    """Top of the triangle inflated by a sphere, on the vertical line through centre."""
+    # Face interior: at tangency the centre is one radius along the upward normal.
+    y = tri[0, 1] + (radius + (tri[0] - centre)[[0, 2]] @ n[[0, 2]]) / n[1]
+    p = np.array([centre[0], y, centre[2]]) - radius * n
+    q = _closest(*p, *tri.ravel())
+    if np.linalg.norm(p - q[:3]) < 1e-7:
+        return y, n[1]
+    # Edge/vertex: maximize edge_y + sqrt(r^2 - horizontal_distance^2) over the segment.
+    best = (-np.inf, 0.)
+    for a, b in zip(tri, np.roll(tri, -1, axis=0)):
+        d = (b - a)[[0, 2]]
+        v = (centre - a)[[0, 2]]
+        length = np.linalg.norm(d)
+        if length < 1e-12:
+            h2 = radius**2 - v @ v
+            edge_y = max(a[1], b[1])
+        else:
+            proj = v @ (d / length)
+            span2 = radius**2 - (v @ v - proj**2)
+            if span2 <= 0.:
+                continue
+            span = np.sqrt(span2)
+            lo, hi = max(0., proj - span), min(length, proj + span)
+            if lo > hi:
+                continue
+            slope = (b[1] - a[1]) / length
+            u = np.clip(proj + span * slope / np.hypot(1., slope), lo, hi)
+            edge_y = a[1] + u * slope
+            h2 = span2 - (u - proj)**2
+        if h2 > 1e-12:
+            h = np.sqrt(h2)
+            best = max(best, (edge_y + h, h / radius))
+    return best
+
+
+def _box_span_y(tri, n, centre, axes, half):
+    """Interval of centre heights with triangle/OBB overlap, by the separating axis theorem."""
+    edges = np.roll(tri, -1, axis=0) - tri
+    dirs = np.vstack((axes, n, np.cross(edges[:, None, :], axes).reshape(-1, 3)))
+    lengths = np.linalg.norm(dirs, axis=1)
+    dirs = dirs[lengths > 1e-10] / lengths[lengths > 1e-10, None]
+    dirs *= np.where(dirs[:, 1:2] < 0, -1., 1.)
+    d = (tri - [centre[0], 0., centre[2]]) @ dirs.T
+    r = half @ np.abs(axes @ dirs.T)
+    lo, hi = d.min(0) - r, d.max(0) + r
+    up = dirs[:, 1] > 1e-10
+    if np.any(lo[~up] > 1e-8) or np.any(hi[~up] < -1e-8):
+        return np.inf, -np.inf
+    return np.max(lo[up] / dirs[up, 1]), np.min(hi[up] / dirs[up, 1])
+
+
+def vertical_support(tris, friction, centre, *, radius=None, axes=None, half=None):
+    """Highest upward contact on a downward sweep: (centre height, normal Y, surface friction), or None.
+
+    Count a surface already intersecting the placed shape as contact at the start. Pure side grazes and
+    vertical faces do not support weight. Triangle winding is immaterial for the two-sided collision mesh.
+    """
+    best = None
+    reach = radius if radius is not None else np.asarray(half) @ abs(axes[:, [0, 2]])
+    xz = tris[:, :, [0, 2]] - centre[[0, 2]]
+    sel = np.flatnonzero(np.all(xz.min(1) <= reach + 1e-8, axis=1) & np.all(xz.max(1) >= -reach - 1e-8, axis=1))
+    for i in sel:
+        t = tris[i]
+        n = np.cross(t[1] - t[0], t[2] - t[0])
+        if abs(n[1]) < 1e-10:
+            continue
+        n *= np.sign(n[1]) / np.linalg.norm(n)
+        if radius is None:
+            lo, y = _box_span_y(t, n, centre, axes, half)
+            if lo > y + 1e-8 or lo > centre[1] + 1e-8:
+                continue
+            ny = n[1]
+        else:
+            y, ny = _sphere_top(t, n, centre, radius)
+            if y > centre[1] + 1e-8:
+                delta = centre - _closest(*centre, *t.ravel())[:3]
+                if delta @ delta > radius**2 + 1e-8:
+                    continue
+        if not np.isfinite(y):
+            continue
+        hit = (min(float(centre[1]), float(y)), float(ny), float(friction[i]))
+        if best is None or hit[0] > best[0] + 1e-8 or (abs(hit[0] - best[0]) <= 1e-8 and hit[1:] > best[1:]):
+            best = hit
+    return best

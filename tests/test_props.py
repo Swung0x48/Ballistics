@@ -1,6 +1,7 @@
 """Loose balls (ballistics.props and the kernel's tick of several bodies): made-up floors only. What the numbers
 are held against is in docs/mechanisms.md."""
 import numpy as np
+import pytest
 
 from ballistics import kernel, physics as ph, props, things
 from ballistics.geometry import Mesh
@@ -48,7 +49,7 @@ def test_only_the_sectors_and_they_settle():
                                             dict(name="c", type="P_Box", sector=1, position=[20.0, 0.5, 0.0])])
     assert props.of(info, None) == [] and [p["name"] for p in props.of(info, 1)] == ["a", "c"]       # the sector's ball and its box
     w = world_for(floor(), info, "strict", 1)
-    assert len(w.props) == 2 and w.props[0]["settled"] and abs(w.props[0]["rest"][1] - 0.011) < 0.02      # it fell 3 and lies on the floor
+    assert len(w.props) == 2 and w.props[0]["settled"] and w.props[0]["rest"][1] == pytest.approx(0.0)      # it fell 3 and lies on the floor
     assert len(world_for(floor(), info, "free", 1).props) == 0 and len(world_for(floor(), info, "strict").props) == 0
     assert w.scene().shape == (2, 11) and w.scene()[0, 9] == 0.0
 
@@ -143,7 +144,7 @@ def test_the_box_is_the_catalogues():
     assert b["half"] == (2.5, 2.5, 2.5) and b["shape"] == "box" and b["inertia"] == props.LOCKED
     info = dict(death_boxes=[], placements=[dict(name="b", type="P_Box", sector=1, position=[0.0, 1.0, 0.0], x_axis=[0.0, 0.0, 1.0], y_axis=[0.0, 1.0, 0.0], z_axis=[-1.0, 0.0, 0.0])])
     w = world_for(floor(), info, "strict", 1)
-    assert len(w.props) == 1 and w.props[0]["settled"] and abs(w.props[0]["rest"][1] - 0.56) < 0.05      # it stands on the floor
+    assert len(w.props) == 1 and w.props[0]["settled"] and w.props[0]["rest"][1] == pytest.approx(0.5)      # it stands on the floor
     assert w.props[0]["axes"][0] == [0.0, 0.0, 1.0] and w.prop_consts.shape == (1, kernel.PROP_WIDTH) and w.prop_consts[0, 6] == 1.0
 
 
@@ -247,7 +248,15 @@ def test_a_mechanisms_parts_are_read_from_their_shapes():
     w = world_for(m, info, "strict", 1)
     assert [p["kind"] for p in w.props] == ["P_Modul_34_Kiste", "P_Modul_34_Schiebestein"] and all(p["settled"] for p in w.props)
     assert not any(e.get("type") == "P_Modul_34" and (w.mesh.owner == i).any() for i, e in enumerate(w.mesh.entities))    # their shapes left the mesh
-    assert w.props[1]["rest"][1] < 4.9 and w.props[1]["rest"][1] > 4.0      # the block came down onto the crate
+    crate, rock = w.props
+    nums = things.load()["P_Modul_34"].numbers
+    assert rock["opening_state"] == "standing"
+    assert rock["rest"] == pytest.approx(np.array(rock["placed"]) - [0., nums["block_settle"]["v"], 0.])
+    assert crate["placed"][1] - crate["rest"][1] == pytest.approx(nums["crate_settle"]["v"])
+    above = loose_at("box above the rock", "P_Box", [10., 15., 0.])
+    with_box = dict(info, placements=[*info["placements"], above])
+    box = props.of(with_box, 1, floor(), m)[-1]
+    assert box["settled"] and box["rest"] == pytest.approx([10., 9.9 - nums["block_settle"]["v"], 0.])
 
 
 def test_boxes_one_on_another_and_on_a_slope():
@@ -331,8 +340,11 @@ def test_the_gate():
     w, k0, d = gate_run(ph.WOOD, 1.0, 8.73)
     hit = int(np.argmax(d > 0.003))
     assert 2.0 < d[hit + 132] < 2.8
-    sank = w.props[k0]["placed"][1] - w.props[k0]["rest"][1]
-    assert 0.0 < sank < 0.11                                      # it settles onto the groove's floor (0.105 below its bar)
+    slider = w.props[k0]
+    sink = things.load()["P_Modul_01"].numbers["slider_settle"]["v"]
+    assert slider["opening_state"] == "at_rest"
+    assert w.scene()[k0, :3] == pytest.approx(np.array(slider["placed"]) - [0., sink, 0.])
+    assert all(p["rest"] == p["placed"] for p in w.props if p["role"] == 2)  # the groove is fixed
     _w, _k, d = gate_run(ph.WOOD, 1.0, 6.55)
     hit = int(np.argmax(d > 0.003))
     assert 1.3 < d[hit + 132] < 1.7 and d[hit + 132] - d[hit + 66] < 0.1     # (1.44 to 1.49, stopped within 0.47 to 0.70 game s)
@@ -509,3 +521,75 @@ def test_a_seesaw_is_crossed_from_its_low_end():
     d = seesaw_edges(g, info, props.part_boxes(info, None))["W/P_Modul_30_Wippe"]
     assert sorted(u for u, _v, _c, _k in d["edges"]) == [0, 1] and {v for _u, v, _c, _k in d["edges"]} <= {2, 3}
     assert d["low"][0] < -0.9                                            # its low end is at -x
+
+
+def incline(slope, friction=0.7):
+    m = floor(0., size=12.)
+    for v in (m.A, m.B, m.C):
+        v[:, 1] = slope * v[:, 0]
+    m.entities[0]["friction"] = friction
+    return Mesh(m.A, m.B, m.C, m.owner, m.rail, m.tubes, m.entities)
+
+
+def loose_at(name, kind, xyz):
+    return dict(name=name, type=kind, sector=1, position=xyz)
+
+
+def test_ball_opening_support_and_scene_flags():
+    info = dict(death_boxes=[], placements=[loose_at("on", "P_Ball_Stone", [0., 8., 0.]),
+                                            loose_at("off", "P_Ball_Wood", [50., 8., 0.])])
+    w = world_for(incline(0.5), info, "strict", 1)
+    a, b = w.props
+    assert not a["settled"] and not a["gone"] and a["rest"] == pytest.approx([0., 2. * np.hypot(1., .5), 0.])
+    assert b["gone"] and not b["settled"]
+    assert list(w.scene()[:, 9]) == [1., 2.]
+
+
+@pytest.mark.parametrize("slope,surface,settled", [(0.48, .7, True), (0.50, .7, False), (0.48, .5, False)])
+def test_opening_box_friction(slope, surface, settled):
+    info = dict(placements=[loose_at("B", "P_Box", [0., 8., 0.])])
+    b, = props.of(info, 1, incline(slope, surface))
+    assert b["settled"] == settled and not b["gone"]
+    assert b["rest"] == pytest.approx([0., (1 + slope) * 2.5, 0.])
+
+
+def test_opening_box_stack_uses_the_highest_support_at_the_box_footprint():
+    info = dict(placements=[loose_at("top", "P_Box", [3., 20., 0.]), loose_at("base", "P_Box", [0., 10., 0.])])
+    top, base = props.of(info, 1, floor())
+    assert top["settled"] and base["settled"]
+    assert [top["rest"][1], base["rest"][1]] == pytest.approx([5.5, .5])
+
+
+@pytest.mark.parametrize("yaw", [0., 90., 217.])
+def test_opening_seesaw_and_t_board_follow_placement_axes(yaw):
+    ss = seesaw_info()
+    t = board_info()
+    t["placements"][0]["type"] = "P_Modul_37"
+    for h in t["hulls"]:
+        h.update(type="P_Modul_37", body="P_Modul_37_Bridge")
+    info = dict(death_boxes=[], placements=ss["placements"] + t["placements"], hulls=ss["hulls"] + t["hulls"])
+    a = np.radians(yaw)
+    rot = np.array([[np.cos(a), 0., np.sin(a)], [0., 1., 0.], [-np.sin(a), 0., np.cos(a)]])
+    for p in info["placements"]:
+        for k in "xyz":
+            p[k + "_axis"] = (rot @ p[k + "_axis"]).tolist()
+    for h in info["hulls"]:
+        h["vertices"] = np.asarray(h["vertices"]) @ rot.T
+        h["frame"] = np.asarray(h["frame"])
+        h["frame"][:, :3] = h["frame"][:, :3] @ rot.T
+    w = world_for(floor(), info, "strict", 1)
+    cat = things.load()
+    k = next(i for i, p in enumerate(w.props) if p["kind"] == "P_Modul_30_Wippe")
+    turn = kernel._hinge_angle(w.prop_consts, k, *w.scene()[k, :3])
+    assert np.degrees(turn + np.arctan2(.174, .985)) == pytest.approx(cat["P_Modul_30"].numbers["rest_angle"]["v"])
+    assert w.props[k]["opening_state"] == "low_home"
+    axis = info["placements"][1]["z_axis"]
+    deg = -cat["P_Modul_37"].numbers["standing_lean_deg"]["v"]
+    t_turn = props._rotation(axis, np.radians(deg))
+    pivot = t["hulls"][0]["frame"][3, :3]
+    board = [(i, p) for i, p in enumerate(w.props) if p["kind"] == "P_Modul_37_Bridge"]
+    assert len(board) == len(t["hulls"])
+    for i, p in board:
+        assert p["opening_state"] == "standing"
+        assert w.scene()[i, :3] == pytest.approx(pivot + t_turn @ (p["placed"] - pivot))
+        assert np.asarray(p["axes"])[1] == pytest.approx(t_turn @ info["placements"][1]["y_axis"])

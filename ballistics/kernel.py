@@ -532,7 +532,7 @@ def _multi_tick(pos, vel, omega, push, ball, par, fans, fanpar, props, scene, ma
     props (K, 20): mass, friction, elasticity, linear damping, angular damping, inertia, shape (0 sphere, 1 box),
     half extents, the box's three axes in world, 1 if it is on a rail (it only slides along its own y axis), then
     [20] the first piece of its body (-1: a body of one piece), [21] its role (0 ordinary; 1 a part that does not touch
-    the level's mesh; 2 a fixed part that only touches its mechanism's parts of role 1; 4 a stopper: it touches every
+    the level's mesh; 2 fixed, only with its mechanism's role 1 parts; 3 fixed in its opening pose; 4 a stopper: it touches every
     body but the player ball), [22] which mechanism, [23] how many triangles its hull has (0: it is the box), [24] 1
     if it turns about a fixed hinge, [25:28] the hinge's point, [28:31] its axis, [31] the inertia about it, [32:35]
     the piece's centre as it was put, [35:38] the body's mass centre as it was put, [38] how many hull corners, then
@@ -605,7 +605,7 @@ def _multi_tick(pos, vel, omega, push, ball, par, fans, fanpar, props, scene, ma
         om *= 1.0 - kd * dt
         _hinge_pose(bc, bp, bv, bw, props, nb, b, th, om)
     for b in range(nb):
-        if bc[b, 7] == 0.0 or bc[b, 26] == 2.0 or bc[b, 26] == 4.0 or bc[b, 39] != 0.0:     # (a fixed part never moves; a hinged one is done)
+        if bc[b, 7] == 0.0 or bc[b, 26] >= 2.0 or bc[b, 39] != 0.0:     # (a fixed part never moves; a hinged one is done)
             continue
         mx, my, mz = bv[b, 0] * dt, bv[b, 1] * dt, bv[b, 2] * dt
         qx, qy, qz = bp[b, 0] + mx, bp[b, 1] + my, bp[b, 2] + mz
@@ -1099,7 +1099,7 @@ def _multi_tick(pos, vel, omega, push, ball, par, fans, fanpar, props, scene, ma
     for b in range(1, nb):
         k = int(bc[b, 6])
         bc[b, 28] = -1.0                                  # [28]: 1 if it may freeze now, 0 if not, -1 if it is not written back
-        if bc[b, 7] == 0.0 or bc[b, 26] == 2.0:
+        if bc[b, 7] == 0.0 or bc[b, 26] >= 2.0:
             continue                                      # (a fixed part stays as it is: frozen)
         for q in range(3):
             scene[k, q], scene[k, 3 + q], scene[k, 6 + q] = bp[b, q], bv[b, q], bw[b, q]
@@ -1403,6 +1403,10 @@ class World:
         s = np.zeros((len(self.props), 11))
         for k, p in enumerate(self.props):
             s[k, :3] = p["rest"]
+            if p.get("gone"):
+                s[k, 9] = 2.0
+            elif p.get("settled") is False:
+                s[k, 9] = 1.0
         return s
 
     def spheres_on(self, ball) -> np.ndarray:

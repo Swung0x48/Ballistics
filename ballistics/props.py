@@ -10,7 +10,7 @@ The rules, with their grounds as the catalogue marks them:
 
 * Only the current sector's loose balls are there (READ). The sector's are made where they were put, awake; most
   drop a little and settle, then freeze (READ, MEASURED on the rebuilt engine). Here they start settled and
-  frozen: `of` lets each one fall from where it was put until it lies still.
+  frozen when supported: `of` finds their first support by a vertical geometric sweep.
 * A frozen one is not a wall: struck, it takes its share of the impact in that very tick and is awake (MEASURED on
   the original engine's records: a wood ball at 4.835 gives a frozen stone one 0.888 in the tick; here 0.863).
 * Two balls striking: along the line of centres by their masses, with a restitution of the root of the product of
@@ -30,7 +30,7 @@ KINDS = {"P_Ball_Wood": "wood", "P_Ball_Stone": "stone", "P_Ball_Paper": "paper"
 RADIUS = 2.0
 LOCKED = 1e30            # the inertia of a body that does not turn
 INERTIA = {"wood": 0.4, "stone": 0.4, "paper": 0.277}      # of mass x radius^2: solid spheres; the paper hull's (catalogue rule rigid_body_mass)
-SETTLE_TICKS = 1320                                        # at most this long to come to rest where they were put (10 game s)
+BALL_REST_SLOPE = np.tan(np.radians(0.1))   # ASSUMED flatness tolerance, not a friction threshold
 # What going through a loose ball costs the coarse level, as way at the follower's pace: ASSUMED, only to rank ways
 # (from what a wood ball keeps of its speed: 0.9 against a paper one, 0.4 against a wood one, next to nothing
 # against a stone one, which it can only shove along slowly). Whether and how it gets through is the kernel's to say.
@@ -146,8 +146,8 @@ def stoppers(info: dict, sector=None) -> list:
     return out
 
 
-def part_boxes(info: dict, shapes, sector=None) -> list:
-    """The parts of the mechanisms in PARTS, as pieces that slide and do not turn: [dict(kind (the part's name),
+def part_boxes(info: dict, shapes, sector=None, *, include_t_board=False) -> list:
+    """The placed pieces of the mechanisms in PARTS (optionally including the T-board): [dict(kind (the part's name),
     name, body (the pieces of one body share it), sector, placed (centre), half, axes, slider, role, mech (which
     mechanism, from 1), tris)], the sector's or all. A part without hulls is read from a mesh that still has the
     placed shapes; one with hulls from the map's hulls."""
@@ -155,13 +155,17 @@ def part_boxes(info: dict, shapes, sector=None) -> list:
     hulls = info.get("hulls", ())
     for m, p in enumerate(info.get("placements", ())):
         parts = PARTS.get(p["type"])
+        if include_t_board and p["type"] == "P_Modul_37":
+            # Region-only state change; in --roll this was fixed geometry and still is.
+            parts = {"P_Modul_37_Bridge": dict(hulls=True, role=3)}
         if not parts or (sector is not None and p.get("sector") != sector):
             continue
         axes = np.array([np.array(p[k], float) / np.linalg.norm(p[k]) for k in ("x_axis", "y_axis", "z_axis")])
         for part, spec in parts.items():
             body = "%s/%s" % (p["name"], part)
             if spec.get("hulls"):
-                hs = [h for h in hulls if h["placement"] == p["name"] and h["body"] == part]
+                hs = [h for h in hulls if h["placement"] == p["name"] and h["body"] == part
+                      and (spec.get("role") != 3 or h.get("frame") is not None)]
                 pieces = [_piece(part, "%s/%s" % (body, h["mesh"]), body, p, axes, np.array(h["vertices"], float), spec, m + 1, hull=True) for h in hs]
                 if spec.get("hinge") and hs:
                     cb = next(x for x in things.load()[p["type"]].bodies if x["name"] == part)
@@ -185,43 +189,148 @@ def part_boxes(info: dict, shapes, sector=None) -> list:
     return out
 
 
+
+def _rotation(axis, angle):
+    """Rodrigues rotation, acting on column vectors."""
+    x, y, z = axis
+    c, s = np.cos(angle), np.sin(angle)
+    return c * np.eye(3) + (1. - c) * np.outer(axis, axis) + s * np.array([[0., -z, y], [z, 0., -x], [-y, x, 0.]])
+
+
+def _opening_pose(b, entry, frame):
+    """Centre, turn, and catalogue state for one piece (axes/tris stay in the placed frame for a live hinge)."""
+    kind = entry.id
+    placed = np.asarray(b["placed"])
+    if kind == "P_Modul_01":           # at_rest: the slider settles onto the groove, without opening
+        if b["kind"] == "P_Modul_01_Pusher":
+            placed = placed - np.asarray(b["axes"][1]) * entry.numbers["slider_settle"]["v"]
+        return placed, np.eye(3), "at_rest"
+    if kind == "P_Modul_34":           # standing: both settle at wake, without the block dropping
+        if b["kind"] == "P_Modul_34_Kiste":
+            placed = placed - (0., entry.numbers["crate_settle"]["v"], 0.)
+        else:
+            placed = placed - np.asarray(b["axes"][1]) * entry.numbers["block_settle"]["v"]
+        return placed, np.eye(3), "standing"
+    if kind == "P_Modul_37":           # standing: foot leans toward the road (+local X)
+        axis = np.asarray(b["axes"])[2]
+        pivot = np.asarray(frame)[3, :3]
+        angle = -np.radians(entry.numbers["standing_lean_deg"]["v"])
+        state = "standing"
+    else:
+        axis, pivot = (np.asarray(b["hinge"][k]) for k in ("axis", "anchor"))
+        if kind == "P_Modul_25":       # leaning: wedge on the approach road
+            angle = np.radians(entry.numbers["lean_rest_deg"]["v"])
+            state = "leaning"
+        else:                          # low_home: the local -X end is low
+            bx = np.asarray(frame)[0, :3]    # the board's (not the placement's) already tilted X axis
+            horizontal = np.cross((0., 1., 0.), axis)
+            if horizontal @ b["axes"][0] < 0.:
+                horizontal = -horizontal
+            old = np.arctan2(bx @ np.cross(axis, horizontal), bx @ horizontal)
+            target = np.radians(entry.numbers["rest_angle"]["v"])
+            target *= np.sign(np.cross(axis, horizontal)[1])
+            angle = target - old
+            state = "low_home"
+    turn = _rotation(axis, angle)
+    return pivot + turn @ (placed - pivot), turn, state
+
+
+# Twelve outward triangles of an oriented box, indexed by the binary signs of the corners.
+_BOX_FACES = ((0, 1, 3), (0, 3, 2), (4, 6, 7), (4, 7, 5), (0, 4, 5), (0, 5, 1),
+              (2, 3, 7), (2, 7, 6), (0, 2, 6), (0, 6, 4), (1, 5, 7), (1, 7, 3))
+_BOX_SIGNS = np.array([(x, y, z) for x in (-1, 1) for y in (-1, 1) for z in (-1, 1)])
+
+
+def _support_tris(b, turn):
+    """World-space surfaces at the opening pose (including a hinged piece's rotation)."""
+    if b.get("tris"):
+        local = np.asarray(b["tris"]).reshape(-1, 3, 3)
+    else:
+        corners = (_BOX_SIGNS * b["half"]) @ b["axes"]
+        local = corners[np.asarray(_BOX_FACES)]
+    return local @ turn.T + b["rest"]
+
+
+def _drop_loose(mesh, loose, supports, floor_friction):
+    from .geometry import vertical_candidates, vertical_support
+
+    # Lower boxes before upper ones (by the placed bottom), then balls. A sliding/falling body is not a support.
+    def bottom(b):
+        return b["placed"][1] - np.asarray(b["half"]) @ np.abs(np.asarray(b["axes"])[:, 1])
+
+    boxes = sorted((b for b in loose if b["shape"] == "box"), key=bottom)
+    balls = [b for b in loose if b["shape"] == "sphere"]
+    for b in (*boxes, *balls):
+        centre = np.array(b["placed"])
+        if b["shape"] == "box":
+            half, axes = np.asarray(b["half"]), np.asarray(b["axes"])
+            shape = dict(axes=axes, half=half)
+            reach = half @ np.abs(axes[:, [0, 2]])
+        else:
+            shape, reach = dict(radius=RADIUS), RADIUS
+        ix = vertical_candidates(mesh, centre, reach)
+        tris = [np.stack((mesh.A[ix], mesh.B[ix], mesh.C[ix]), axis=1)]
+        fr = [[float(mesh.entities[mesh.owner[i]].get("friction", floor_friction)) if mesh.entities else floor_friction for i in ix]]
+        for t, mu in supports:
+            tris.append(t)
+            fr.append(np.full(len(t), mu))
+        hit = vertical_support(np.concatenate(tris), np.concatenate(fr), centre, **shape)
+        b["gone"] = hit is None
+        b["settled"] = False
+        if hit is not None:
+            b["rest"][1], ny, mu = hit
+            # Coulomb friction can balance downslope force on a box. For a sphere it supplies rolling torque,
+            # not static equilibrium on a slope; only the flatness tolerance above is allowed.
+            limit = b["friction"] * mu if b["shape"] == "box" else BALL_REST_SLOPE
+            b["settled"] = bool(np.sqrt(max(0., 1. - ny**2)) <= limit * ny + 1e-12)
+            if b["settled"] and b["shape"] == "box":
+                supports.append((_support_tris(b, np.eye(3)), b["friction"]))
+
+
 def of(info: dict, sector, mesh=None, shapes=None) -> list:
-    """The loose bodies that are there while `sector` is the current one: the loose balls, the boxes and the box-shaped
-    parts of mechanisms: [dict(name, kind, mass, ..., placed, rest)]. `rest` is where the body lies once it has
-    settled: with a mesh (the fixed geometry, without the bodies' own shapes) each is let fall from where it was
-    put; without one it is where it was put. shapes: a mesh that still has the placed shapes, for the mechanisms'
-    parts. sector None: none."""
+    """Opening poses of the sector's mechanisms and loose props; no time integration.
+
+    `mesh` is the fixed geometry, `shapes` still includes placed entities. Without a mesh only the mechanisms
+    have a catalogue opening pose; the loose balls and boxes retain their placement.
+    """
     if sector is None:
         return []
-    table = bodies()
-    out = []
-    cat = things.load()
-    first: dict = {}
-    for b in part_boxes(info, shapes, sector):
-        c = next(x for x in cat[b["kind"][:10]].bodies if x["name"] == b["kind"])           # "P_Modul_34"
-        fixed = b["role"] == 2
-        # every piece of a body carries the body's mass: they move as one (`kernel._multi_tick`)
-        out.append(dict(b, shape="box", mass=LOCKED if fixed else float(c["mass"]["v"]), friction=float(c["friction"]["v"]), elasticity=float(c["elasticity"]["v"]),
-                        lin_damp=float(c["lin_damp"]["v"]), rot_damp=float(c["rot_damp"]["v"]), inertia=LOCKED, rest=list(b["placed"]),
-                        leader=-1 if fixed else first.setdefault(b["body"], len(out))))
+    table, cat = bodies(), things.load()
+    out, loose, supports = [], [], []
+    first = {}
+    frames = {(h["placement"], h["body"]): h["frame"] for h in info.get("hulls", ()) if h.get("frame") is not None}
+    for b in part_boxes(info, shapes, sector, include_t_board=True):
+        entry = cat[b["kind"][:10]]
+        c = next(x for x in entry.bodies if x["name"] == b["kind"])
+        fixed = b["role"] in (2, 3)
+        rest, turn, state = _opening_pose(b, entry, frames.get(tuple(b["body"].rsplit("/", 1))))
+        p = dict(b, shape="box", mass=LOCKED if fixed else float(c["mass"]["v"]), friction=float(c["friction"]["v"]),
+                 elasticity=float(c["elasticity"]["v"]), lin_damp=float(c["lin_damp"]["v"]), rot_damp=float(c["rot_damp"]["v"]),
+                 inertia=LOCKED, rest=rest.tolist(), settled=True, gone=False, opening_state=state,
+                 leader=-1 if fixed else first.setdefault(b["body"], len(out)))
+        if b["role"] != 2:                       # the gate groove only collides with the gate
+            supports.append((_support_tris(p, turn), p["friction"]))
+        if b["role"] == 3:                       # T-board only changes pose in the region state graph
+            p["axes"] = (np.asarray(p["axes"]) @ turn.T).tolist()
+            if p.get("tris"):
+                p["tris"] = (np.asarray(p["tris"]).reshape(-1, 3, 3) @ turn.T).reshape(-1, 9).tolist()
+        out.append(p)
     for p in info.get("placements", ()):
         kind = KINDS.get(p["type"])
         if kind and p.get("sector") == sector:
             body = dict(table[kind], name=p["name"], placed=[float(v) for v in p["position"]], rest=[float(v) for v in p["position"]])
-            if body["shape"] == "box":                       # the box's own axes, as it was put
-                unit = dict(x_axis=(1.0, 0.0, 0.0), y_axis=(0.0, 1.0, 0.0), z_axis=(0.0, 0.0, 1.0))
-                body["axes"] = [[float(v) for v in np.array(p.get(k, unit[k]), float) / np.linalg.norm(p.get(k, unit[k]))] for k in unit]
-            out.append(body)
-    if out:                                              # what stops the mechanisms' parts and the props (not the player ball)
-        out += stoppers(info, sector)
-    if mesh is not None and out:
-        from .kernel import World
-        w = World.of(mesh, stop_on_placed=False, props=out)
-        scene = w.scene()
-        scene[:, 9] = [0.0 if b.get("role") in (2, 4) else 1.0 for b in out]       # awake where they were put (a fixed part never is)
-        w.idle(scene, SETTLE_TICKS)
-        for k, b in enumerate(out):
-            b["rest"] = [float(v) for v in scene[k, :3]]
-            b["settled"] = bool(scene[k, 9] == 0.0)        # False: still moving after SETTLE_TICKS (a slope), or fell out
-            b["gone"] = bool(scene[k, 9] == 2.0)
+            if body["shape"] == "box":
+                axes = np.array([p.get(k + "_axis", e) for k, e in zip("xyz", np.eye(3))], float)
+                body["axes"] = (axes / np.linalg.norm(axes, axis=1)[:, None]).tolist()
+            loose.append(body)
+    out += loose
+    if out:
+        for stopper in stoppers(info, sector):
+            out.append(dict(stopper, settled=True, gone=False))
+            supports.append((_support_tris(stopper, np.eye(3)), stopper["friction"]))
+    if mesh is not None and loose:
+        # The catalogue gives standard floor x box friction 0.49 = 0.7 x 0.7; use the actual surface's material
+        # where exported (including on other supports), with the catalogue floor as the missing-material fallback.
+        floor_fr = cat["P_Box"].numbers["floor_friction"]["v"] / table["box"]["friction"]
+        _drop_loose(mesh, loose, supports, floor_fr)
     return out

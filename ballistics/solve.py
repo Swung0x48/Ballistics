@@ -35,18 +35,18 @@ def world_for(mesh: Mesh, info: dict, mode: str, sector: int | None = None) -> W
     mesh = coarse.in_sector(mesh, sector)             # the sector's domes are fixed geometry; other sectors' are not there
     shapes = mesh                                     # with the placed shapes still in it: where the mechanisms' parts are
     mesh = coarse.without_loose(mesh)                 # the loose bodies are bodies (strict) or not there (free): never fixed shapes
-    # letting them settle takes a moment: kept per sector, by what the loose bodies are and what they stand on
-    key = (sector, len(mesh.A), float(mesh.A.sum()) if len(mesh.A) else 0.0,
-           tuple((q.get("name"), q["type"], tuple(q["position"])) for q in info.get("placements", ())
-                 if (q["type"] in props.KINDS or q["type"] in props.PARTS) and q.get("sector") == sector))
-    if solid_balls and key not in _PROPS:
-        _PROPS[key] = props.of(info, sector, mesh.subset(~mesh.placed) if mesh.placed.any() else mesh, shapes)
-    # the transformers in place: the sector's own (`ballistics.trafo`); without a sector, every one of the map
-    return World.of(mesh, info["death_boxes"], fans=fans.of(info, sector), trafos=trafo.of(info, sector),
-                    props=_PROPS[key] if solid_balls else None)
-
-
-_PROPS: dict = {}
+    # Strict sectors replace the T-board's placed obstacle by its catalogue opening pose. Keep the coarse mesh
+    # and its cache unchanged. Do not discard a placed board that has no exported hull.
+    if solid_balls and sector is not None:
+        t_boards = {h["placement"] for h in info.get("hulls", ()) if h.get("body") == "P_Modul_37_Bridge"
+                    and h.get("frame") is not None and h.get("sector") == sector}
+        if t_boards:
+            posed = np.array([e.get("placement") in t_boards and e.get("name") == "P_Modul_37_Bridge"
+                              and bool(e.get("placed")) for e in mesh.entities])
+            mesh = mesh.subset(~posed[mesh.owner])
+    bodies = props.of(info, sector, mesh.subset(~mesh.placed) if mesh.placed.any() else mesh, shapes) if solid_balls else None
+    # The transformers in place: the sector's own (`ballistics.trafo`); without a sector, every one of the map.
+    return World.of(mesh, info["death_boxes"], fans=fans.of(info, sector), trafos=trafo.of(info, sector), props=bodies)
 
 
 def props_parts(info: dict, shapes) -> list:

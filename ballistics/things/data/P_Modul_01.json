@@ -212,6 +212,15 @@
    "src": "measurement",
    "engine": "rebuilt"
   },
+  "slider_settle": {
+   "label_zh": "未推开的滑块醒后下沉",
+   "v": 0.085,
+   "unit": "",
+   "note_zh": "取自状态机 at_rest 到 at_rest 的邻近唤醒转换；沿槽底法向下沉，沿槽的推开量仍为零。",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
   "stroke": {
    "label_zh": "满程（实测停住的位置）",
    "v": [

@@ -164,6 +164,24 @@
    "basis": "DERIVED",
    "how_zh": "路块在机关模板里的偏移；四个方向的翻转点实测相合"
   },
+  "crate_settle": {
+   "label_zh": "没推过的箱子醒后下沉",
+   "v": 0.45,
+   "unit": "",
+   "note_zh": "取自状态机里“立着 → 立着”的邻近唤醒转换；只有竖直下沉，没有转动",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
+  "block_settle": {
+   "label_zh": "未落的路块醒后下沉",
+   "v": 0.66,
+   "unit": "",
+   "note_zh": "取自状态机里“立着 → 立着”的邻近唤醒转换；路块沿自身滑轨沉降后仍压着箱子，不是推开箱子后的落程。",
+   "basis": "MEASURED",
+   "src": "measurement",
+   "engine": "rebuilt"
+  },
   "drop_distance": {
    "label_zh": "路块的落程（第 10 关实测）",
    "v": 4.78,
