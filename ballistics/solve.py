@@ -1971,14 +1971,16 @@ def seesaw_edges(g, info: dict, parts: list) -> dict:
     return out
 
 
-def graph_for(mesh: Mesh, info: dict, cache: Path | None = None, log=print, *, legacy_takeoff=False):
+def graph_for(mesh: Mesh, info: dict, cache: Path | None = None, log=print, *, legacy_takeoff=False, retained_archive=None):
     """The coarse graph of a map: the domes are geometry, the loose balls are not obstacles but cost to go through,
     a stone transformer costs its transformation, a paper transformer is kept out of."""
     mesh = coarse.in_sector(mesh)                         # the domes are geometry for the coarse level too (in every sector: it has one graph)
     parts = props_parts(info, mesh)                       # the mechanisms' box-shaped parts, where their shapes are
     mesh = coarse.without_loose(mesh)                     # the loose bodies are bodies: no obstacles, but going through one costs (below)
     fixed = mesh.meta.get("fixed_bodies")
-    from . import props, trafo
+    from . import props, trafo, retained
+    archive=retained.archive_for(info,retained_archive) if not legacy_takeoff else None
+    priorities=retained.priority_points(info) if not legacy_takeoff else ()
     from .takeoff import RULE as TAKEOFF_RULE, add_launches
     marks = dict(fixed_bodies=fixed, transformers="wood and stone ones can be gone through, at the cost of the transformation",
                  loose_balls="bodies: gone through at a cost %s; parts of %s" % (sorted(props.COARSE_COST.items()), sorted(props.PARTS)),
@@ -1987,6 +1989,8 @@ def graph_for(mesh: Mesh, info: dict, cache: Path | None = None, log=print, *, l
                  seesaw_rule="a seesaw is crossed from its low end to beyond its high end, cost %.1f more; kept apart, by state" % SEESAW_COST,
                  state_rule="board, seesaw and gate edges and the transformations' costs are in the state graph, not the graph's own edges",
                  launch_rule=TAKEOFF_RULE,
+                 retained_archive_version=retained.version(archive),
+                 target_priorities=priorities,
                  launch_backend="legacy_diagnostic" if legacy_takeoff else "shared_nodes",
                  lift_rule="fan lifts for a paper ball, ridden by their legs, with the kind they end in (exits 4 to 32 out, -1.5 to 25 up, always those by a transformer; two fans in a row within %.0f, braking %s): waits %s, %d entries and %d exits per fan, unsure x%.1f" % (LIFT_CHAIN, LIFT_CHAIN_BRAKES, LIFT_WAITS, LIFT_ENTRIES, LIFT_EXITS, LIFT_UNSURE))
     if cache is not None and cache.exists():
@@ -2009,7 +2013,9 @@ def graph_for(mesh: Mesh, info: dict, cache: Path | None = None, log=print, *, l
     log('conformal search: %d road nodes, %d rail pieces, %d geometric portals' %
         (len(layout.roads),len(layout.rail_segments),len(layout.portals)))
     if not legacy_takeoff:
-        sharedsearch.add(takeoff,g,obs,layout,log=log)
+        sharedsearch.add(takeoff,g,obs,layout,log=log,target_priorities=priorities)
+        g.info['takeoff_stats']['retained']=retained.attach(takeoff,g,archive,info)
+        log("retained witnesses: %s" % g.info['takeoff_stats']['retained'])
     else:
         R = trafo.rules()
         ball_at = {}

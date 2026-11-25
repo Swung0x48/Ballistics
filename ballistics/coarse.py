@@ -721,6 +721,7 @@ class StateGraph:
         guards = guards or {}
         from . import takeoff
         self.launch_cost = {}
+        self.launch_evidence = {}
         self.terrain_masks = {}
         terrain_masks = g.info.get("terrain_ball_masks", {})
         if launch_eligible is None:
@@ -742,8 +743,10 @@ class StateGraph:
                     # The pair is shared by geometry/region readers, but the state graph
                     # must use only the current ball's variant in either search direction.
                     if es and all("flight_ticks" in e for e in es):
-                        costs = {KIND_INDEX[e["ball"]]: float(c) + takeoff.cost(e) - takeoff.cost(es[0]) for e in reversed(es)
-                                 if launch_eligible(gu, v_, e)}
+                        allowed = {KIND_INDEX[e["ball"]]: e for e in reversed(es) if launch_eligible(gu, v_, e)}
+                        costs = {kind: float(c) + takeoff.cost(e) - takeoff.cost(es[0]) for kind,e in allowed.items()}
+                        for kind,e in allowed.items():
+                            self.launch_evidence[u,v,kind] = e.get('witness_status','legacy_unclassified')
                         required = int(trafo_kind[gu])
                         if required >= 0:
                             costs = {k: val for k, val in costs.items() if k == required}

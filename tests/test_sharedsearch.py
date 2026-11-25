@@ -39,7 +39,9 @@ def test_shared_graph_does_not_project_unchecked_candidates():
     sharedsearch.add(tf,g,obs,layout)
     stats=g.info['takeoff_stats']; assert stats['candidate_edges']>0
     assert g.info['launches']
-    assert stats['projected_edges']<=stats['witness_edges']<stats['candidate_edges']
+    assert 0<stats['witness_edges']<=stats['candidate_edges']
+    assert stats['projected_edges']<=sum(map(len,g.info['shared_motion_graph']['witnesses'].values()))
+    assert stats['live_joint_entrance_families']>0
     for u,v in g.info['launches']:
         for e in tf.variants(g,u,v):
             assert e['verified'] and e['flight_ticks']>0 and e['across']>0 and np.isfinite(e['down'])

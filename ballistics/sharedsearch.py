@@ -85,7 +85,7 @@ def _lines(item):
         for g in item.geoms:yield from _lines(g)
 
 
-def _lip_track(tf,ball,patch,obs,f,a,b,*,bend=None):
+def _lip_track(tf,ball,patch,obs,f,a,b,*,bend=None,on_release=None):
     """One finite literal representative, from a whole rest patch.
 
     From rest a held key has a fixed tangent. Intersect its backwards ray
@@ -118,6 +118,8 @@ def _lip_track(tf,ball,patch,obs,f,a,b,*,bend=None):
     if state!='clear':return None,'rim_'+state
     st=rim.start
     if not rim.angle:st=ph.State(st.pos+8*EPS*(rim.outward+rim.normal),st.vel,st.omega)
+    if on_release is not None:
+        on_release(rim,st,ticks+rim.seconds/ph.DT,push,distance,(motion.rolling(start,law.impulse,law.loss,ticks),rim.motion()))
     limit=cf.landing_step(ball,st,min(obs.bottom-r,st.pos[1]-r))
     if not limit:return None,'no_air_horizon'
     air=tf.trace_air(obs,ball,st,((float(limit),push),),rim=rim)
@@ -230,7 +232,7 @@ def display_way(tf,pieces,source,target):
 
 
 
-def add(tf, g,obs,layout, *, log=lambda *_:None):
+def add(tf, g,obs,layout, *, log=lambda *_:None, target_priorities=()):
     """Generate and propagate the bounded v24 shared catalogue.
 
     One union edge per ordered node pair. Unverified edges stay in the
@@ -238,7 +240,9 @@ def add(tf, g,obs,layout, *, log=lambda *_:None):
     """
     surface=g.info['conformal']; t0=perf_counter(); chains,parts=chain_nodes(layout)
     features=release_features(surface,layout)
-    stats=Counter(); candidates=defaultdict(set); witnesses=defaultdict(list); envelope={}; example=None
+    from .targetinverse import Priorities
+    priority=Priorities(layout,surface,g,target_priorities)
+    stats=Counter(); candidates=defaultdict(set); witnesses=defaultdict(list); envelope={}; example=None; momentum_seeds=[]
     rest={node for node,row in layout.roads.items() if row.rest_patches}
     by_ball={b.name:b for b in ph.BALLS.values()}
     # Risky or steep seams are candidate portals, not certified rolling.
@@ -258,8 +262,11 @@ def add(tf, g,obs,layout, *, log=lambda *_:None):
                     r=ball.radius+sc.SKIN; low=np.minimum(a,b)+r*p.normal; high=np.maximum(a,b)+r*p.normal
                     lows.append(low);highs.append(high)
                     stats['lip_features']+=1
-                    result,why=_lip_track(tf,ball,p,obs,f,a,b,bend=bend);stats[why]+=1
+                    inverse=(lambda *args:priority.from_release(tf,ball,obs,node,k,*args)) if node in priority.points else None
+                    result,why=_lip_track(tf,ball,p,obs,f,a,b,bend=bend,on_release=inverse);stats[why]+=1
                     if result is None:continue
+                    result['source_patch']=k
+                    momentum_seeds.append((node,result))
                     k2=int(surface.face_patch[result['face']]); other=layout.patch_nodes[name].get(k2)
                     if other is None:
                         stats['unsupported_motion_transfer']+=1
@@ -298,6 +305,13 @@ def add(tf, g,obs,layout, *, log=lambda *_:None):
             candidates[node].update(x for x in _air_candidates(tf,ball,lo,hi,speed,index) if x!=node)
         log('shared launches %s: %d candidate pairs, %d first-support witnesses' %
             (name,sum(len(v) for k,v in candidates.items() if k.ball==name),sum(len(v) for (k,_),v in witnesses.items() if k.ball==name)))
+    for a,b,row in priority.rows:
+        witnesses[a,b].append(row); candidates[a].add(b)
+    log('target inverse: %d attempts, %d literal witnesses' % (len(priority.attempts),len(priority.rows)))
+    from . import momentum
+    entries,continuations,momentum_stats,momentum_example=momentum.wave(tf,g,obs,layout,chains,momentum_seeds,log=log)
+    for (a,b),rows in continuations.items():
+        witnesses[a,b].extend(rows); candidates[a].add(b)
     # One fixed label per destination support chart in this relaxation.
     # Each arrival is a tag for the outer template, not a realized state.
     # Node+role is the key, never the centre or raw velocity.
@@ -317,11 +331,12 @@ def add(tf, g,obs,layout, *, log=lambda *_:None):
             old=projected[u,v].get(src.ball)
             if old is not None and old['ticks']<=row['ticks']:continue
             edge=dict(site=u,ball=src.ball,ticks=row['ticks'],time=row['ticks']/132.,flight_ticks=row['flight_ticks'],
-                      verified=True,representative='shared_literal_first_support',launch_position=row['launch'],launch_velocity=row['velocity'],
+                      verified=True,witness_status='literal_confirmed',representative='shared_literal_momentum' if row.get('continued') else 'shared_literal_inverse' if row.get('inverse') else 'shared_literal_first_support',launch_position=row['launch'],launch_velocity=row['velocity'],
                       launch_speed=float(np.linalg.norm(row['velocity'])),landing_position=row['position'],landing_face=row['face'],
                       first_landing_node=v,motion=row['motion'],contacts=row['contacts'],way=display_way(tf,row['motion'],g.pos[u],g.pos[v]),
                       across=float(np.linalg.norm((row['position']-row['launch'])[XZ])),down=float(row['launch'][1]-row['position'][1]),
-                      key_table=row['key_table'],keys_in_air=row['key_table'][0][1],air_inputs=(row['key_table'][0][1],),switch_tick=0,
+                      key_table=row['key_table'],keys_in_air=row['key_table'][-1][1],air_inputs=tuple(x[1] for x in row['key_table']),
+                      switch_tick=row['key_table'][0][0] if len(row['key_table'])>1 else 0,
                       runup=row['runup'],rim_ticks=row['rim_ticks'],bounce_count=0,rail_support_prefix_ticks=0.)
             projected[u,v][src.ball]=edge
     launches={}
@@ -330,8 +345,9 @@ def add(tf, g,obs,layout, *, log=lambda *_:None):
         g.adj[u].append((v,tf.cost(rows[0]),'launch'))
     g.info['launches']=launches
     g.info['shared_motion_graph']=dict(chains=chains,segments_to_chain=parts,candidates={a:frozenset(bs) for a,bs in candidates.items()},
-                                       witnesses=dict(witnesses),rest=rest,release_outer=envelope,example=example)
+                                       witnesses=dict(witnesses),rest=rest,release_outer=envelope,example=example,
+                                       momentum_entries=entries,momentum_example=momentum_example,target_inverse=priority.attempts)
     detail=dict(stats,rail_nodes_before=len(parts),rail_nodes_after=len(chains),road_nodes=len(layout.roads),
                 candidate_edges=sum(map(len,candidates.values())),witness_edges=len(witnesses),projected_edges=len(launches),
-                expanded_abstract_labels=len(expanded),covered_abstract_labels=covered,live_joint_entrance_families=0,seconds=perf_counter()-t0)
+                expanded_abstract_labels=len(expanded),covered_abstract_labels=covered,live_joint_entrance_families=len(entries),momentum=momentum_stats,inverse_attempts=len(priority.attempts),inverse_witnesses=len(priority.rows),seconds=perf_counter()-t0)
     g.info['takeoff_stats']=detail;log('shared takeoff: %s' % detail)

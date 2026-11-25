@@ -648,6 +648,14 @@ def summary_links(res: dict) -> dict:
     """Step 2 as plain data: the links between the sector's regions, and the way with the fewest breaks."""
     P, R = res["places"], res["R"]
     links = []
+    def launch_proof(key,e):
+        if key is None or e is None or key[0]!='plain':return {}
+        u,v=e['at']
+        if key[3] in BREAK:
+            return {'missing_witness': True, 'missing_from': _r1(P[u]), 'missing_to': _r1(P[v])}
+        if key[3]!='launch':return {}
+        evidence=getattr(res.get('sg'),'launch_evidence',{}).get((u,v,key[5]))
+        return {'witness_status':evidence} if evidence is not None else {}
     for key, e in sorted(res["links"].items(), key=lambda kv: (kv[0][1], kv[0][2], str(kv[0]))):
         ride = e.get("elevator")
         desc = describe(key, ride=ride)
@@ -655,12 +663,12 @@ def summary_links(res: dict) -> dict:
             flights = [r["gap"] for r in e["elevator_exits"].values() if r["flight"]]
             if flights:
                 desc += "; alternate exits " + _elevator_flight(min(flights), upper=max(flights))
-        links.append(dict(**{"from": R.name(key[1]), "to": R.name(key[2])}, what=desc, cost=round(e["cost"], 1), count=e["count"],
+        links.append(dict(**{"from": R.name(key[1]), "to": R.name(key[2])}, what=desc, cost=round(e["cost"], 1), count=e["count"], **launch_proof(key,e),
                           at=[[round(float(x), 2) for x in P[e["at"][0]]], [round(float(x), 2) for x in P[e["at"][1]]]],
                           is_break=bool(key[0] == "plain" and key[3] in BREAK), big=bool(min(res["regions"][key[1]]["places"], res["regions"][key[2]]["places"]) >= BIG)))
     return dict(sector=res["sector"], entry_kind=res["entry_kind"], exit_kind=res.get("exit_kind"), start_region=R.name(res["start"][0]), goal_regions=[R.name(r) for r in res["goal_regions"]],
                 fewest_breaks=res["breaks"], breaks_by_entry_and_exit_kind=res.get("options"),
-                way=[dict(region=R.name(r), kind=KINDS[k], mechanism_bits=b, by=what, link=describe(key, ride=res["links"].get(key, {}).get("elevator"))) for r, k, b, what, key in res["path"]],
+                way=[dict(region=R.name(r), kind=KINDS[k], mechanism_bits=b, by=what, link=describe(key, ride=res["links"].get(key, {}).get("elevator")), **launch_proof(key,res["links"].get(key))) for r, k, b, what, key in res["path"]],
                 coarse_plan=[dict(region=R.name(p["region"]) if p["region"] >= 0 else None, kind=p["kind"], mechanism_bits=p["bits"], by=p["how"], at=_r1(p["at"]))
                              for p in res["plan"]],
                 links=[{k: v for k, v in l.items() if k not in ("is_break", "big")} for l in links if not l["is_break"]],
