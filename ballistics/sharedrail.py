@@ -62,8 +62,19 @@ def _free_rebound(paths, contact):
         (contact.crown is not None and not contact.crown.get('supported',False)))
 
 
-def _trace(tf,paths,ball,dep,key,clock,*,rail_arrival=False,diagnostic=None):
+def _bounce_prefix(dep, previous):
+    # A genuine supported run ends the previous airborne episode. A lone
+    # contact impulse (including one between shared rail runs) does not.
+    if dep.kind=='rail_rebound':return previous+1
+    return 0 if any(p.get('ticks',0.)>EPS for p in dep.pieces) else previous
+
+
+def _trace(tf,paths,ball,dep,key,clock,*,rail_arrival=False,diagnostic=None,flight_key=None,prior_bounces=0):
     st=dep.body
+    used_bounces=_bounce_prefix(dep,prior_bounces)
+    if used_bounces>tf.MAX_BOUNCES:
+        if diagnostic is not None:diagnostic.update(budget_exhausted=True)
+        return None,'rail_bounce_limit'
     if dep.kind=='foldback':return None,'unresolved_rail_transition'
     if dep.kind=='crown_twin':
         # The second tube is a co-support, not a new launch or bounce.
@@ -72,14 +83,27 @@ def _trace(tf,paths,ball,dep,key,clock,*,rail_arrival=False,diagnostic=None):
         if diagnostic is not None:
             diagnostic.update(contacts=joined['contacts'],clearance=0.,budget_exhausted=False,
                               trajectory=tuple(x for r in dep.pieces for x in r['motion']))
-        return dict(joined,flight_ticks=0.),'rail_support_continues'
+        return dict(joined,flight_ticks=0.,episode_bounces=used_bounces),'rail_support_continues'
     limit=cf.landing_step(ball,st,min(paths.obs.bottom-ball.radius-sc.SKIN,st.pos[1]-ball.radius))
     if not limit:return None,'rail_no_air_horizon'
-    q=paths.air(tf,ball,dep,controls=lambda _:((float(limit),key),),clock=clock,diagnostics=diagnostic is not None,allow_zero_rail=rail_arrival)
+    departure_tick=clock+dep.tick
+    switch=math.ceil(departure_tick)
+    wait=switch-departure_tick
+    schedule=((float(limit),key),)
+    if flight_key is not None and limit>wait+EPS:
+        schedule=(*(((wait,key),) if wait>EPS else ()),(float(limit),flight_key))
+    budget={'bounce_budget':tf.MAX_BOUNCES-used_bounces} if used_bounces else {}
+    q=paths.air(tf,ball,dep,controls=lambda _:schedule,clock=clock,diagnostics=diagnostic is not None,
+                allow_zero_rail=rail_arrival,**budget)
+    if q is not None:q['episode_bounces']=used_bounces+q.get('bounces',0)
+    if q is not None and q['reason']=='land' and len(schedule)>0 and flight_key is not None and q['ticks']>wait+EPS:
+        q['flight_switch_tick']=switch
+        q['arrival_key']=flight_key
     if q is None:return None,'rail_no_result'
     if diagnostic is not None:
-        diagnostic.update(contacts=q.get('contacts',()),clearance=q.get('clearance'),
-                          budget_exhausted=q['reason']=='bounce_limit',
+        diagnostic.update(event=q.get('event'),flight_parts=q.get('segments',()),
+                          contacts=q.get('contacts',()),clearance=q.get('clearance'),
+                          budget_exhausted=q['reason']=='bounce_limit',flight_switch_tick=q.get('flight_switch_tick'),
                           trajectory=(*[x for r in dep.pieces for x in r['motion']],
                                       *(tf.air_geometry(ball,a,k,n) for a,k,n in q.get('air_parts',()))))
     if q['reason']!='land':return None,'rail_'+q['reason']
@@ -101,6 +125,7 @@ def _append(row,dep,hit,key):
     origin={} if row['contacts'] else dict(launch=dep.body.pos,velocity=dep.body.vel)
     return dict(dict(row,**origin),face=hit['face'],position=hit['state'].pos,ticks=end,flight_ticks=row['flight_ticks']+hit.get('flight_ticks',hit['ticks']),
                 key_table=((math.ceil(end),key.copy()),),rail_parts=suffix,rail_mode=dep.kind,continued=True,
+                episode_bounces=hit.get('episode_bounces',0),
                 motion=(*row['motion'],*(x for s in suffix for x in s['motion'])),
                 contacts=(*row['contacts'],*(dict(x,tick=x['tick']+time0+dep.tick) for x in hit['contacts'])))
 
@@ -123,6 +148,33 @@ def _held_prefix(seed,dep,hit,key):
     # Preserve the completed previous input instead of rewriting its run.
     row['key_table']=(*prefix,*row['key_table']) if not prefix or boundary>prefix[-1][0] else prefix
     return row
+
+
+def chart_station(paths, c):
+    """Event identity, not a sampling grid for generating a trajectory.
+
+    Visits on one object and line may advance within a long straight
+    span. Only coalesce stations within one export-resolution cell;
+    there are finitely many such cells on each finite chart.
+    """
+    from .conformal import PLANE_ERROR
+    lane=paths.lanes[c.lane]
+    p=lane.p if lane.axis is None else lane.axis
+    u=float(np.clip((c.body.pos-p[c.j])@lane.tangent[c.j],0.,lane.length[c.j]))
+    if c.direction<0:u=float(lane.length[c.j]-u)
+    return (int(paths.obs.mesh.owner[c.triangle]),c.lane,c.j,c.direction,math.floor(u/PLANE_ERROR))
+
+
+def _after_key(table, tick, end, key):
+    """Preserve the verified prefix and replace the suffix from a whole tick."""
+    out=[]
+    for boundary, held in table:
+        if boundary>=tick:
+            if tick>(out[-1][0] if out else 0):out.append((tick,held))
+            break
+        out.append((boundary,held))
+    if end>tick:out.append((end,key.copy()))
+    return tuple(out)
 
 
 def road_inlets(tf, paths, surface, layout, chains, balls, stats):
@@ -232,7 +284,7 @@ def mark_ring_witnesses(g, layout, witnesses):
 
 
 def wave(tf,g,obs,layout,chains,seeds,*,log,targets=None):
-    """One rail carry per exact admitted contact; no recursive relay search.
+    """Continue on the actual captured chart until road or an unresolved event.
 
     Also admit one supported terminal-piece representative per directed
     groove, from rest. It tests the outlet independently of how the groove
@@ -248,7 +300,7 @@ def wave(tf,g,obs,layout,chains,seeds,*,log,targets=None):
     targets=targets or {}
     def run(src,ball,seed,c,key,interval,kind,relay=False,next_key=None,history=frozenset(),steered=False):
         nonlocal example
-        chart=(c.lane,c.j,c.direction)
+        chart=chart_station(paths,c)
         if chart in history:
             stats['rail_chart_cycle_unresolved']+=1
             return
@@ -277,10 +329,19 @@ def wave(tf,g,obs,layout,chains,seeds,*,log,targets=None):
         if relay and _free_rebound(paths,c):
             departures=chain(departures,(railride.Departure(c.rebound,0.,'rail_rebound',c,(),(),key),))
         hits=0
-        for dep in departures:
+        nominated=any(x.ball==src.ball and x.chain==paths.lanes[c.lane].parent for x in targets)
+        def trial_controls():
+            for dep in departures:
+                yield dep,None
+                if nominated and not steered and next_key is None and dep.pieces and dep.kind in (
+                        'crown_pressure','crown_open','convex','chain_end'):
+                    from . import supportededges as se
+                    for second in (*se.KEYS,np.zeros(2)):
+                        if not np.array_equal(second,following):yield dep,second
+        for dep, flight_key in trial_controls():
             trace={}
             if next_key is not None and seed['ticks']+dep.tick<switch-EPS:continue
-            hits+=1; q,why=_trace(tf,paths,ball,dep,following,seed['ticks'],rail_arrival=True,diagnostic=trace);stats[why]+=1
+            hits+=1; q,why=_trace(tf,paths,ball,dep,following,seed['ticks'],rail_arrival=True,diagnostic=trace,flight_key=flight_key,prior_bounces=seed.get('episode_bounces',0));stats[why]+=1
             def prefix_to_contact():
                 row=_held_prefix(seed,dep,q,following)
                 if next_key is not None:
@@ -291,6 +352,8 @@ def wave(tf,g,obs,layout,chains,seeds,*,log,targets=None):
                     end=math.ceil(row['ticks'])
                     if end>switch:table.append((end,following.copy()))
                     row['key_table']=tuple(table)
+                if 'flight_switch_tick' in q:
+                    row['key_table']=_after_key(row['key_table'],q['flight_switch_tick'],math.ceil(row['ticks']),q['arrival_key'])
                 return row
             entry['outcomes'].append(dict(reason=why,release=dep.body.pos,velocity=dep.body.vel,ticks=dep.tick,
                                           mode=dep.kind,landing=None if q is None else q['state'].pos,
@@ -299,23 +362,20 @@ def wave(tf,g,obs,layout,chains,seeds,*,log,targets=None):
             if why in ('rail_next_support_not_road','rail_support_continues'):
                 other=q.get('catch')
                 if other is None:continue
-                # Retain the original first relay. Additional relays are
-                # continuous co-support or a checked same-object successor
-                # on a nominated outlet. Each chart is expanded at most
-                # once on a branch; a rejected re-entry is unresolved.
+                # A checked positive-time capture may continue on any
+                # welded rail or any other object. The branch history rules
+                # out re-expansion, not the physical reachability of cycles.
                 lane=paths.lanes[c.lane]
                 target=any(x.ball==src.ball and x.chain==lane.parent for x in targets)
-                m=obs.mesh
-                same=m.owner[other.triangle]==m.owner[c.triangle]
-                if relay and why!='rail_support_continues' and not (target and same):continue
                 prefix=prefix_to_contact()
-                switched=steered or next_key is not None
-                run(src,ball,prefix,other,following,_arc(paths,other),'rail_relay',relay=True,history=branch,steered=switched)
-                if target and same and not switched and paths.lanes[other.lane].axis is not None:
+                switched=steered or next_key is not None or 'flight_switch_tick' in q
+                receive_key=q.get('arrival_key',following)
+                run(src,ball,prefix,other,receive_key,_arc(paths,other),'rail_relay',relay=True,history=branch,steered=switched)
+                if target and not switched and paths.lanes[other.lane].axis is not None:
                     from . import supportededges as se
                     for second in se.KEYS:
-                        if not np.array_equal(second,following):
-                            run(src,ball,prefix,other,following,_arc(paths,other),'integer_input_on_receiving_crown',
+                        if not np.array_equal(second,receive_key):
+                            run(src,ball,prefix,other,receive_key,_arc(paths,other),'integer_input_on_receiving_crown',
                                 relay=True,history=branch,next_key=second,steered=True)
                 continue
             k=int(surface.face_patch[q['face']]); dest=layout.patch_nodes[ball.name].get(k)
@@ -507,9 +567,8 @@ def inverse_outlets(tf,g,obs,layout,chains,targets):
                             if other is None:continue
                             outcome['next_rail_line']=paths.line_for(other.lane)
                             outcome['second_outlets']=[]
-                            owner=obs.mesh.owner[dep.source.triangle]
                             def onward(carry, c, history):
-                                chart=(c.lane,c.j,c.direction)
+                                chart=chart_station(paths,c)
                                 if chart in history:
                                     stats['outlet_chart_cycle_unresolved']+=1
                                     return
@@ -521,16 +580,17 @@ def inverse_outlets(tf,g,obs,layout,chains,targets):
                                     options=chain(options,(railride.Departure(c.rebound,0.,'rail_rebound',c,(),(),release_key),))
                                 for nxt in options:
                                     detail={}
-                                    road, code=_trace(tf,paths,ball,nxt,release_key,carry['ticks'],rail_arrival=True,diagnostic=detail)
+                                    road, code=_trace(tf,paths,ball,nxt,release_key,carry['ticks'],rail_arrival=True,diagnostic=detail,
+                                                      prior_bounces=carry.get('episode_bounces',0))
                                     stats['relay_'+code]+=1
                                     outcome['second_outlets'].append(dict(reason=code,chart=chart,position=nxt.body.pos,velocity=nxt.body.vel,**detail))
                                     if road is None:continue
                                     witness=_held_prefix(carry,nxt,road,release_key)
                                     if code in ('rail_road_landing','rail_road_supported_join'):
                                         keep(road,witness)
-                                    elif (successor:=road.get('catch')) is not None and (code=='rail_support_continues' or obs.mesh.owner[successor.triangle]==owner):
+                                    elif (successor:=road.get('catch')) is not None:
                                         onward(witness,successor,branch)
-                            onward(prefix,other,frozenset({(dep.source.lane,dep.source.j,dep.source.direction)}))
+                            onward(prefix,other,frozenset({chart_station(paths,dep.source)}))
     return found,attempts,dict(stats)
 
 

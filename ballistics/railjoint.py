@@ -45,6 +45,23 @@ def _cap_faces(triangles, fitted, a, b, radius):
     return fitted
 
 
+def tube_span(tubes, a, b):
+    """Raw fitted cylinders with positive overlap on the departing axis.
+
+    A same-owner pipe, a touching successor, or the other crown does not
+    inherit the departing bearing's clearance.
+    """
+    tubes=np.asarray(tubes).reshape(-1,7)
+    t=b-a; length=np.linalg.norm(t)
+    if length<=EPS:return tubes[:0]
+    t=t/length
+    q=tubes[:,:6].reshape(-1,2,3)-a
+    s=q@t
+    off=q-s[:,:,None]*t
+    overlap=np.minimum(s.max(1),length)-np.maximum(s.min(1),0.)
+    return tubes[(overlap>EPS)&(np.linalg.norm(off,axis=2).max(1)<=conformal.PLANE_ERROR)]
+
+
 def bind_axes(tubes, triangles, origin, radius):
     """Bind only initially active finite tubes whose skin fits the source mesh.
 

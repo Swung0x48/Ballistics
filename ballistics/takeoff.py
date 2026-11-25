@@ -24,7 +24,7 @@ from .sweep import chord as _chord, curve as _curve
 
 FOLLOW_SPEED = 9.0
 STOP_COST = 9.0
-RULE = "closed form ledges and rail ends, three balls, supported momentum continuation and analytic manifolds and mesh rail corridors and conformal road slopes, finite rail joints, local step support and paired rail crowns, normal impulses, confirmed rail goals and joint conformal runways and feature rim clearance and conformal search catalogue v33 finite crown miter support and checked rail continuations"
+RULE = "closed form ledges and rail ends, three balls, supported momentum continuation and analytic manifolds and mesh rail corridors and conformal road slopes, finite rail joints, local step support and paired rail crowns, normal impulses, confirmed rail goals and joint conformal runways and feature rim clearance and conformal search catalogue v34 first-impact rail admission and multi-hop continuations"
 GRAVITY_IMPULSE = ph.GRAVITY * ph.DT
 FLOOR = ph.Params().floor
 XZ = [0, 2]
@@ -857,7 +857,7 @@ class AirTrace:
 
 def trace_air(obs, ball, start, schedule, *, rim=None, departure=None,
               clearance=0., cached_first=None, max_bounces=MAX_BOUNCES,
-              follow_below=False, incoming_only=False):
+              follow_below=False, incoming_only=False, accept_support=None):
     """Events, not ticks: one free curve up to a key change or first contact."""
     loss, radius = ball.lin_damp * ph.DT, ball.radius + FLOOR
     now, bounces, parts, contacts = 0., 0, [], []
@@ -964,11 +964,13 @@ def trace_air(obs, ball, start, schedule, *, rim=None, departure=None,
                 event['triangle']=int(f)
                 event['object']=obs.mesh.entities[obs.mesh.owner[f]].get('name','')
                 event['kind'] = 'dual_rail' if dual is not None else 'land'
-                if same_psi:
-                    event['subcontacts']=[prior,*prior['subcontacts'][:-1]]
-                    prior['subcontacts'].pop()  # keep history acyclic
-                    contacts[-1]=event
-                return AirTrace(('land', f, now, center), parts, contacts, bounces)
+                if accept_support is None or accept_support(event):
+                    if same_psi:
+                        event['subcontacts']=[prior,*prior['subcontacts'][:-1]]
+                        prior['subcontacts'].pop()  # keep history acyclic
+                        contacts[-1]=event
+                    return AirTrace(('land', f, now, center), parts, contacts, bounces)
+                event['kind']='rail_uncaptured_impact'
             if same_psi and i in impacted_faces:
                 return AirTrace(('contact_jam',i,now,center),parts,contacts,bounces)
             impacted_faces.update(f for f,*_ in rows)

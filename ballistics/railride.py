@@ -409,7 +409,13 @@ class RailPaths:
         span=2*r
         near=tf._box_triangles((release-span)[None],(release+span)[None],self.obs.lo,self.obs.hi,m._grid)
         faces=np.array([i for i in near if m.owner[i]==owner and m.rail[i]],dtype=int)
-        axes,used=railjoint.bind_axes(m.tubes,self.obs.tris[faces],release,r)
+        tubes=m.tubes
+        crown_release=dep.kind in ('crown_pressure','crown_open')
+        if crown_release:
+            lane=self.lanes[dep.source.lane]
+            tubes=railjoint.tube_span(tubes,*lane.axis[dep.source.j:dep.source.j+2]) if lane.axis is not None else tubes[:0]
+        axes,used=railjoint.bind_axes(tubes,self.obs.tris[faces],release,r)
+        if crown_release and not axes:return None,0.
         if not axes:
             # Synthetic or unfitted geometry can still use its actual
             # connected upward mesh prefix. Never turn failure into immunity.
@@ -877,7 +883,7 @@ class RailPaths:
         return dict(reason='transfer',node=node,face=face,ticks=0.,state=body,segments=(),way=(p,q),contacts=(event,),
                     bounces=0,catch=c,clearance=0.,axes=())
 
-    def air(self, tf, ball, dep, controls=None, clock=0., *, diagnostics=False, allow_zero_rail=False):
+    def air(self, tf, ball, dep, controls=None, clock=0., *, diagnostics=False, allow_zero_rail=False, bounce_budget=None):
         if dep.kind=='crown_twin':
             transfer=self.twin_transfer(tf,ball,dep)
             if transfer is not None:return transfer
@@ -897,7 +903,18 @@ class RailPaths:
             clear=max(0.,self.obs.rail_clearance(ball,launch,hold,schedule[0][0],departure))
         else:
             departure,clear=self.departure_support(tf,ball,dep,schedule)
-        air=tf.trace_air(self.obs,ball,launch,schedule,rim=dep.rim,departure=departure,clearance=clear,incoming_only=True)
+        caught=None
+        def accept(event):
+            nonlocal caught
+            if not self.obs.mesh.rail[event['triangle']]:return True
+            caught=self.capture(ball,event,-1)
+            if caught is not None:return True
+            # A non-incoming initial overlap does not prove a rebound or a
+            # ride. Let shared search report that event as unresolved.
+            return (event['tick']<=EPS or event['incoming']@event['normal']>=-EPS)
+        kwargs={'accept_support':accept,'follow_below':True} if allow_zero_rail else {}
+        if bounce_budget is not None:kwargs['max_bounces']=bounce_budget
+        air=tf.trace_air(self.obs,ball,launch,schedule,rim=dep.rim,departure=departure,clearance=clear,incoming_only=True,**kwargs)
         why,i,dt,hit=air.result
         meta=dict(clearance=clear,axes=departure.axes if departure is not None else ())
         if diagnostics:meta.update(air_parts=air.parts,event=air.result,waived_faces=departure.faces if departure else ())
@@ -916,14 +933,16 @@ class RailPaths:
             segments.append(sc.segment('flight',piece['object'] if piece else '',state,end,t,push,piece['kind'] if piece else 'key_change',geometry=(tf.air_geometry(ball,state,push,t),)))
             _, points=tf._samples(state,cf.air_impulse(ball,push=push),ball.lin_damp*ph.DT,t,1.)
             way.extend(points); cursor+=t
-        last=air.contacts[-1]; c=self.capture(ball,last,node,omega) if self.obs.mesh.rail[i] else None
+        last=air.contacts[-1]; c=(caught if allow_zero_rail else self.capture(ball,last,node,omega)) if self.obs.mesh.rail[i] else None
         if c is not None:last.update(rail_line=self.line_for(c.lane),rail_capture=c.crown)
         if node<0 and c is not None:
             ids=self.lanes[c.lane].ids
             node=int(ids[np.argmin(np.linalg.norm(self.g.pos[ids]-c.body.pos,axis=1))])
+        if allow_zero_rail and self.obs.mesh.rail[i] and c is None:
+            return dict(reason='rail_capture_unresolved',contacts=air.contacts,**meta)
         if node<0:
             return dict(reason='no_landing_node',contacts=air.contacts,**meta)
-        return dict(reason='land',node=node,face=i,ticks=dt,push=hold,state=ph.State(hit,last['incoming'],omega),
+        return dict(reason='land',node=node,face=i,ticks=dt,push=hold,state=ph.State(hit,last['incoming'],last.get('incoming_omega',omega)),
                     segments=tuple(segments),way=(*way,hit),contacts=air.contacts,bounces=air.bounces,catch=c,**meta)
 
     def search(self, tf, ball, c, *, controls=None, clock=0., stats=None, confirmed=None):
