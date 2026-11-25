@@ -85,7 +85,7 @@ def _lines(item):
         for g in item.geoms:yield from _lines(g)
 
 
-def _lip_track(tf,ball,patch,obs,f,a,b,*,bend=None,on_release=None, key_index=None, pressure_family=False, on_air=None):
+def _lip_track(tf,ball,patch,obs,f,a,b,*,bend=None,on_release=None, key_index=None, pressure_family=False, on_air=None, full_runway=False):
     """One finite literal representative, from a whole rest patch.
 
     From rest a held key has a fixed tangent. Intersect its backwards ray
@@ -105,7 +105,11 @@ def _lip_track(tf,ball,patch,obs,f,a,b,*,bend=None,on_release=None, key_index=No
         u=sorted(float((np.asarray(x)-start)@(-d[XZ])/scale) for x in (seg.coords[0],seg.coords[-1]))
         if u[0]<=2*EPS and u[1]>2*EPS:intervals.append(u[1])
     if not intervals:return None,'no_local_runway'
-    distance=max(intervals)*.5/scale; origin=mid+r*n-distance*d
+    # The long runway representative is the endpoint of the connected
+    # backward chord, approached from its interior at numerical tolerance.
+    length=max(intervals)
+    distance=(length-2*EPS if full_runway and length>4*EPS else length*.5)/scale
+    origin=mid+r*n-distance*d
     result=law.along(d).over(0.,distance)
     if result is None:return None,'no_crossing'
     speed,seconds=result; ticks=seconds/ph.DT; start=ph.State(origin,np.zeros(3)); push=KEYS[i]
@@ -280,24 +284,31 @@ def add(tf, g,obs,layout, *, log=lambda *_:None, target_priorities=(), rail_outl
                     r=ball.radius+sc.SKIN; low=np.minimum(a,b)+r*p.normal; high=np.maximum(a,b)+r*p.normal
                     lows.append(low);highs.append(high)
                     stats['lip_features']+=1
-                    inverse=(lambda *args:priority.from_release(tf,ball,obs,node,k,*args)) if node in priority.points else None
-                    result,why=_lip_track(tf,ball,p,obs,f,a,b,bend=bend,on_release=inverse,pressure_family=inverse is not None);stats[why]+=1
-                    if result is None:continue
-                    result['source_patch']=k
-                    momentum_seeds.append((node,result))
-                    k2=int(surface.face_patch[result['face']]); other=layout.patch_nodes[name].get(k2)
-                    if other is None:
-                        stats['unsupported_motion_transfer']+=1
-                        continue
-                    if other==node:continue
-                    result.update(source_patch=k,target_patch=k2)
-                    witnesses[node,other].append(result); candidates[node].add(other)
-                    if example is None:
-                        section,meta=rest_section(p,ball,max(1,math.ceil(result['ticks']-result['flight_ticks']-result['rim_ticks'])))
-                        hit=section.intersection(LineString((a[XZ]+r*p.normal[XZ],b[XZ]+r*p.normal[XZ])))
-                        from shapely.geometry import mapping
-                        example=dict(source=node,patch=k,region_rest_patches=row.rest_patches,origin_polygon=mapping(p.polygon),
-                                     finite_span=np.stack((a,b)),position_family=mapping(section),intersection=mapping(hit),joint=meta)
+                    inverse=(lambda *args:priority.from_release(tf,ball,obs,node,k,*args,
+                              feature=(conformal.edge_key(a,b),full_runway))) if node in priority.points else None
+                    # Prioritized target polygons also see the other true
+                    # input combinations. Maximizing outward acceleration
+                    # alone can aim the launch outside a finite landing strip.
+                    keys=(None,) if inverse is None else range(len(KEYS))
+                    for key_index in keys:
+                        for full_runway in ((False,) if inverse is None else (False,True)):
+                            result,why=_lip_track(tf,ball,p,obs,f,a,b,bend=bend,on_release=inverse,key_index=key_index,pressure_family=inverse is not None,full_runway=full_runway);stats[why]+=1
+                            if result is None:continue
+                            result['source_patch']=k
+                            momentum_seeds.append((node,result))
+                            k2=int(surface.face_patch[result['face']]); other=layout.patch_nodes[name].get(k2)
+                            if other is None:
+                                stats['unsupported_motion_transfer']+=1
+                                continue
+                            if other==node:continue
+                            result.update(source_patch=k,target_patch=k2)
+                            witnesses[node,other].append(result); candidates[node].add(other)
+                            if example is None:
+                                section,meta=rest_section(p,ball,max(1,math.ceil(result['ticks']-result['flight_ticks']-result['rim_ticks'])))
+                                hit=section.intersection(LineString((a[XZ]+r*p.normal[XZ],b[XZ]+r*p.normal[XZ])))
+                                from shapely.geometry import mapping
+                                example=dict(source=node,patch=k,region_rest_patches=row.rest_patches,origin_polygon=mapping(p.polygon),
+                                             finite_span=np.stack((a,b)),position_family=mapping(section),intersection=mapping(hit),joint=meta)
             if not lows:continue
             lo=np.min(lows,axis=0)-2*(ball.radius+sc.SKIN);hi=np.max(highs,axis=0)+2*(ball.radius+sc.SKIN)
             speed=_terrain_speed(ball,(surface.patches[k].normal for k in row.rest_patches))
@@ -323,9 +334,10 @@ def add(tf, g,obs,layout, *, log=lambda *_:None, target_priorities=(), rail_outl
             candidates[node].update(x for x in _air_candidates(tf,ball,lo,hi,speed,index) if x!=node)
         log('shared launches %s: %d candidate pairs, %d first-support witnesses' %
             (name,sum(len(v) for k,v in candidates.items() if k.ball==name),sum(len(v) for (k,_),v in witnesses.items() if k.ball==name)))
+    carried=priority.carried_releases(tf,g,obs) if priority.carry_points else {}
     for a,b,row in priority.rows:
         witnesses[a,b].append(row); candidates[a].add(b)
-    log('target inverse: %d attempts, %d literal witnesses' % (len(priority.attempts),len(priority.rows)))
+    log('target inverse: %d attempts, %d literal witnesses, carried runups %s' % (len(priority.attempts),len(priority.rows),carried))
     from . import momentum
     entries,continuations,momentum_stats,momentum_example=momentum.wave(tf,g,obs,layout,chains,momentum_seeds,log=log)
     for (a,b),rows in continuations.items():

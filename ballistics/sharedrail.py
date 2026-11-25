@@ -53,9 +53,26 @@ def _rail_join(paths,ball,dep,q):
     return dict(q,catch=other,flight_ticks=0.,ticks=0.)
 
 
+def _free_rebound(paths, contact):
+    # A projected axial velocity is not a normal-impact prediction. Retain
+    # the separately computed separating impulse on an unpaired pipe as
+    # well as on a crown that failed the supported cross-section check.
+    return contact.rebound is not None and (
+        paths.lanes[contact.lane].line=='single' or
+        (contact.crown is not None and not contact.crown.get('supported',False)))
+
+
 def _trace(tf,paths,ball,dep,key,clock,*,rail_arrival=False,diagnostic=None):
     st=dep.body
-    if dep.kind in ('foldback','crown_twin'):return None,'unresolved_rail_transition'
+    if dep.kind=='foldback':return None,'unresolved_rail_transition'
+    if dep.kind=='crown_twin':
+        # The second tube is a co-support, not a new launch or bounce.
+        joined=paths.twin_transfer(tf,ball,dep) if rail_arrival else None
+        if joined is None:return None,'unresolved_rail_transition'
+        if diagnostic is not None:
+            diagnostic.update(contacts=joined['contacts'],clearance=0.,budget_exhausted=False,
+                              trajectory=tuple(x for r in dep.pieces for x in r['motion']))
+        return dict(joined,flight_ticks=0.),'rail_support_continues'
     limit=cf.landing_step(ball,st,min(paths.obs.bottom-ball.radius-sc.SKIN,st.pos[1]-ball.radius))
     if not limit:return None,'rail_no_air_horizon'
     q=paths.air(tf,ball,dep,controls=lambda _:((float(limit),key),),clock=clock,diagnostics=diagnostic is not None,allow_zero_rail=rail_arrival)
@@ -98,7 +115,13 @@ def _arc(paths,c):
 def _held_prefix(seed,dep,hit,key):
     row=_append(seed,dep,hit,key)
     row['rail_parts']=(*seed.get('rail_parts',()),*row['rail_parts'])
-    row['key_table']=(*seed.get('key_table',())[:-1],*row['key_table'])
+    prefix=tuple(seed.get('key_table',()))
+    boundary=row['key_table'][-1][0]
+    if prefix and np.array_equal(prefix[-1][1],key):
+        prefix=prefix[:-1]
+    # A zero-time support transfer can be at the exact integer switch.
+    # Preserve the completed previous input instead of rewriting its run.
+    row['key_table']=(*prefix,*row['key_table']) if not prefix or boundary>prefix[-1][0] else prefix
     return row
 
 
@@ -223,7 +246,7 @@ def wave(tf,g,obs,layout,chains,seeds,*,log,targets=None):
     paths=railride.RailPaths(g,obs,SimpleNamespace(near=near))
     balls={b.name:b for b in ph.BALLS.values()}
     targets=targets or {}
-    def run(src,ball,seed,c,key,interval,kind,relay=False):
+    def run(src,ball,seed,c,key,interval,kind,relay=False,next_key=None):
         nonlocal example
         entry=dict(source=src,ball=ball.name,kind=kind,interval=interval,position=c.body.pos,velocity=c.body.vel,
                    rail_chain=paths.lanes[c.lane].parent,rail_line=paths.line_for(c.lane),direction=c.direction,
@@ -232,15 +255,31 @@ def wave(tf,g,obs,layout,chains,seeds,*,log,targets=None):
         # Existing closed-form groove/crown walk, constant true key through
         # capture, release and flight. Do not invoke the old recursive search.
         from itertools import chain
-        departures=paths.walk(tf,ball,c,controls=lambda _:((math.inf,key),),clock=seed['ticks'],search_side=False,require_groove_stability=True)
+        switch=math.ceil(seed['ticks'])
+        following=key if next_key is None else next_key
+        def controls(when):
+            return ((switch-when,key),) if next_key is not None and when<switch-EPS else ((math.inf,following),)
+        departures=paths.walk(tf,ball,c,controls=controls,clock=seed['ticks'],search_side=False,require_groove_stability=True)
         # A real rebound is a separate branch with the already computed
         # impact impulse. Do not reuse it as a supported groove state.
-        if relay and c.rebound is not None and c.crown is not None and not c.crown.get('supported',False):
+        if relay and _free_rebound(paths,c):
             departures=chain(departures,(railride.Departure(c.rebound,0.,'rail_rebound',c,(),(),key),))
         hits=0
         for dep in departures:
             trace={}
-            hits+=1; q,why=_trace(tf,paths,ball,dep,key,seed['ticks'],rail_arrival=True,diagnostic=trace);stats[why]+=1
+            if next_key is not None and seed['ticks']+dep.tick<switch-EPS:continue
+            hits+=1; q,why=_trace(tf,paths,ball,dep,following,seed['ticks'],rail_arrival=True,diagnostic=trace);stats[why]+=1
+            def prefix_to_contact():
+                row=_held_prefix(seed,dep,q,following)
+                if next_key is not None:
+                    table=[]
+                    for end,held in seed['key_table']:
+                        if end>switch:break
+                        table.append((end,held))
+                    end=math.ceil(row['ticks'])
+                    if end>switch:table.append((end,following.copy()))
+                    row['key_table']=tuple(table)
+                return row
             entry['outcomes'].append(dict(reason=why,release=dep.body.pos,velocity=dep.body.vel,ticks=dep.tick,
                                           mode=dep.kind,landing=None if q is None else q['state'].pos,
                                           landing_face=None if q is None else q['face'],**trace))
@@ -248,14 +287,14 @@ def wave(tf,g,obs,layout,chains,seeds,*,log,targets=None):
             if why in ('rail_next_support_not_road','rail_support_continues'):
                 other=q.get('catch')
                 if relay or other is None:continue
-                prefix=_held_prefix(seed,dep,q,key)
+                prefix=prefix_to_contact()
                 # Each branch replays the captured state once. A search
                 # budget exhaustion does not retire the candidate.
-                run(src,ball,prefix,other,key,_arc(paths,other),'rail_relay',relay=True)
+                run(src,ball,prefix,other,following,_arc(paths,other),'rail_relay',relay=True)
                 continue
             k=int(surface.face_patch[q['face']]); dest=layout.patch_nodes[ball.name].get(k)
             if dest is None or dest==src:continue
-            row=_held_prefix(seed,dep,q,key);row['target_patch']=k;out[src,dest].append(row)
+            row=prefix_to_contact();row['target_patch']=k;out[src,dest].append(row)
             if example is None and any(x['kind'] in ('rail','rail_crown') for x in dep.pieces):
                 example=dict(entry=entries[-1],trajectory=row['rail_parts'],landing=row['position'],keys=row['key_table'])
         if not hits:
@@ -337,6 +376,12 @@ def wave(tf,g,obs,layout,chains,seeds,*,log,targets=None):
         if c is None:stats['rail_capture_unproved']+=1;continue
         key=row['key_table'][-1][1]
         run(src,ball,row,c,key,_arc(paths,c),'first_impact')
+        lane=paths.lanes[c.lane]
+        if any(rail.ball==src.ball and rail.chain==lane.parent for rail in targets):
+            from . import supportededges as se
+            for following in se.KEYS:
+                if not np.array_equal(following,key):
+                    run(src,ball,row,c,key,_arc(paths,c),'integer_input_after_entry',next_key=following)
         moving_outlet(src,ball,row,c,key)
     for args in road_inlets(tf,paths,surface,layout,chains,balls,stats):
         run(*args)
@@ -438,7 +483,7 @@ def inverse_outlets(tf,g,obs,layout,chains,targets):
                             outcome['second_outlets']=[]
                             onward=paths.walk(tf,ball,other,controls=lambda _:((math.inf,release_key),),clock=prefix['ticks'],
                                               search_side=False,require_groove_stability=True)
-                            if other.rebound is not None and other.crown is not None and not other.crown.get('supported',False):
+                            if _free_rebound(paths,other):
                                 from itertools import chain
                                 onward=chain(onward,(railride.Departure(other.rebound,0.,'rail_rebound',other,(),(),release_key),))
                             for nxt in onward:

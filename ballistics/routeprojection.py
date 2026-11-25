@@ -5,7 +5,7 @@ import numpy as np
 from scipy.spatial import cKDTree
 from shapely.geometry import LineString, Point
 
-from . import motion, physics as ph, supportcarry
+from . import coarse, motion, physics as ph, supportcarry, sweep
 from .conformalsearch import Rail
 
 XZ = [0, 2]
@@ -25,7 +25,7 @@ class Anchors:
         self.roads = {k: (ids, cKDTree(g.pos[ids])) for k, ids in roads.items()}
         self.rails = {k: (ids, cKDTree(g.pos[ids])) for k, ids in rails.items()}
 
-    def road(self, patch, pos, radius, contact=None):
+    def road(self, patch, pos, radius, contact=None, *, bearing_anchor=False):
         if patch not in self.roads:
             return -1, 'patch_has_no_coarse_place'
         ids, tree = self.roads[patch]
@@ -43,6 +43,20 @@ class Anchors:
             q = (a - (a @ p.normal - p.offset) * p.normal)[XZ]
             if polygon.covers(Point(foot) if np.linalg.norm(q-foot) < 1.e-7 else LineString((foot, q))):
                 return i, 'same_finite_patch'
+        if bearing_anchor:
+            # A coarse place on a convex edge can bear on this patch while
+            # its normal projection falls outside. Use its actual finite
+            # mesh bearing point, without joining any other patch/component.
+            surface=self.g.info['conformal']
+            for i in sorted((ids[j] for j in local),key=lambda i:(np.linalg.norm(self.g.pos[i]-pos),i)):
+                a=self.g.pos[i]
+                for f in p.faces:
+                    q=sweep.closest(surface.triangles[f],a); n=a-q; d=np.linalg.norm(n)
+                    if (d<=supportcarry.EPS or d>radius-supportcarry.SKIN+supportcarry.RECAPTURE
+                            or n[1]<coarse.WALK_NY*d):continue
+                    xy=q[XZ]
+                    path=Point(foot) if np.linalg.norm(xy-foot)<1.e-7 else LineString((foot,xy))
+                    if polygon.covers(path):return i,'actual_coarse_bearing_on_patch'
         return -1, 'patch_anchor_chord_leaves_polygon'
 
     def rail(self, node, pos):
@@ -81,7 +95,8 @@ def attach(tf, g, *, flights=True, rolling=True, retained=True):
         radius = balls[src.ball].radius + supportcarry.SKIN
         def endpoint(node, patch, pos):
             return lookup.road(patch, pos, radius) if patch >= 0 else lookup.rail(node, pos)
-        u, why = endpoint(src, a, origin)
+        u, why = (lookup.road(a,origin,radius,bearing_anchor=bool(row.get('carried_runup')))
+                  if a>=0 else endpoint(src,a,origin))
         contact = next((c['point'] for c in reversed(row.get('contacts',()))
                         if c.get('kind') == 'land' and 'point' in c and
                         c.get('triangle') == row.get('face') and np.linalg.norm(np.asarray(c['position'])-end) < 1.e-7),None)
