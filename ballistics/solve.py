@@ -17,7 +17,7 @@ from pathlib import Path
 
 import numpy as np
 
-from . import coarse, fine
+from . import coarse, fine, motion, sweep
 from . import physics as ph
 from .geometry import BALL_R, Mesh
 from .kernel import OK, World
@@ -57,37 +57,45 @@ def props_parts(info: dict, shapes) -> list:
 GATE_OPEN = 4.95          # how far a gate (P_Modul_01) pushed open along its groove has slid: MEASURED 4.97 to 4.98 at its stop
 
 
-def _hits(pts, boxes, clear: float, pushed=None) -> bool:
-    """Whether a ball centred at any of pts overlaps any of the pieces (centre, half, axes, hull triangles or None)
-    by more than `clear`: by its box, and where the piece is a hull that is not its box, by the hull.
-    pushed: (the index of a piece, a point of the face it is pushed on, the way it gives): a ball that touches
-    that piece from in front of that face pushes it, it is not stopped by it."""
-    from .kernel import BC_WIDTH, PROP_WIDTH, TRI0, _hull_point
-    for i, (c, half, axes, tris) in enumerate(boxes):
-        if pushed is not None and i == pushed[0]:
-            ahead = (pts - pushed[1]) @ pushed[2] > -0.5     # past the face (or at it): the piece is in the way
-            if not ahead.any():
-                continue
-            L = (pts[ahead] - c) @ axes.T
-            q = np.clip(L, -half, half)
-            if (np.linalg.norm(L - q, axis=1) < BALL_R - clear).any():
-                return True
-            continue
-        L = (pts - c) @ axes.T
-        q = np.clip(L, -half, half)
-        near = np.linalg.norm(L - q, axis=1) < BALL_R - clear
-        if not near.any():
-            continue
-        if not tris:
-            return True
-        row, prow = np.zeros(BC_WIDTH), np.zeros(PROP_WIDTH)
-        row[21:24] = c
-        row[29:38] = np.eye(3).ravel()                    # as it was put
-        T = np.asarray(tris, float).ravel()
-        prow[23], prow[TRI0:TRI0 + len(T)] = len(tris), T
-        for p in pts[near]:
-            if _hull_point(float(p[0]), float(p[1]), float(p[2]), row, prow, BALL_R)[0] < -clear:
-                return True
+def _hits(path, boxes, clear: float, pushed=None) -> bool:
+    """Continuous sphere/convex gate overlap; retain the push-plate relief."""
+    radius=BALL_R-clear
+    for i,(c,half,axes,tris) in enumerate(boxes):
+        relief=pushed is not None and i==pushed[0]
+        clip=(pushed[2],pushed[1]@pushed[2]-.5) if relief else None
+        faces=None
+        if tris and not relief:
+            faces=np.asarray(tris).reshape(-1,3,3)+c
+            normal=np.cross(faces[:,1]-faces[:,0],faces[:,2]-faces[:,0])
+            center=faces.reshape(-1,3).mean(0)
+            normal*=np.where((normal*(faces[:,0]-center)).sum(1)<0.,-1.,1.)[:,None]
+            reversed_faces=np.einsum('ij,ij->i',normal,np.cross(faces[:,1]-faces[:,0],faces[:,2]-faces[:,0]))<0.
+            faces[reversed_faces]=faces[reversed_faces][:,[0,2,1]]
+            normal/=np.maximum(1.e-15,np.linalg.norm(normal,axis=1,keepdims=True))
+            rhs=np.einsum('ij,ij->i',normal,faces[:,0])
+        def distance(q):
+            if faces is None:
+                return float(np.linalg.norm(np.maximum(0.,abs(axes@(q-c))-half)))
+            if np.all(normal@q<=rhs):return 0.
+            return min(float(np.linalg.norm(q-sweep.closest(t,q))) for t in faces)
+        for piece in path:
+            if piece.kind=='line':
+                a,b=0.,1.
+                if clip is not None:
+                    a,b=sweep.linear_clip(piece.p@clip[0]-clip[1],piece.v@clip[0],a,b)
+                    if b<=a:continue
+                if motion.line_box_distance(axes@(piece.p-c),axes@piece.v,half,a,b)>=radius:continue
+                if faces is None:return True
+                if motion.convex_hit(piece,normal,rhs) is not None:return True
+                for face,n in zip(faces,normal):
+                    for j in range(7):
+                        lo,hi,w,dw=sweep.feature_span(face,n,j,piece.p,piece.v)
+                        # Orientation of a convex hull's triangles may have
+                        # been reversed when obtaining its outward normals.
+                        f,g=sweep.sphere_span(w,dw,radius,lo,hi)
+                        if f<=g and np.linalg.norm(w+((f+g)*.5)*dw)<radius:return True
+            elif motion.box_hit(piece,-half-radius,half+radius,c,axes) is not None:
+                if motion.near_hit(piece,distance,radius,clip=clip) is not None:return True
     return False
 
 
@@ -102,7 +110,6 @@ def gate_edges(g, info: dict, parts: list) -> dict:
     for b in parts:
         if b["kind"] == "P_Modul_01_Pusher":
             bodies.setdefault(b["body"], []).append(b)
-    launches = g.info.get("launches", {})
     for body, pieces in bodies.items():
         place = body.split("/")[0]
         p = next(q for q in info["placements"] if q["name"] == place)
@@ -120,15 +127,10 @@ def gate_edges(g, info: dict, parts: list) -> dict:
         for u in np.flatnonzero(np.linalg.norm(g.pos - centre, axis=1) < reach):
             keep = []
             for v, c, k in g.adj[u]:
-                way = np.asarray(launches[(u, v)]["way"], float) if k == "launch" and (u, v) in launches else np.array([g.pos[u], g.pos[v]])
-                seg = [way[0]]
-                for a, b2 in zip(way[:-1], way[1:]):
-                    n = int(np.linalg.norm(b2 - a) / 0.5) + 1
-                    seg += [a + (b2 - a) * (i / n) for i in range(1, n + 1)]
-                pts = np.array(seg)
-                if _hits(pts, closed, 0.1, pushed=(ti, face, axis)):
-                    if not _hits(pts, opened, 0.1):
-                        edges.append((int(u), int(v), float(c), k))
+                paths=motion.edge_paths(g,u,v,k) or ((motion.line(g.pos[u],g.pos[v]),),)
+                if _hits(paths[0],closed,0.1,pushed=(ti,face,axis)):
+                    if not _hits(paths[0],opened,0.1):
+                        edges.append((int(u),int(v),float(c),k))
                     continue
                 keep.append((v, c, k))
             g.adj[u] = keep
@@ -250,7 +252,7 @@ def fan_lifts(g, mesh: Mesh, info: dict, log=print) -> dict:
     edge (`fans.Rules.params`): one that arrives with only one of them is unsure (it depends on the ball's
     orientation) and costs more. {(u, v): dict(sector, tape, ticks, way, both, bounds, cost)}."""
     from . import fans
-    from .launch import FOLLOW_SPEED
+    from .takeoff import FOLLOW_SPEED
     out = {}
     P = g.pos
     floor = g.kind == 0
@@ -275,8 +277,12 @@ def fan_lifts(g, mesh: Mesh, info: dict, log=print) -> dict:
         cost = best["ticks"] / 66.0 * FOLLOW_SPEED * (1.0 if both else LIFT_UNSURE)
         key = (int(u), int(v))
         if key not in out or cost < out[key]["cost"]:
+            # Until step 4 replaces the fan rollout, the flight it returned
+            # consists of these *actual* engine-step chords, not display
+            # points chosen a metre apart. Guards must use all the chords.
+            geometry = motion.lines(np.vstack((start,best["trace"][:,:3],P[v])))
             out[key] = dict(sector=s, tape=best["tape"], ticks=best["ticks"], way=np.array(way, np.float32), both=both, bounds=ok, cost=cost,
-                            chain=best.get("chain", False), fan=np.array(best["fan"], float), legs=best["legs"], ends_in=best.get("ends_in"))
+                            motion=geometry,chain=best.get("chain", False), fan=np.array(best["fan"], float), legs=best["legs"], ends_in=best.get("ends_in"))
 
     from .kernel import TRIGGER
 
@@ -422,9 +428,7 @@ def _link_rules(rel, g, region, tk, trafos, radius: float, mechs: list) -> dict:
                 t = min(max(float((cen - a) @ ab) / L2, 0.0), 1.0)
                 if np.linalg.norm(a + t * ab - cen) > size + BALL_R:
                     continue
-                n = int(np.sqrt(L2) / 0.5) + 1
-                pts = a + ab * (np.arange(n + 1)[:, None] / n)
-                if _hits(pts, pieces, 0.1):
+                if _hits((motion.line(a,b),), pieces, 0.1):
                     mask |= 1 << m
             if ek >= 0 or mask:
                 out[(int(gu), int(v))] = (ek, mask)
@@ -511,6 +515,11 @@ def _box_span(way, lo, hi):
     enter = np.maximum(0, np.where(flat, -np.inf, np.minimum(t, t2)).max(axis=1))
     leave = np.minimum(1, np.where(flat, np.inf, np.maximum(t, t2)).min(axis=1))
     return bool(((enter <= leave) & ~np.any(flat & ((a < lo) | (a > hi)), axis=1)).any())
+
+
+def _motion_box(g,u,v,kind,lo,hi,o,frame):
+    paths=motion.edge_paths(g,u,v,kind) or ((motion.line(g.pos[u],g.pos[v]),),)
+    return any(motion.box_hit(p,lo,hi,o,frame) is not None for path in paths for p in path)
 
 
 # ASSUMED: coarse geometry matching only, not game rules.
@@ -702,6 +711,7 @@ def _float_screen(g, rel, region, lifts, rows):
     Screen at ball-centre height (ASSUMED), not at the base of the boxes: unrelated lower roads
     and paths over the row stay. For launches and lifts use the cached way, never run one again.
     """
+
     slabs = [r for r in rows if "top_slab" in r]
     if not slabs:
         return region, set()
@@ -722,11 +732,65 @@ def _float_screen(g, rel, region, lifts, rows):
             if _box_span(P[uv[i]], lo, hi):
                 skip.add(direct[i])
         for u, v, k in flight:
-            e = g.info.get("launches" if k == "launch" else "lifts", {}).get((u, v), {})
-            way = e.get("way", ())
-            if _box_span((np.asarray(way) - o) @ A.T if len(way) > 1 else P[[u, v]], lo, hi):
+            if _motion_box(g,u,v,k,lo,hi,o,A):
                 skip.add((u, v, k))
     return keep, skip
+
+
+class _FixedSupport:
+    """Continuous face-support proof for mechanism underpasses and banks.
+
+    Existing fitted rails are checked separately by each caller. A newly
+    invented fixed-floor span must have upward triangle coverage throughout.
+    Contacts solely with an exposed lip don't certify a corridor.
+    """
+    def __init__(self,mesh,ignore=lambda _e:False):
+        self.mesh=mesh
+        if mesh is None:return
+        from .takeoff import Obstacles
+        self.obs=Obstacles(mesh,())
+        self.skip=np.array([ignore(e) for e in mesh.entities],dtype=bool)[mesh.owner]
+        self.fixed=np.array([not e.get('placed') or e.get('type') in coarse.FIXED_TYPES for e in mesh.entities],dtype=bool)[mesh.owner]
+
+    def near(self,lo,hi,r):
+        from .takeoff import _box_triangles
+        return [i for i in _box_triangles((lo-r)[None],(hi+r)[None],self.obs.lo,self.obs.hi,self.mesh._grid) if not self.skip[i]]
+
+    def face(self,i):
+        n=self.mesh.N[i]
+        if n[1]<0:return self.obs.tris[i][[0,2,1]],-n
+        return self.obs.tris[i],n
+
+    def line(self,a,b,margin=.35,*,only_fixed_blocks=False):
+        if self.mesh is None:return False
+        ds=b-a; spans=[]
+        for i in self.near(np.minimum(a,b),np.maximum(a,b),BALL_R+margin):
+            tri,n=self.face(i)
+            if self.fixed[i] and n[1]>=coarse.WALK_NY:
+                n0,h=motion.support_planes(tri,n,BALL_R+margin)
+                q=motion.segment_clip(a,ds,n0,h)
+                if q is not None:spans.append(q)
+            if not only_fixed_blocks or self.fixed[i]:
+                for j in range(7):
+                    lo,hi,w,dw=sweep.feature_span(tri,n,j,a,ds)
+                    lo,hi=sweep.sphere_span(w,dw,BALL_R-margin,lo,hi)
+                    if lo<=hi and np.linalg.norm(w+((lo+hi)*.5)*dw)<BALL_R-margin:
+                        return False
+        covered=motion.union_spans(spans)
+        return bool(covered and covered[0][0]<=1.e-10 and covered[0][1]>=1.-1.e-10)
+
+    def broad_hole(self,center,u,v,drop,margin=.35):
+        if self.mesh is None:return False
+        # The warning asks if at least half the ring lacks terrain within
+        # one radius vertically; that volume projects to a convex prism.
+        width=np.hypot(u,v); spans=[]
+        for i in self.near(center-width-[0,drop,0],center+width,BALL_R+margin):
+            tri,n=self.face(i)
+            if self.fixed[i] and n[1]>=coarse.WALK_NY:
+                a,b=motion.support_planes(tri,n,BALL_R+margin)
+                a,b=motion.vertical_extrusion(a,b,drop)
+                spans.extend(motion.angular_spans(center,u,v,a,b))
+        return sum(b-a for a,b in motion.union_spans(spans))<=math.pi
 
 
 def _t_clear_edges(g, P, floor, pieces, fallen, mesh, name):
@@ -742,23 +806,15 @@ def _t_clear_edges(g, P, floor, pieces, fallen, mesh, name):
     # ASSUMED: the floor at the foot is near placement height (local 0); match only nearby banks.
     choices = {(u, v, c) for ax in (0, 2) for u, v, c in _span(g, P, floor, lo, hi, ax, 0.0, BALL_R + _MECH_BANK) if u < v}
     clear, removed = [], []
+    proof=_FixedSupport(mesh,lambda e:e.get("placement")==name)
     for u, v, c in sorted(choices):
         if any(w == v and kind == "roll" for w, _c, kind in g.adj[u]) and any(w == u and kind == "roll" for w, _c, kind in g.adj[v]):
             continue
-        # ASSUMED: sample every 0.5 and allow 0.35 in floor height for the grid discretisation.
-        t = np.linspace(0, 1, int(np.ceil(c / 0.5)) + 1)[:, None]
-        way = g.pos[u] + t * (g.pos[v] - g.pos[u])
-        for point in way:
-            contacts = [q for q in mesh.contacts(point, radius=BALL_R, margin=0.35)
-                        if mesh.entities[q.entity].get("placement") != name]
-            if not coarse._held(mesh, contacts) or any(q.gap < -0.35 for q in contacts):
-                break
-        else:
+        if proof.line(g.pos[u],g.pos[v]):
             both = [(u, v, c), (v, u, c)]
             removed.extend(both)
-            local = P[u] + t * (P[v] - P[u])
             # ASSUMED: conservative ball clearance against each fallen piece's local bounding box.
-            if not any(_box_span(local, f.min(0) - BALL_R + 0.2, f.max(0) + BALL_R - 0.2) for f in fallen):
+            if not any(_box_span(P[[u,v]], f.min(0) - BALL_R + 0.2, f.max(0) + BALL_R - 0.2) for f in fallen):
                 clear.extend(both)
     return clear, removed
 
@@ -774,7 +830,6 @@ def road_state_edges(g, rel, info, sector, region, mesh=None):
     for h in info.get("hulls", ()):
         hulls.setdefault(h.get("placement"), []).append(h)
     floor = (g.kind == 0) & region
-    launches = g.info.get("launches", {})
     for p in info.get("placements", ()):
         if p["type"] not in types or p.get("sector") != sector:
             continue
@@ -828,10 +883,8 @@ def road_state_edges(g, rel, info, sector, region, mesh=None):
                     for v, _c, kind in rel.fwd[u]:
                         if not region[v] or (kind != "launch" and not near[u]):
                             continue
-                        stored = launches.get((u, v)) if kind == "launch" else None
-                        way = (np.asarray(stored["way"]) - o) @ A.T if stored is not None and len(stored.get("way", ())) > 1 else P[[u, v]]
-                        off = _box_span(way, lower_lo, lower_hi)
-                        on = kind not in ("gap", "bridge") and _box_span(way, lo - pad, hi + pad)
+                        off = _motion_box(g,u,v,kind,lower_lo,lower_hi,o,A)
+                        on = kind not in ("gap", "bridge") and _motion_box(g,u,v,kind,lo-pad,hi+pad,o,A)
                         if on or off:
                             guards[int(u), int(v), kind] = (on, off)
         else:
@@ -950,30 +1003,28 @@ def flap_state_edges(g, rel, info, sector, region, lifts):
         for lo, hi in [*wall_boxes, (slab_lo, slab_hi), (b_slab_lo, b_slab_hi)]:
             near |= ((low <= hi) & (high >= lo)).all(axis=1)
 
-        def screen(edge, way):
+        def screen(edge, crosses):
             u, v, kind = edge
             # A steel rail has its own support even if its centreline is at deck height.
             # Still guard it below if the new standing face intersects that centreline.
             rolling = kind in ("roll", "step") and g.kind[u] == g.kind[v] == 0
-            deck_a = supported[u] or supported[v] or (rolling and _box_span(way, slab_lo, slab_hi))
-            deck_b = rolling and _box_span(way, b_slab_lo, b_slab_hi)
+            deck_a = supported[u] or supported[v] or (rolling and crosses(slab_lo, slab_hi))
+            deck_b = rolling and crosses(b_slab_lo, b_slab_hi)
             # Dependent edges disappear without the flap. Relaxed links between two
             # independent banks remain breaks, not proof of a crossing.
             if deck_a or deck_b:
                 deck_edges[edge] = 0 if deck_a else 1
-            on = deck_b or (len(way) > 1 and _box_span(way, *wall_boxes[1]))  # B upright blocks in A
-            off = deck_a or (len(way) > 1 and _box_span(way, *wall_boxes[0]))
+            on = deck_b or crosses(*wall_boxes[1])  # B upright blocks in A
+            off = deck_a or crosses(*wall_boxes[0])
             if on or off:
-                guards[edge] = (on, off)
+                a, b = guards.get(edge, (False, False))
+                guards[edge] = (a or on, b or off)
 
         for i in np.flatnonzero(near):
-            screen(ground[i], P[uv[i]])
+            screen(ground[i], lambda a,b: _box_span(P[uv[i]],a,b))
         for edge in flights:
             u, v, kind = edge
-            stored = g.info.get("launches" if kind == "launch" else "lifts", {}).get((u, v), {})
-            way = stored.get("way", ())
-            local = (np.asarray(way) - o) @ frame.T if len(way) > 1 else ()
-            screen(edge, local)
+            screen(edge,lambda a,b: _motion_box(g,u,v,kind,a,b,o,frame))
         yield dict(name=name, type="flap", edges=edges, deck_edges=deck_edges), guards
 
 
@@ -1131,17 +1182,7 @@ def pendulum_edges(g, rel, info, sector, region, mesh, without, lifts, guards, s
         def hits(a, b):
             return [h for s in shapes if (h := _pendulum_hit(a, b, s)) is not None]
 
-        def held(point, clearance=True):
-            if mesh is None:
-                return False
-            # ASSUMED: the same height clearance as a vacated T-board foot. Keep the post, base,
-            # other placements and any fixed stopper in the test for obstruction.
-            contacts = [q for q in mesh.contacts(point, radius=BALL_R, margin=0.35)
-                        if not (mesh.entities[q.entity].get("placement") == name
-                                and mesh.entities[q.entity].get("name") == "Modul17_Dreharme")]
-            fixed = [q for q in contacts if not mesh.entities[q.entity].get("placed")
-                     or mesh.entities[q.entity].get("type") in coarse.FIXED_TYPES]
-            return (not clearance or not any(q.gap < -0.35 for q in contacts)) and coarse._held(mesh, fixed)
+        proof=_FixedSupport(mesh,lambda e:e.get('placement')==name and e.get('name')=='Modul17_Dreharme')
 
         def add(u, v, c, points):
             if not all(allowed(P[u], P[v], q) for q in points):
@@ -1200,8 +1241,7 @@ def pendulum_edges(g, rel, info, sector, region, mesh, without, lifts, guards, s
                             pair = tuple(sorted((u, v)))
                             if pair not in supported:
                                 c = float(np.linalg.norm(g.pos[v] - g.pos[u]))
-                                way = g.pos[u] + np.linspace(0, 1, int(np.ceil(c / 0.5)) + 1)[:, None] * (g.pos[v] - g.pos[u])
-                                supported[pair] = c if all(held(q) for q in way) else None
+                                supported[pair] = c if proof.line(g.pos[u],g.pos[v]) else None
                             c = supported[pair]
                             if c is None:
                                 continue
@@ -1220,14 +1260,25 @@ def pendulum_edges(g, rel, info, sector, region, mesh, without, lifts, guards, s
             for pairs, kind in ((g.info.get("launches", {}), "launch"),
                                 ({(u, v): g.info["lifts"][u, v] for u, v, *_ in lifts}, "lift")):
                 for (u, v), e in pairs.items():
-                    if (u, v) in skipped or (u, v, kind) in skipped or not (region[u] and region[v]) or e.get("way") is None:
+                    if (u, v) in skipped or (u, v, kind) in skipped or not (region[u] and region[v]) :
                         continue
-                    path = (np.asarray(e["way"]) - o) @ A.T
-                    if np.any(path.max(0) < lo) or np.any(path.min(0) > hi):
-                        continue
-                    if any(not allowed(a, b, q) for a, b in zip(path, path[1:]) for q in hits(a, b)):
-                        skip.add((u, v, kind))
-                        blocked.add((u, v))
+                    blocked_route=False
+                    for path in motion.edge_paths(g,u,v,kind):
+                        for part in path:
+                            if motion.box_hit(part,lo,hi,o,A) is None:continue
+                            for n,d in shapes:
+                                world=n@A
+                                t=motion.convex_hit(part,world,world@o-d)
+                                if t is None:continue
+                                q=(part.point(t)-o)@A.T
+                                tangent=motion.tangent(part,t)@A.T
+                                if not allowed(q,q+tangent,q):
+                                    blocked_route=True;break
+                            if blocked_route:break
+                        if blocked_route:break
+                    if blocked_route:
+                        skip.add((u,v,kind))
+                        blocked.add((u,v))
         candidates, contacts = [], {}
         board_fall = {nm.split("/")[0]: d["fall"] for nm, d in g.info.get("boards", {}).items()
                       if d["sector"] == sector and "fall" in d}
@@ -1267,14 +1318,7 @@ def pendulum_edges(g, rel, info, sector, region, mesh, without, lifts, guards, s
                 operations.setdefault(nm, set()).update(sites)
         theta = np.linspace(0, 2 * np.pi, 73)
         sweep = centre + reach * (np.cos(theta)[:, None] * A[0] + np.sin(theta)[:, None] * A[2])
-        # ASSUMED: a clear ring around the axle is not needed for routing; report unsupported
-        # ball-centre samples here as a hole warning, not as a constraint on any edge.
-        circle = centre + (reach / 2) * (np.cos(theta[::9])[:, None] * A[0] + np.sin(theta[::9])[:, None] * A[2])
-        # ASSUMED: flag a broad gap (at least half the ring), not a local notch.
-        # Terrain changes up to one radius lower are not a hole.
-        below = [np.array([0., h, 0.]) for h in np.linspace(0, BALL_R, 5)]
-        hole = mesh is not None and 2 * sum(not any(held(q - d, clearance=False) for d in below)
-                                             for q in circle[:-1]) >= len(circle) - 1
+        hole = proof.broad_hole(centre,(reach/2)*A[0],(reach/2)*A[2],BALL_R)
         rows.append(dict(name=name, pos=o.tolist(), sweep=sweep, reach=reach, limit=limit, hole=hole, candidates=candidates,
                          edges=[(int(u), int(v), c) for (u, v), c in sorted(edges.items())], operations=operations,
                          blocked=[(int(u), int(v)) for u, v in sorted(blocked)]))
@@ -1552,7 +1596,6 @@ def _elevator_edges(g, info, sector, region, mesh, without, first_bit):
 # ASSUMED: allowances for coarse floor/rail samples, not timing or game thresholds.
 _SWING_LIP = 1.5
 _TIMED_SUPPORT_MARGIN = 0.35
-_TIMED_SUPPORT_STEP = 0.5
 _TIMED_ROLL = ("roll", "rail", "rail end")
 
 
@@ -1625,6 +1668,7 @@ def _sandbag_banks(g, rel, P, region, V, mesh, guards, skipped):
                     todo.append(q)
         return False
 
+    proof=_FixedSupport(mesh)
     supported = {}
     pairs = set()
     for starts, ends in ((left, right), (right, left)):
@@ -1638,9 +1682,8 @@ def _sandbag_banks(g, rel, P, region, V, mesh, guards, skipped):
                 pair = tuple(sorted((int(u), int(v))))
                 if pair not in supported:
                     c = float(np.linalg.norm(g.pos[u] - g.pos[v]))
-                    way = np.linspace(g.pos[u], g.pos[v], int(np.ceil(c / _TIMED_SUPPORT_STEP)) + 1)
                     supported[pair] = c if (rail_supported(u, v) and rail_supported(v, u)
-                                            or all(_timed_fixed_support(mesh, q) for q in way)) else None
+                                            or proof.line(g.pos[u],g.pos[v],_TIMED_SUPPORT_MARGIN,only_fixed_blocks=True)) else None
                 if supported[pair] is not None:
                     pairs.add(pair)
                     break
@@ -1739,15 +1782,11 @@ def state_graph_for(g, info: dict, sector: int, world, operate_cost: float, cork
     without.update(absent)
     from . import trafo
     from .kernel import _hinge_angle
-    from .launch import FOLLOW_SPEED
+    from .takeoff import FOLLOW_SPEED
     rel = getattr(g, "_relaxed", None)
     if rel is None:
         rel = g._relaxed = coarse.Relaxed(g)
-    anchors = [info["start"]] + info["checkpoints"] + [info["airship"]]
-    pts = [np.array(info["reset_points"][sector - 1], float)] + ([np.array(anchors[sector], float)] if anchors[sector] is not None else [])
-    pts += [np.array(p["position"], float) for p in info["placements"] if p.get("sector") == sector]
-    P = np.array(pts)
-    region = np.all((g.pos >= P.min(0) - 60.0) & (g.pos <= P.max(0) + 60.0), axis=1)
+    region = coarse.sector_mask(g.pos, info, sector)
     R = trafo.rules()
     cost = (R.body_after + 1) / 66.0 * FOLLOW_SPEED
     trafos = [t for t in trafo.of(info, sector) if t["name"] not in without]
@@ -1760,9 +1799,7 @@ def state_graph_for(g, info: dict, sector: int, world, operate_cost: float, cork
     lifts = [(u, v, e["cost"], coarse.KIND_INDEX[e["ends_in"]] if e.get("ends_in") and any(t["kind"] == e["ends_in"] for t in trafos) else -1)
              for (u, v), e in g.info.get("lifts", {}).items() if e.get("sector") == sector
              and not any(np.linalg.norm(np.asarray(e["fan"], float) - f) < 1.0 for f in gone_fans)]
-    # a run-up rolled as another kind (it starts in a transformer's range) is that kind's only where the range is this
-    # sector's: elsewhere the ball there is not that kind
-    skip = [(w, v) for (w, v), e in g.info.get("launches", {}).items() if e.get("ball", "wood") != "wood" and tk[w] != coarse.KIND_INDEX[e["ball"]]]
+    skip = []
     mechs, readers = [], []
     props = world.props
     for name, d in sorted(g.info.get("gates", {}).items()):
@@ -1872,9 +1909,15 @@ def state_graph_for(g, info: dict, sector: int, world, operate_cost: float, cork
             tk = np.r_[tk, np.full(n, -1)]
             mechs.extend(elevators)
             readers.extend((lambda _scene: 0) for _ in elevators)
+    from .takeoff import valid_in_sector
+    trigger_paths = [(np.asarray(t['pos'], float), t['kind']) for t in trafos]
+
+    def launch_eligible(_u, v, edge):
+        return valid_in_sector(edge, g.pos[v], trigger_paths, R.radius)
+
     sg = coarse.StateGraph(rel, g, region, tk, cost, lifts, mechs, operate_cost, guards=guards,
                            links=links, skip=skip, bridges=bridges,
-                           floats=active_floats, pendulums=pendulums, timed=timed)
+                           floats=active_floats, pendulums=pendulums, timed=timed, launch_eligible=launch_eligible)
     sg.float_row_names = {r["name"] for r in floats}
     M = len(mechs)
 
@@ -1936,14 +1979,14 @@ def graph_for(mesh: Mesh, info: dict, cache: Path | None = None, log=print):
     mesh = coarse.without_loose(mesh)                     # the loose bodies are bodies: no obstacles, but going through one costs (below)
     fixed = mesh.meta.get("fixed_bodies")
     from . import props, trafo
-    from .launch import FOLLOW_SPEED
+    from .takeoff import RULE as TAKEOFF_RULE, add_launches
     marks = dict(fixed_bodies=fixed, transformers="wood and stone ones can be gone through, at the cost of the transformation",
                  loose_balls="bodies: gone through at a cost %s; parts of %s" % (sorted(props.COARSE_COST.items()), sorted(props.PARTS)),
                  gate_rule="a closed gate blocks the edges into it, the target plate only past the face it is pushed on; the edges it clears when pushed open %.2f are kept per gate" % GATE_OPEN,
                  board_rule="a push board is crossed where it is pushed: road places in front of it lead across to the far side, cost %.1f more" % BOARD_COST,
                  seesaw_rule="a seesaw is crossed from its low end to beyond its high end, cost %.1f more; kept apart, by state" % SEESAW_COST,
                  state_rule="board, seesaw and gate edges and the transformations' costs are in the state graph, not the graph's own edges",
-                 launch_rule="a run-up inside a transformer's range is that kind's",
+                 launch_rule=TAKEOFF_RULE,
                  lift_rule="fan lifts for a paper ball, ridden by their legs, with the kind they end in (exits 4 to 32 out, -1.5 to 25 up, always those by a transformer; two fans in a row within %.0f, braking %s): waits %s, %d entries and %d exits per fan, unsure x%.1f" % (LIFT_CHAIN, LIFT_CHAIN_BRAKES, LIFT_WAITS, LIFT_ENTRIES, LIFT_EXITS, LIFT_UNSURE))
     if cache is not None and cache.exists():
         g = pickle.load(open(cache, "rb"))
@@ -1951,16 +1994,33 @@ def graph_for(mesh: Mesh, info: dict, cache: Path | None = None, log=print):
         if (n == len(mesh.A) or (n is None and not mesh.meta.get("bodiless_dropped"))) and all(g.info.get(k) == v for k, v in marks.items()):
             return g
         log("the cached coarse graph %s was made by other rules (fans, markers, domes or transformers were obstacles in it): building it again" % cache.name)
-    from .launch import add_launches
     g = coarse.build(mesh, avoid=coarse.keep_out(info["placements"]), log=log)
-    coarse.add_steps(g, mesh, log=log)
+    from . import conformal, rails, terrain
+    g.info['conformal'] = conformal.build(mesh, rails.physical_lanes(g, mesh))
+    surface = g.info['conformal']
+    log('conformal: %d road faces, %d plane patches, %d rail chains' %
+        ((surface.face_patch >= 0).sum(),len(surface.patches),len(surface.rails)))
+    terrain.rebuild(g,mesh,surface,log=log)
     R = trafo.rules()
-    by_kind = dict(wood=ph.WOOD, stone=ph.STONE, paper=ph.PAPER)
     ball_at = {}
     for t in trafo.of(info):
         for k in np.flatnonzero(np.linalg.norm(g.pos - t["pos"], axis=1) < R.radius):
-            ball_at[int(k)] = by_kind[t["kind"]]
-    add_launches(g, world_for(mesh, info, "strict"), log=log, ball_at=ball_at)
+            ball_at[int(k)] = t["kind"]
+    # Gate screening can split a component that looked connected when
+    # selecting launches. Compute witness labels with gates already closed,
+    # without changing the graph that supplies geometric run-up support.
+    from dataclasses import replace
+    shadow = replace(g, adj=[list(adj) for adj in g.adj])
+    gate_edges(shadow, info, parts)
+    g.info['launch_component_adj'] = shadow.adj
+    g.info['launch_sector_masks'] = [coarse.sector_mask(g.pos, info, sec)
+                                     for sec in range(1, len(info['reset_points']) + 1)]
+    del shadow
+    try:
+        add_launches(g, mesh, info, log=log, transformer_kind=ball_at)
+    finally:
+        g.info.pop('launch_component_adj', None)
+        g.info.pop('launch_sector_masks', None)
     # (a transformer is gone through at the cost of the transformation: by the ball's kind, in `coarse.StateGraph`)
     # a loose ball can be knocked aside: the edges that lead into where it lies cost more, by its kind
     for p in info.get("placements", ()):
@@ -1990,6 +2050,7 @@ def graph_for(mesh: Mesh, info: dict, cache: Path | None = None, log=print):
     g.info.update(marks)
     if cache is not None:
         pickle.dump(g, open(cache, "wb"))
+        conformal.write_candidates(g, cache.with_name(cache.stem.removesuffix('-coarse-solid')))
     return g
 
 
@@ -2004,7 +2065,7 @@ def coarse_plans(mesh: Mesh, info: dict, g) -> list:
     This is only what the coarse level proposes: positions, no speeds, and no statement that a ball can drive it."""
     from collections import Counter
 
-    from .staged import nearest_node
+    from .coarse import nearest_node
 
     rel = coarse.Relaxed(g)
     strict = world_for(mesh, info, "strict")
@@ -2052,7 +2113,10 @@ def coarse_plans(mesh: Mesh, info: dict, g) -> list:
             edge = dict(edge=e, kind=k, near=a.copy(), far=b.copy(), across=float(math.hypot(b[0] - a[0], b[2] - a[2])), rise=float(b[1] - a[1]))
             if k == "launch":
                 L = g.info["launches"][(nodes[e], nodes[e + 1])]
-                plan["launches"].append(dict(edge, runup=float(L["runup"]), speed=float(L["launch_speed"]), across=float(L["across"]), down=float(L["down"])))
+                plan["launches"].append(dict(edge, runup=float(L["runup"]), speed=float(L["launch_speed"]),
+                                             across=float(L["across"]), down=float(L["down"]), ball=L["ball"],
+                                             ticks=float(L["ticks"]), time=float(L.get("time", L["ticks"] / 132.)),
+                                             keys_in_air=L["keys_in_air"]))
             elif k == "step":
                 plan["steps"].append(edge)
             elif k in ("gap", "bridge"):

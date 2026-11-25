@@ -26,6 +26,7 @@ import time
 import numpy as np
 
 from . import coarse, fine
+from .coarse import nearest_node
 from . import physics as ph
 from .geometry import BALL_R
 from .kernel import DEAD, OK, PLACED, TRIGGER
@@ -44,11 +45,7 @@ BALLS = {"wood": ph.WOOD, "stone": ph.STONE, "paper": ph.PAPER}
 from .trafo import SOLVED as SOLVED_BALLS      # noqa: E402  the kinds a route goes on as
 
 
-def nearest_node(g, togo, pos, reach: float = 3.0) -> int:
-    d = np.sqrt(((g.pos - pos) ** 2).sum(1))
-    d[~np.isfinite(togo)] = np.inf
-    near = np.flatnonzero(d <= reach)
-    return int(near[np.argmin(d[near])]) if len(near) else int(d.argmin())
+
 
 
 def placed_between(mesh, a, b, width: float = 3.5) -> list:
@@ -514,11 +511,14 @@ def solve_sector(mesh, info, g, sector: int, tries: int = 300_000, seed: int = 0
         if cut is not None:
             nodes, kinds = nodes[:cut + 1], kinds[:cut]
         # the way the follower sees: the plan's places, and for a launch on it the run-up and the landing of the
-        # kernel run that made the edge (its start place alone may be far from the ledge)
+        # closed-form representative (its start place alone may be far from the ledge)
         way, node_of = [g.pos[nodes[0]]], [0]
         for e, k in enumerate(kinds):
             if k in ("launch", "lift"):
-                for q in g.info["launches" if k == "launch" else "lifts"][(nodes[e], nodes[e + 1])]["way"][1:]:
+                from .takeoff import way_for
+                u, v = nodes[e:e + 2]
+                stored = way_for(g, u, v, ball_now.name) if k == "launch" else g.info["lifts"][u, v]
+                for q in stored["way"][1:]:
                     way.append(np.asarray(q, np.float64))
                     node_of.append(e)
             way.append(g.pos[nodes[e + 1]])

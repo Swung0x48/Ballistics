@@ -3,8 +3,7 @@ import numpy as np
 
 from ballistics import coarse, staged
 from ballistics.geometry import Mesh
-from ballistics.kernel import World
-from ballistics.launch import add_launches
+from ballistics.takeoff import add_launches
 
 
 def quad(x0, x1, z0, z1, y):
@@ -23,7 +22,7 @@ def level(parts, goal, launches=True):
     g = coarse.build(m)
     coarse.add_steps(g, m)
     if launches:
-        add_launches(g, World.of(m))
+        add_launches(g, m, info)
     return m, info, g
 
 

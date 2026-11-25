@@ -89,7 +89,7 @@ def test_plane_exact_integer_and_between_samples_near_apex():
     assert cf.plane_hit(WOOD, s, [0, WOOD.radius + (high + sampled) / 2, 0], [0, -1, 0]) is None
 
 
-def test_triangle_faces_and_sampled_edges():
+def test_triangle_faces_and_swept_edges():
     s = state(10, (0., -1., 0.))
     tri = np.array([[-8., 0., -8.], [8., 0., -8.], [0., 0., 8.]])
     for t in (tri, tri[::-1]):
@@ -99,9 +99,22 @@ def test_triangle_faces_and_sampled_edges():
     assert cf.triangle_face_hit(WOOD, s, tri + [30, 0, 0]) is None
     tri = np.array([[1., 0., -4.], [1., 0., 4.], [7., 0., 0.]])
     assert cf.triangle_face_hit(WOOD, s, tri) is None
-    np.testing.assert_array_equal(cf.triangle_edge_samples(WOOD, s, tri, [0, 3.5, cf.landing_step(WOOD, s, 1)]), [False, False, True])
+    assert cf.triangle_edge_hit(WOOD, s, tri, 3.5) is None
+    hit = cf.triangle_edge_hit(WOOD, s, tri, cf.landing_step(WOOD, s, 1))
+    np.testing.assert_allclose(hit.point, [1,0,0], atol=1.e-9)
     for t in (tri, tri + [0, 0, 4.5]):  # closest is edge and vertex respectively
-        assert cf.triangle_edge_samples(WOOD, state(0.5), t, [0])[0]
+        assert cf.triangle_edge_hit(WOOD, state(.5), t, 0).step == 0
+
+
+def test_triangle_corner_grazes_between_old_probes():
+    # Both endpoints of this sub-PSI chord miss. The shallow graze lasts
+    # less than the former radius/4 spacing and has a quadratic entry.
+    tri = np.array([[0.,0.,0.],[0.,-1.,-2.],[-1.,-1.,-2.]])
+    s = State(np.array([.02,1. - 1.e-5,0.]), np.array([-4.,0.,0.]))
+    h = cf.triangle_edge_hit(WOOD,s,tri,1.,radius=1.)
+    assert h.step == 1
+    np.testing.assert_allclose(h.point,[0,0,0],atol=1.e-10)
+    np.testing.assert_allclose(h.fraction, (.02 - math.sqrt(1.-s.pos[1]**2))/(4.*DT), atol=1.e-9)
 
 
 def test_triangle_return_crossing():

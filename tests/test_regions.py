@@ -912,3 +912,23 @@ def test_sandbag_cuts_cached_rail_only_in_regions_and_only_at_the_cross_section(
         for plain in (build(cork=True, without=["M"])[0], build(cork=False)[0]):
             assert (W, 2, 2, "rail") in plain.step(W, 1)
             assert not plain.timed
+
+
+def test_kinds_are_chosen_for_the_whole_map():
+    # sector 1 ends as wood or paper with no break; sector 2 entered as paper has 0 breaks, as wood 2:
+    # the map chooses paper at the end of sector 1, although wood ties there
+    options = [{"wood": {"wood": (0, 4), "paper": (0, 5)}},
+               {"wood": {"wood": (2, 3)}, "paper": {"paper": (0, 2), "stone": (1, 1)}}]
+    assert regions.pick_kinds(options) == [("wood", "paper"), ("paper", "paper")]
+
+
+def test_kinds_ties_go_by_links_then_kind_order():
+    options = [{"wood": {"wood": (0, 3), "stone": (0, 3), "paper": (0, 2)}}]
+    assert regions.pick_kinds(options) == [("wood", "paper")]
+    options = [{"wood": {"stone": (0, 3), "wood": (0, 3)}}]
+    assert regions.pick_kinds(options) == [("wood", "wood")]
+
+
+def test_a_sector_without_a_way_passes_its_kind_on():
+    options = [{"wood": {"stone": (1, 2)}}, {"stone": {}}, {"stone": {"wood": (0, 1)}}]
+    assert regions.pick_kinds(options) == [("wood", "stone"), ("stone", None), ("stone", "wood")]

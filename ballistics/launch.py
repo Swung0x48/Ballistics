@@ -25,10 +25,9 @@ from . import physics as ph
 from .coarse import STEP, Graph, _lane_chains
 from .geometry import CONTACT_MARGIN
 from .kernel import OK, World
+from .takeoff import FOLLOW_SPEED, STOP_COST
 
 RUNUPS = (0.0, 8.0, 16.0, 32.0)        # how far back the run-up starts (0: the ball tips over the ledge from rest)
-FOLLOW_SPEED = 9.0                     # the follower's pace, to put a launch's duration on the same scale as a rolled length
-STOP_COST = 9.0                        # a launch starts from rest: the stop costs about a second
 
 
 def _push_towards(dx: float, dz: float) -> int:

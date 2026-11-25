@@ -129,3 +129,28 @@ def test_level_1_rails():
         assert axis_distance((ref[:, :3] + ref[:, 3:6]) / 2, m.tubes).max() < 0.02          # and nothing of its missing here
         total = lambda t: float(np.linalg.norm(t[:, 3:6] - t[:, :3], axis=1).sum())
         assert total(m.tubes) == pytest.approx(total(ref), rel=0.005)
+
+
+def test_raw_straight_double_track_is_not_partitioned_by_the_mapping_grid(monkeypatch):
+    # 47.6-unit tubes with a redundant ring in the middle of one tube.
+    # Changing the permitted coarse lattice must not split the raw rail.
+    tubes=np.array([[0.,0.,0.,9.,0.,0.,.35],[9.,0.,0.,47.6,0.,0.,.35],
+                    [0.,0.,3.8,47.6,0.,3.8,.35]])
+    first=rails.lanes(tubes)[0]
+    resample=rails.resample
+    monkeypatch.setattr(rails,'resample',lambda line:resample(line,spacing=.55))
+    second=rails.lanes(tubes)[0]
+    assert first['double'] and second['double']
+    assert len(first['points'])!=len(second['points'])
+    assert len(first['segments'])==2
+    np.testing.assert_array_equal(first['segments'],second['segments'])
+    np.testing.assert_allclose(first['segments'][:,0],[0.,47.6])
+
+
+def test_paired_short_mesh_pieces_keep_both_tubes_joint_events():
+    a=np.array([[0.,0.,0.],[8.,0.,0.],[12.,-1.,0.]])
+    b=np.array([[0.,0.,3.8],[7.,0.,3.8],[10.,-.6,3.8],[12.,-1.,3.8]])
+    p=rails.paired_pieces(a,b,2.,.35)
+    assert 3<=len(p)<=len(a)+len(b)-2
+    for end in (0,-1):
+        np.testing.assert_allclose(p[end,[0,2]],((a[end]+b[end])/2)[[0,2]])

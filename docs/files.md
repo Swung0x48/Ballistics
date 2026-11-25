@@ -32,6 +32,30 @@ python -m ballistics export <地图.nmo> --out data
 
 `coarse` 写出 `<名字>-coarse-plan.json`：每个小节一条只有位置的线（`points`，球心位置）、每一段是哪种边（`kinds`）、用到的起飞边和台阶、以及链接（粗层接不上的地方：位置、横向距离、高差、附近 9 个单位内摆放物的类型）。没有规划的小节写明原因。另有两项说明一条线不完整：`starts_off_reset_point`，这条线不是从盘点开始的，而是从离盘点这么远的地方开始，因为盘点附近即使加上链接也到不了终点；`short_of_goal`，这条线的终点离终点标记还有这么远（最后一个小节的路在飞船前就结束了）。
 
+粗层缓存 `<名字>-coarse-solid.pkl` 里，`Graph.info["launches"][(u, v)]` 是助跑起点、落地点这对粗层节点的起飞边。一对节点可能有不同球种的代表，`variants` 列出按球种保留的边；点对上的顶层字段是代价最低的代表，状态图只用当前球种的代价与边。`launch_rule` 缓存标记变化时重建旧图。
+
+| 字段 | 含义 |
+|---|---|
+| `ball` / `site` | 球种 / 崖边或轨端粗层节点（不是助跑起点） |
+| `launch_position` / `launch_velocity` | 实际使用的起跳球心和带坡度的初速度 |
+| `way` | 助跑、绕棱、闭式飞行和接触到粗层落地点的折线，世界坐标球心，间距目标为 1；供显示、路线导出和旧跟随器读取 |
+| `runup` / `launch_speed` | 推算的水平助跑长度 / 起跳三维速度标量（每物理秒） |
+| `lip_speed` / `rim_ticks` / `rail_support_prefix_ticks` | 唇部速度 / 绕棱 PSI 数 / 绕棱结束后按同轨仍受托的局部前缀 PSI 数；前缀不计作自由飞行 |
+| `landing_position` / `landing_face` | 最早有效支撑接触时的球心 / 所碰网格三角面；缓存索引的 `v` 是就近映射的粗层位置 |
+| `bounce_count` / `contacts` | 非支撑反弹次数 / 按顺序记录的固体接触（含最终支撑）：类型、三角面、物体、飞行相对 PSI、球心、法线、撞前速度；反弹另记撞后速度。双轨落地标为 `dual_rail`。 |
+| `launch_rule` / `motion` | v10 与旧缓存分开。缓存里的 `motion` 保存助跑直段、闭式飞行、支撑和绕棱／侧翻弧，供机关及变球器守卫求交。风扇暂保存完整内核步内弦。`way` 不提供这些判定的几何。 |
+| `rail_departures` | v8 沿轨串边的脱轨序列：方式、钢轨物体、位置、速度、轨上相对时刻、推力、瞄准粗层点和反解弧长区间；几何端点是零宽区间。缓存 `rail_departure_candidates` 保存映射成功的候选的紧凑行，测量脚本输出同内容的 CSV。 |
+
+v13 另存 `terrain_ball_masks`（`(u,v,kind)` 的木／石／纸球位掩码，未列为三种都能走）；`terrain_uncertain` 单列实测区间内未定的坡／台阶；`terrain_support`、`terrain_lips` 对应共形支撑和实际台阶棱。`launch_runup_adj` 是继承的几何起飞提案，不是分球种滚动图。新版 `launch_rule` 使旧图失效。
+
+v12 的 `g.info["conformal"]` 与粗层图一起缓存：`patches` 保存平面法线、平面常数、原始面编号、公开边和 Shapely XZ 多边形；`face_patch`、`node_patch`、`node_patches` 保存面/落脚点索引（未归入共形路面的节点用 `-1`）；`regions` 按球种保存块 × 滚动区域的多边形和映射节点；`rails` 是 v11 真实轨心直段。重建时另外输出 `<名字>-conformal-candidates.csv`（经过包络核对的瞄准代表，未必飞得过）及 `<名字>-conformal-rail-candidates.csv`（已映射的钢轨续行候选，包括非最快代表）。旧图按 `launch_rule` 失效。
+
+`g.lanes` 的两个几何字段（v11）：`points` 是原粗层落脚点（用于配对和映射）；`segments` 是 `(N, 3)` 的球心路径折点，相邻两行是一段直线，供捕获、沿轨、接缝、助跑和反解。两个数组的长度不必相同。双轨如果没有由两支管共同形成的有效段，`segments` 可以为空。新 `launch_rule` 会使旧的求解图缓存重建。
+| `segments` / `first_landing_node` | 有闭式续行的边记录首次飞行及后续 `rail`、`floor`、`rim`、`flight`、`release` 片段与首次落点节点；片段含物体、起止球心和速度、推力、PSI、游戏秒及结束原因。`landing_position` 指最终交回粗层的球心。命中同一节点对与球种的不同续行见证可共存于 `variants`。 |
+| `across` / `down` | 自由飞行起点到接触球心的水平距离 / 带符号落差 |
+| `keys_in_air` / `air_inputs` / `switch_tick` | 世界 X、Z 推力，以对应球种的单键推力为 1；两段代表另存两组向量和整数切换 PSI（从代表曲线起点计，即同轨受托前缀之前），`switch_tick=0` 表示恒定 |
+| `flight_ticks` / `ticks` / `time` | 飞行 PSI 数 / 助跑、绕棱、同轨受托前缀与飞行的总 PSI 数 / 总游戏秒（`ticks / 132`），可含步内小数；当前搜索代价仍为 `ticks / 66 * FOLLOW_SPEED + STOP_COST` |
+
 ## 输出：区域和连接
 
 `solve`（不带 `--roll`）分三步写出三份文件（怎么算的见 [solver.md](solver.md) 的“区域”），`sectors[]` 都是每个小节一项。
@@ -40,7 +64,7 @@ python -m ballistics export <地图.nmo> --out data
 
 | 内容 | 含义 |
 |---|---|
-| `entry_kind` | 这个小节从哪种球开始（前一个小节的走法以哪种球到达） |
+| `entry_kind` | 这个小节从哪种球开始（前一个小节的走法以哪种球到达；各节的球种整关一起选，见 [solver.md](solver.md) 的“球种整关一起选”） |
 | `mechanisms` | 这个小节粗层记状态的机关，按位的顺序（第二步的 `mechanism_bits` 的第 m 位是第 m 个：栅栏开了、推板倒了、跷跷板低在另一头） |
 | `transformers` | 这个小节的变球器：名字、种类、位置 |
 | `start_region`、`goal_regions` | 盘点所在的区域（按入口的球种）；目标所在的区域（每种球一个） |
@@ -51,6 +75,8 @@ python -m ballistics export <地图.nmo> --out data
 | 内容 | 含义 |
 |---|---|
 | `fewest_breaks` | 到目标最少要跨几个断点；到不了时为 `null` |
+| `exit_kind` | 选中的走法以哪种球到达目标（下一个小节以它入场）；到不了时为 `null` |
+| `breaks_by_entry_and_exit_kind` | 试过的每种入场球、每种到达球种各要几个断点，如 `{"wood": {"wood": 0, "paper": 0}}` |
 | `way` | 断点最少、其次连接最少的走法：每一步的区域（名字带球种）、球种、机关位、怎么到的（`by`）和这条连接的说明（变球的连接写明进了哪种变球器的范围） |
 | `coarse_plan` | 粗层自己的最短计划压成的区域步骤，对照用 |
 | `links` | 区域之间的连接（不含断点）：从哪个区域到哪个、是什么、最小代价、有几条这样的边、一个例子的两端位置 |

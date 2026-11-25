@@ -16,7 +16,7 @@ Ballance 地图的静态分析器。
 
 ## 用法
 
-需要 Python 3.11 以上，以及 numpy、numba、Pillow（画图）、scipy（闭式判定里的特殊函数），都写在 `pyproject.toml` 里。读 `.nmo` 另外需要 libcmo21 的 `pybmap`，怎么找到它见 [docs/files.md](docs/files.md)。
+需要 Python 3.11 以上，以及 numpy、numba、Pillow（画图）、scipy（闭式判定里的特殊函数）、trimesh 和 shapely（共形一步：合并同一平面的路面、多边形求交），都写在 `pyproject.toml` 里。读 `.nmo` 另外需要 libcmo21 的 `pybmap`，怎么找到它见 [docs/files.md](docs/files.md)。
 
 导出地图的碰撞网格和锚点（出生点、盘点、飞船、摆放的东西）：
 

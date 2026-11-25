@@ -13,7 +13,6 @@ import numpy as np
 from numba import njit
 
 from . import fans
-from .geometry import _closest, FACE
 from .physics import DT, GRAVITY, KEY_RIGHT, KEY_UP, Ball, Params, State, key_push
 
 
@@ -77,6 +76,25 @@ def _w_log(logabs, negative, branch):
 
 def _coeff(n, loss):
     """d**n, S=sum(d**k), T=sum((1-d**k)/loss), k=0..n-1."""
+    if np.isscalar(n):
+        n = float(n)
+        if not math.isfinite(n) or n < 0 or not 0 <= loss < 1:
+            raise ValueError("expected finite n >= 0 and 0 <= damping loss < 1")
+        if loss == 0:
+            return np.float64(1), np.float64(n), np.float64(n * (n - 1) / 2)
+        if n == 1:
+            return np.float64(1 - loss), np.float64(1), np.float64(0)
+        l = math.log1p(-loss)
+        x = n * l
+        q = -math.expm1(x) / loss
+        if abs(x) < 1e-3:
+            delta = (-loss / 2 - loss**2 / 3 - loss**3 / 4 - loss**4 / 5
+                     - loss**5 / 6 - loss**6 / 7) if loss < 1e-3 else 1 + l / loss
+            t = (n * delta + (x / loss)**2 * loss *
+                 (1/2 + x * (1/6 + x * (1/24 + x * (1/120 + x / 5040))))) / loss
+        else:
+            t = (n - q) / loss
+        return np.float64(math.exp(x)), np.float64(q), np.float64(t)
     n = np.asarray(n, dtype=float)
     if np.any(~np.isfinite(n)) or np.any(n < 0) or not 0 <= loss < 1:
         raise ValueError("expected finite n >= 0 and 0 <= damping loss < 1")
@@ -114,9 +132,17 @@ def _air_impulse(ball, keys, quarter, fan_count=0):
     return b
 
 
-def flight(ball: Ball, start: State, n, keys=0, quarter=0) -> State:
+def air_impulse(ball: Ball, keys=0, quarter=0, *, push=None):
+    """Impulse with optional constant world (x,z) input in the key convex hull."""
+    b = _air_impulse(ball, keys, quarter)
+    if push is not None:
+        b[[0, 2]] = ball.push * np.asarray(push, float)
+    return b
+
+
+def flight(ball: Ball, start: State, n, keys=0, quarter=0, *, push=None) -> State:
     """Free flight at n (scalar or array); fixed keys and camera quarter."""
-    return _flight(ball, start, n, _air_impulse(ball, keys, quarter))
+    return _flight(ball, start, n, air_impulse(ball, keys, quarter, push=push))
 
 
 def _flight(ball, start, n, b):
@@ -212,6 +238,14 @@ def _crossing_step(v, b, loss, target, reached=None):
     lo, hi = (0.0, turn) if b < 0 else (turn, math.inf)
     if b < 0 and turn == 0:
         return None
+    # The Lambert proposal normally already identifies the integer crossing.
+    # Check its predecessor to retain first-crossing semantics despite rounding.
+    for guess in _w_roots(v, b, loss, target):
+        if lo - 1e-8 <= guess <= hi + 1e-8:
+            k = max(1, math.floor(guess))
+            for n in (k, k + 1):
+                if reached(n) and not reached(n - 1):
+                    return n
     root = _increasing_root(v, b, loss, target, lo, hi)
     if root is None:
         # For absolute-coordinate comparisons a target at a rounded maximum
@@ -275,7 +309,7 @@ class Hit:
     normal: np.ndarray
 
 
-def plane_hit(ball: Ball, start: State, point, normal, keys=0, quarter=0, *, radius=None) -> Hit | None:
+def plane_hit(ball: Ball, start: State, point, normal, keys=0, quarter=0, *, radius=None, push=None) -> Hit | None:
     """First contact from the positive side of an oriented plane, including overlap.
 
     Pass radius=ball.radius+Params().floor for a skin rather than bare-sphere contact.
@@ -284,7 +318,7 @@ def plane_hit(ball: Ball, start: State, point, normal, keys=0, quarter=0, *, rad
     p, unit = np.asarray(point, float), _unit(normal)
     r = ball.radius if radius is None else radius
     gap = float((start.pos - p) @ unit) - r
-    b = _air_impulse(ball, keys, quarter)
+    b = air_impulse(ball, keys, quarter, push=push)
     k = _crossing_step(-float(start.vel @ unit), -float(b @ unit), ball.lin_damp * DT, gap,
                        lambda n: float((_flight(ball, start, n, b).pos - p) @ unit) <= r)
     if k is None:
@@ -305,12 +339,12 @@ def _in_triangle(p, tri, normal):
     return bool(np.all((np.cross(edges, p - tri) @ normal) >= -1e-10))
 
 
-def triangle_face_hit(ball: Ball, start: State, triangle, keys=0, quarter=0, *, radius=None) -> Hit | None:
+def triangle_face_hit(ball: Ball, start: State, triangle, keys=0, quarter=0, *, radius=None, push=None) -> Hit | None:
     """Two-sided face query; an intersection outside the finite face is not a hit."""
     tri = np.asarray(triangle, float)
     normal = _unit(np.cross(tri[1] - tri[0], tri[2] - tri[0]))
     r = ball.radius if radius is None else radius
-    b = _air_impulse(ball, keys, quarter)
+    b = air_impulse(ball, keys, quarter, push=push)
     hits = []
     # Find incoming crossings on either side, including a return to the
     # starting side after a plane crossing outside the finite triangle.
@@ -332,31 +366,35 @@ def triangle_face_hit(ball: Ball, start: State, triangle, keys=0, quarter=0, *, 
             if _motion(offset, v, impulse, loss)[0] <= r - side:
                 continue
         s = start if offset == 0 else _flight(ball, start, offset, b)
-        hit = plane_hit(ball, s, tri[0], unit, keys, quarter, radius=r)
+        hit = plane_hit(ball, s, tri[0], unit, keys, quarter, radius=r, push=push)
         if hit is not None and _in_triangle(hit.point, tri, normal):
             hits.append(Hit(offset + hit.step, hit.fraction, hit.center, hit.point, hit.normal))
     return min(hits, key=lambda h: (h.step, h.fraction)) if hits else None
 
 
-def triangle_edge_samples(ball: Ball, start: State, triangle, ticks, keys=0, quarter=0, *, radius=None):
-    """Boolean edge/vertex overlap at caller-selected ticks (sampled, not swept).
+def triangle_edge_hit(ball: Ball, start: State, triangle, end, keys=0, quarter=0, *, radius=None, push=None):
+    """Earliest swept edge/vertex contact over [0, end], or None.
 
-    Fractional ticks use the actual straight within-tick move. May miss
-    contacts between samples; use triangle_face_hit for analytic face tests.
+    Bound whole subcurves before solving line-cylinder/sphere equations on
+    engine PSI chords. Face contacts have a separate API.
     """
-    ticks = np.atleast_1d(ticks)
-    if ticks.ndim != 1 or np.any(ticks < 0):
-        raise ValueError("expected nonnegative sample ticks in a one-dimensional array")
-    n = np.floor(ticks)
-    s = flight(ball, start, n, keys, quarter)
-    tri = np.asarray(triangle, float).ravel()
+    from . import sweep
+    if end < 0 or not math.isfinite(end):
+        raise ValueError("expected a finite nonnegative horizon")
+    tri = np.asarray(triangle, dtype=float)
+    normal = _unit(np.cross(tri[1]-tri[0], tri[2]-tri[0]))
     r = ball.radius if radius is None else radius
-    points = s.pos + ((ticks - n) * DT)[:, None] * s.vel
-    out = []
-    for p in points:
-        x, y, z, feature = _closest(*p, *tri)
-        out.append(feature != FACE and np.linalg.norm(p - (x, y, z)) <= r)
-    return np.array(out, dtype=bool)
+    loss = ball.lin_damp * DT
+    logd = math.log1p(-loss)
+    b = air_impulse(ball, keys, quarter, push=push)
+    t = sweep.edge_time(tri, normal, tri.min(0), tri.max(0), start.pos, start.vel, b, loss, logd, r,
+                        0., float(end), np.empty(0), np.empty(0))
+    if t < 0:
+        return None
+    center = sweep.curve(start.pos,start.vel,b,t,loss,logd)
+    point = sweep.closest(tri,center)
+    step = math.ceil(t)
+    return Hit(step, t-step+1 if step else 0., center, point, _unit(center-point))
 
 
 @dataclass(frozen=True)

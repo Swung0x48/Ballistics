@@ -17,8 +17,8 @@ breaks: ways nothing has shown to be there.
 The way through is worked out over (region, mechanisms' states) from the sector's reset point, with as few breaks as
 there can be, then as few links.
 
-Nothing is rolled here: the places and edges are the coarse level's (`solve.graph_for`, its launches and lifts rolled
-in the kernel when the graph was made, and cached), the mechanisms' rules are `coarse.StateGraph`'s.
+Nothing is rolled here: `solve.graph_for` caches the coarse graph, with closed-form launches and lifts still
+rolled in the kernel. Mechanism rules come from `coarse.StateGraph`.
 """
 from __future__ import annotations
 
@@ -118,7 +118,7 @@ def components(n: int, adj) -> np.ndarray:
     return lab
 
 
-def kind_labels(n: int, roll, tk) -> np.ndarray:
+def kind_labels(n: int, roll, tk, allow=None) -> np.ndarray:
     """(3, n): each place's region for each kind of ball (0, 1, 2 ...), -1 where a ball of that kind cannot be (in a
     transformer's range of another kind). roll[u]: the places u rolls to. tk[u]: the kind of transformer whose range
     u is in, or -1."""
@@ -126,7 +126,7 @@ def kind_labels(n: int, roll, tk) -> np.ndarray:
     out = np.full((3, n), -1, np.int64)
     for k in range(3):
         keep = (tk < 0) | (tk == k)
-        lab = components(n, [[v for v in roll[u] if keep[v]] if keep[u] else [] for u in range(n)])
+        lab = components(n, [[v for v in roll[u] if keep[v] and (allow is None or allow(k,u,v))] if keep[u] else [] for u in range(n)])
         lab[~keep] = -1
         _u, out[k][keep] = np.unique(lab[keep], return_inverse=True)
     return out
@@ -136,7 +136,9 @@ def roll_labels(sg):
     """Kind-specific regions of the unguarded rolling graph (also used to prune float exits)."""
     roll = [[v for v, _c, kind, _e, mask in sg.fwd[u]
              if kind in ROLL and not mask and (u, v, kind) not in sg.guards] for u in range(sg.n)]
-    return kind_labels(sg.n, roll, sg.tk)
+    masks=getattr(sg, "terrain_masks", {})
+    return kind_labels(sg.n, roll, sg.tk,
+                       lambda k,u,v: masks.get((u,v,"roll"),7)&(1<<k))
 
 
 class Regions:
@@ -190,6 +192,11 @@ def links_of(sg, R: Regions) -> dict:
         for u in np.flatnonzero(R.labs[k] >= 0):
             a = R.of(k, u)
             for v, c, kind, ek, mask in sg.fwd[u]:
+                prices = getattr(sg, "launch_cost", {}).get((u, v)) if kind == "launch" else None
+                if prices is not None:
+                    if k not in prices:
+                        continue
+                    c = prices[k]
                 t = int(sg.tk[v]) if sg.tk[v] >= 0 else (int(ek) if ek >= 0 else k)
                 b = R.of(t, v)
                 if b >= 0 and b != a:
@@ -207,7 +214,7 @@ def links_of(sg, R: Regions) -> dict:
                 if (typ == coarse.ROCK_PUSH and k != coarse.STONE) or (typ == coarse.GATE_OPERATE and k != coarse.STONE and not (k == coarse.WOOD and side == coarse.GATE_WOOD)) or (typ in (coarse.BOARD_PUSH, coarse.T_PUSH, coarse.FLAP_PUSH, *coarse.PENDULUM_OPERATE) and k == coarse.PAPER) \
                         or (typ == coarse.CORK and k == coarse.STONE) or (typ == coarse.FLOAT_ROW and not (side & (1 << k))):
                     continue
-                if typ == coarse.ELEVATOR and not side & (1 << k):
+                if (typ == coarse.ELEVATOR or (typ == coarse.GATE_THROUGH and side)) and not side & (1 << k):
                     continue
                 t = int(sg.tk[v]) if sg.tk[v] >= 0 and typ not in coarse.PENDULUM_OPERATE else k
                 b = R.of(t, v)
@@ -307,6 +314,9 @@ def connect(links: dict, start, goals, lock: int = 0):
     return best[end][0], path[::-1], free
 
 
+_SG_CACHE: dict = {}
+
+
 def scan(g, info, sector: int, world, entry_kind: str = "wood", operate_cost: float = 20.0, overrides=None) -> dict:
     """Step 1: a sector's regions for each kind of ball, where its reset point and its goal are. overrides (a
     what-if, `Overrides`): placements taken as not there, mechanisms put in another state at the start, mechanisms
@@ -314,8 +324,14 @@ def scan(g, info, sector: int, world, entry_kind: str = "wood", operate_cost: fl
     ov = overrides or Overrides()
     from . import trafo
     from .solve import state_graph_for
-    from .staged import nearest_node
-    sg, state_of = state_graph_for(g, info, sector, world, operate_cost, cork=True, without=ov.without)
+    from .coarse import nearest_node
+    # the state graph does not depend on the entry kind: `run` scans a sector once per kind it can be entered as,
+    # with the same world, so the last one built is kept (one entry only)
+    key = (id(g), sector, id(world), operate_cost, frozenset(ov.without))
+    if _SG_CACHE.get("key") != key:
+        _SG_CACHE.clear()
+        _SG_CACHE.update(key=key, value=state_graph_for(g, info, sector, world, operate_cost, cork=True, without=ov.without))
+    sg, state_of = _SG_CACHE["value"]
     M = sg.M
     P = sg.g.pos[sg.glob]
     R = Regions(sg.float_roll_labels if sg.float_roll_labels is not None else roll_labels(sg), P)
@@ -387,6 +403,77 @@ def link(res: dict) -> dict:
 def analyse(g, info, sector: int, world, entry_kind: str = "wood", operate_cost: float = 20.0, overrides=None) -> dict:
     """Both steps for one sector."""
     return link(scan(g, info, sector, world, entry_kind, operate_cost, overrides))
+
+
+def ways_by_exit(res: dict) -> dict:
+    """The way with the fewest breaks to the goal as each kind of ball: {kind index: (breaks, path)}; a kind whose
+    goal region does not exist or is not reached even with breaks is left out."""
+    R = res["R"]
+    out = {}
+    for r in res["goal_regions"]:
+        nb, path, _ = connect(res["links"], res["start"], [r], res.get("lock", 0))
+        if nb is not None:
+            out[int(R.kind[r])] = (nb, path)
+    return out
+
+
+def choose_kinds(mesh, info, g, overrides=None, first: str = "wood", log=None) -> list:
+    """Every sector analysed for each kind of ball it can be entered as, then the kinds chosen for the whole map.
+
+    A sector entered as kind a can end as kind b with breaks(a, b) (its fewest-break way to the goal region of kind b,
+    `ways_by_exit`); the next sector is entered as b. The kinds are chosen by dynamic programming over the sectors so
+    that the map's breaks, then its links, are fewest; ties go to the kind that comes first in KINDS. A sector whose
+    goal no entry kind reaches even with breaks passes the kinds it was entered as on unchanged (as before). Each
+    chosen analysis carries its way (`path`, `breaks`), `entry_kind`, `exit_kind` and, for the report, `options`:
+    the breaks for every entry and exit kind that was tried."""
+    from .solve import world_for
+    ov = overrides or Overrides()
+    entries = {first}
+    analyses, options = [], []
+    for sec in range(1, len(info["reset_points"]) + 1):
+        world = world_for(mesh, info, "strict", sec)
+        tried = {}
+        for kind in sorted(entries, key=KINDS.index):
+            res = link(scan(g, info, sec, world, entry_kind=kind, overrides=ov))
+            res["by_exit"] = ways_by_exit(res)
+            tried[kind] = res
+        _SG_CACHE.clear()
+        opts = {a: {KINDS[b]: (nb, len(path) - 1) for b, (nb, path) in r["by_exit"].items()} for a, r in tried.items()}
+        analyses.append(tried)
+        options.append(opts)
+        entries = {b for o in opts.values() for b in o} or set(entries)
+        if log:
+            log("   sector %d: entered as %s; can end as %s" % (sec, "/".join(sorted(tried, key=KINDS.index)),
+                                                          "/".join(sorted(entries, key=KINDS.index))))
+    done = []
+    for tried, opts, (entry, out) in zip(analyses, options, pick_kinds(options, first)):
+        res = tried[entry]
+        if out is not None:
+            res["breaks"], res["path"] = res["by_exit"][KINDS.index(out)]
+        res["exit_kind"] = out
+        res["options"] = {a: {b: v[0] for b, v in o.items()} for a, o in opts.items()}
+        done.append(res)
+    return done
+
+
+def pick_kinds(options: list, first: str = "wood") -> list:
+    """The kinds of ball for a whole map from each sector's options {entry kind: {exit kind: (breaks, links)}}:
+    [(entry kind, exit kind or None), ...] per sector, the map's breaks then links fewest, ties to the kind first in
+    KINDS. The next sector is entered as the exit kind. A sector with no option for any of its entry kinds (its goal
+    not reached even with breaks) ends as None and passes the kind it was entered as on."""
+    order = KINDS.index
+    best = {first: ((0, 0), [])}                   # kind the next sector is entered as -> (cost so far, choices)
+    for opts in options:
+        nxt = {}
+        for entry in sorted(best, key=order):
+            (b0, l0), how = best[entry]
+            for out in sorted(opts.get(entry, {}), key=order):
+                nb, nl = opts[entry][out]
+                cost = (b0 + nb, l0 + nl)
+                if out not in nxt or cost < nxt[out][0]:
+                    nxt[out] = (cost, how + [(entry, out)])
+        best = nxt or {k: (c, how + [(k, None)]) for k, (c, how) in best.items()}
+    return min(best.values(), key=lambda v: (v[0], [order(e) for e, _o in v[1]]))[1]
 
 
 class Overrides:
@@ -571,8 +658,8 @@ def summary_links(res: dict) -> dict:
         links.append(dict(**{"from": R.name(key[1]), "to": R.name(key[2])}, what=desc, cost=round(e["cost"], 1), count=e["count"],
                           at=[[round(float(x), 2) for x in P[e["at"][0]]], [round(float(x), 2) for x in P[e["at"][1]]]],
                           is_break=bool(key[0] == "plain" and key[3] in BREAK), big=bool(min(res["regions"][key[1]]["places"], res["regions"][key[2]]["places"]) >= BIG)))
-    return dict(sector=res["sector"], entry_kind=res["entry_kind"], start_region=R.name(res["start"][0]), goal_regions=[R.name(r) for r in res["goal_regions"]],
-                fewest_breaks=res["breaks"],
+    return dict(sector=res["sector"], entry_kind=res["entry_kind"], exit_kind=res.get("exit_kind"), start_region=R.name(res["start"][0]), goal_regions=[R.name(r) for r in res["goal_regions"]],
+                fewest_breaks=res["breaks"], breaks_by_entry_and_exit_kind=res.get("options"),
                 way=[dict(region=R.name(r), kind=KINDS[k], mechanism_bits=b, by=what, link=describe(key, ride=res["links"].get(key, {}).get("elevator"))) for r, k, b, what, key in res["path"]],
                 coarse_plan=[dict(region=R.name(p["region"]) if p["region"] >= 0 else None, kind=p["kind"], mechanism_bits=p["bits"], by=p["how"], at=_r1(p["at"]))
                              for p in res["plan"]],
@@ -587,22 +674,19 @@ def summary_links(res: dict) -> dict:
 def run(mesh, info, g, name: str, out, png=None, log=print, overrides=None, tag: str | None = None) -> list:
     """The two steps for every sector of a map: step 1 the regions, step 2 the links between them and the way with
     the fewest breaks. Writes <name>-regions.json and <name>-links.json into `out` (and pictures of each step for
-    each sector into `png`). A sector is entered as the kind of ball the way through the one before ended as (the
-    first as a wood ball: ASSUMED, the map file does not say). Returns the sectors' analyses."""
+    each sector into `png`). The kinds of ball are chosen for the whole map (`choose_kinds`): a sector is entered as
+    the kind the way through the one before ended as, and which kind each sector ends as is chosen so that the map's
+    breaks, then its links, are fewest (the first sector is entered as a wood ball: ASSUMED, the map file does not
+    say). Returns the sectors' analyses."""
     import json
     from pathlib import Path
-    from .staged import world_for
-    kind, done = "wood", []
     ov = overrides or Overrides()
     if ov:
         tag = tag or "what-if"
     stem = name + ("-" + tag if tag else "")
-    for sec in range(1, len(info["reset_points"]) + 1):
-        res = link(scan(g, info, sec, world_for(mesh, info, "strict", sec), entry_kind=kind, overrides=ov))
+    done = choose_kinds(mesh, info, g, ov)
+    for res in done:
         mechanisms(res)
-        done.append(res)
-        if res["path"]:
-            kind = KINDS[res["path"][-1][1]]
     reported_overrides = ov.plain(m for res in done for m in res["mechanisms"]) if ov else None
     if ov:
         log("what-if: %s" % reported_overrides)
@@ -622,8 +706,8 @@ def run(mesh, info, g, name: str, out, png=None, log=print, overrides=None, tag:
     for res in done:
         R = res["R"]
         n_links = sum(1 for k in res["links"] if not (k[0] == "plain" and k[3] in BREAK))
-        log("   sector %d (enters as %s): %d links, %d breaks between regions; %s" % (
-            res["sector"], res["entry_kind"], n_links, len(res["links"]) - n_links,
+        log("   sector %d (enters as %s, ends as %s; breaks by entry and exit kind %s): %d links, %d breaks between regions; %s" % (
+            res["sector"], res["entry_kind"], res.get("exit_kind"), res.get("options"), n_links, len(res["links"]) - n_links,
             "no way to the goal even with breaks" if res["breaks"] is None else
             "the goal is reached with %d break%s, over %d links" % (res["breaks"], "" if res["breaks"] == 1 else "s", len(res["path"]) - 1)))
         for r, k, b, what, key in res["path"]:

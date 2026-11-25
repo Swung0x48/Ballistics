@@ -157,7 +157,7 @@ def test_the_search_goes_through_a_transformer_as_the_new_ball():
 def test_the_coarse_level_goes_through_a_stone_transformer_at_a_cost():
     from test_staged import level, quad
     from ballistics import solve
-    from ballistics.launch import FOLLOW_SPEED
+    from ballistics.takeoff import FOLLOW_SPEED
     m, info, _g = level([quad(0, 80, 0, 8, 0.0)], (74.0, 2.0, 4.0), launches=False)
     info["placements"] = [dict(name="S", type="P_Trafo_Stone", sector=1, position=[30.0, 0.5, 4.0], x_axis=[1.0, 0.0, 0.0], y_axis=[0.0, 1.0, 0.0], z_axis=[0.0, 0.0, 1.0]),
                           dict(name="P", type="P_Trafo_Paper", sector=1, position=[60.0, 0.5, -30.0], x_axis=[1.0, 0.0, 0.0], y_axis=[0.0, 1.0, 0.0], z_axis=[0.0, 0.0, 1.0])]

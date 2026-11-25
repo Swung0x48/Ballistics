@@ -101,13 +101,31 @@ def _circle(P):
     return c0 + sol[0] * vt[0] + sol[1] * vt[1], rad, rms, vt[2]
 
 
-def fit_tubes(A, B, C, radii=np.arange(0.20, 0.45, 0.01), tol: float = 0.06, gather: float = 0.15):
+def _radius_events(v, n, lo, hi, tol):
+    """Radius intervals with invariant adjacency of normal-offset vertices."""
+    from scipy.spatial import cKDTree
+    pairs = cKDTree(v).query_pairs(tol+2*max(abs(lo),abs(hi)), output_type='ndarray')
+    d = v[pairs[:,0]]-v[pairs[:,1]]
+    w = n[pairs[:,0]]-n[pairs[:,1]]
+    den = np.einsum('ij,ij->i',w,w)
+    use = den>1.e-15
+    d,w,den = d[use],w[use],den[use]
+    root = np.einsum('ij,ij->i',d,w)/den
+    rem = d-root[:,None]*w
+    span = (tol**2-np.einsum('ij,ij->i',rem,rem))/den
+    span,root = span[span>0],root[span>0]
+    limits = np.r_[root-np.sqrt(span),root+np.sqrt(span)]
+    events = np.unique(np.r_[lo,limits[(limits>lo)&(limits<hi)],hi])
+    return (events[1:]+events[:-1])*.5
+
+
+def fit_tubes(A, B, C, radius_bounds=(.20,.45), tol: float = 0.06, gather: float = 0.15):
     """Tube axis segments of rail triangles. Returns (segments (S, 7): x0 y0 z0 x1 y1 z1 radius, info dict).
 
     A rail's cross-section is a polygon whose corners lie on a circle (in the game an octagon, or part of one where
     the underside is left open). Steps, per connected piece of mesh:
 
-    1. which vertices form a ring: moved back along their normals by about the tube radius, the corners of one ring
+    1. which vertices form a ring: moved back along their normals by a shared radius, the corners of one ring
        fall together; stragglers (corners on an open rim or a mitred joint, whose normals lean) join the ring
        they land next to;
     2. the ring's centre and radius: the circle through its corners, which is exact for a polygon inscribed in a
@@ -135,7 +153,7 @@ def fit_tubes(A, B, C, radii=np.arange(0.20, 0.45, 0.01), tol: float = 0.06, gat
         v, n = V[idx], N[idx]
         best = None
         for sign in (1.0, -1.0):                      # the triangles may be wound either way
-            for r in radii:
+            for r in _radius_events(v, sign*n, *radius_bounds, tol):
                 pts, _, counts = _collapse(v, sign * n, float(r), tol)
                 if best is None or len(pts) < best[0]:      # the right radius leaves the fewest gathered points
                     best = (len(pts), sign, float(r))
@@ -228,7 +246,7 @@ def resample(line, spacing: float = SPACING):
     return np.stack([np.interp(t, s, line[:, k]) for k in range(3)], axis=1)
 
 
-def polylines(seg, weld: float = 0.35) -> list:
+def polylines(seg, weld: float = 0.35, *, sampled=True) -> list:
     """Weld the segment end points and split the graph into simple runs between junctions and tips (loops included)."""
     seg = np.asarray(seg, np.float64)
     pts = np.r_[seg[:, :3], seg[:, 3:6]]
@@ -281,7 +299,7 @@ def polylines(seg, weld: float = 0.35) -> list:
         for b, s in adj[a]:
             if s not in used:
                 out.append(walk(a, b, s))
-    return [resample(l) for l in out if length(l) >= 2.0]
+    return [resample(l) if sampled else l for l in out if length(l) >= 2.0]
 
 
 def _tangents(P):
@@ -304,8 +322,77 @@ def _runs(mask, least: int):
     return out
 
 
+def _arc(line):
+    return np.r_[0.,np.cumsum(np.linalg.norm(np.diff(line,axis=0),axis=1))]
+
+
+def _at(line,s,station):
+    return np.column_stack([np.interp(station,s,line[:,i]) for i in range(3)])
+
+
+def straight_pieces(line):
+    """Remove only duplicate points and roundoff-collinear forward joints."""
+    out=[]
+    for p in line:
+        if out and np.linalg.norm(p-out[-1])<=1.e-9:continue
+        while len(out)>1:
+            a,b=out[-1]-out[-2],p-out[-1]
+            if a@b<=0. or np.linalg.norm(np.cross(a,b))>1.e-7*np.linalg.norm(a)*np.linalg.norm(b):break
+            out.pop()
+        out.append(p)
+    return np.asarray(out,dtype=float).reshape(-1,3)
+
+
+def _mesh_run(line, n, start, stop):
+    """A pairing run identifies enclosing *mesh* pieces, not grid cuts."""
+    s=_arc(line)
+    a,b=sorted((s[-1]*start/(n-1),s[-1]*stop/(n-1)))
+    i=max(0,int(np.searchsorted(s,a+1.e-8,side='right'))-1)
+    j=min(len(s)-1,int(np.searchsorted(s,b-1.e-8,side='left')))
+    points=line[i:j+1]
+    return points[::-1] if start>stop else points
+
+
+def _overlap_start(a,b):
+    """Trim an overhanging tube at the other tube's initial cross section."""
+    d,e=a[1]-a[0],b[1]-b[0]
+    n=d/np.linalg.norm(d)+e/np.linalg.norm(e)
+    where=(a-b[0])@n
+    if where[0]>=0:return a
+    for j in range(len(where)-1):
+        if where[j]<0.<=where[j+1]:
+            t=-where[j]/(where[j+1]-where[j])
+            return straight_pieces(np.vstack((a[j]+t*(a[j+1]-a[j]),a[j+1:])))
+    return a  # no transverse crossing on this run; leave it to mesh support checks
+
+
+def paired_pieces(a,b,ball,tube):
+    """Pair mesh rings on a shared arc parameter, subdividing only at ring events.
+
+    ASSUMED: when the two tubes have different knot counts, use the same
+    relative arc length between the overlap boundaries. On parallel straight
+    runs this is the shared cross-section coordinate. Treat the centre line
+    between supported ring pairs as straight, not a fitted circular bend.
+    """
+    a,b=straight_pieces(a),straight_pieces(b)
+    if len(a)<2 or len(b)<2:return np.empty((0,3))
+    a,b=_overlap_start(a,b),_overlap_start(b,a)
+    if len(a)<2 or len(b)<2:return np.empty((0,3))
+    a,b=_overlap_start(a[::-1],b[::-1])[::-1],_overlap_start(b[::-1],a[::-1])[::-1]
+    if len(a)<2 or len(b)<2:return np.empty((0,3))
+    u,v=_arc(a),_arc(b)
+    u/=u[-1];v/=v[-1]
+    if len(a)!=len(b):
+        knots=np.union1d(u,v)
+        a,b=_at(a,u,knots),_at(b,v,knots)
+    gauge=np.linalg.norm(b-a,axis=1)
+    rise=np.sqrt(np.maximum(.05,(ball+tube)**2-(gauge*.5)**2))
+    return straight_pieces((a+b)*.5 + np.c_[np.zeros(len(rise)),rise,np.zeros(len(rise))])
+
+
 def _lanes(seg, tube: float, ball: float) -> list:
-    lines = polylines(seg)
+    mesh_lines = polylines(seg,sampled=False)
+    lines = [resample(p) for p in mesh_lines]
     free = [np.ones(len(l), bool) for l in lines]
     out, cand = [], []
     for i, A in enumerate(lines):
@@ -328,12 +415,18 @@ def _lanes(seg, tube: float, ball: float) -> list:
             mid = (A[idx] + B[near[idx]]) / 2
             half = D[idx, near[idx]] / 2
             rise = np.sqrt(np.maximum(0.05, (ball + tube) ** 2 - half ** 2))               # the ball rests on both tubes
-            out.append(dict(points=mid + np.c_[np.zeros(len(idx)), rise, np.zeros(len(idx))], double=True, gauge=float(np.median(2 * half))))
+            raw_a=_mesh_run(mesh_lines[i],len(A),a,b)
+            raw_b=_mesh_run(mesh_lines[j],len(B),int(near[a]),int(near[b]))
+            track=paired_pieces(raw_a,raw_b,ball,tube)
+            out.append(dict(points=mid + np.c_[np.zeros(len(idx)), rise, np.zeros(len(idx))], segments=track,
+                            double=True, gauge=float(np.median(2 * half))))
             free[i][idx] = False
             free[j][near[idx]] = False
     for i, A in enumerate(lines):
         for a, b in _runs(free[i], 5):
-            out.append(dict(points=A[a:b + 1] + [0.0, ball + tube, 0.0], double=False, gauge=0.0))
+            raw=_mesh_run(mesh_lines[i],len(A),a,b)
+            track=straight_pieces(raw+[0.,ball+tube,0.])
+            out.append(dict(points=A[a:b + 1] + [0.0, ball + tube, 0.0], segments=track,double=False,gauge=0.0))
     return out
 
 
@@ -355,6 +448,31 @@ def lanes(tubes, ball: float = BALL_R) -> list:
     return out
 
 
+def project_pieces(points,pos):
+    """Exact nearest projection on a finite chain of straight mesh pieces."""
+    d=np.diff(points,axis=0)
+    w=pos-points[:-1]
+    square=np.einsum('ij,ij->i',d,d)
+    f=np.clip(np.einsum('ij,ij->i',w,d)/square,0.,1.)
+    q=points[:-1]+f[:,None]*d
+    j=int(np.argmin(np.einsum('ij,ij->i',q-pos,q-pos)))
+    return j,q[j]
+
+
+def physical_lanes(g,mesh):
+    """Rail geometry is independent of the mapping lattice."""
+    if all('segments' in lane for lane in g.lanes):
+        return [lane['segments'] for lane in g.lanes]
+    if len(mesh.tubes):
+        rebuilt=lanes(mesh.tubes)
+        if len(rebuilt)!=len(g.lanes):raise ValueError('rail lane identity changed; rebuild the coarse graph')
+        for a,b in zip(g.lanes,rebuilt):
+            if not np.array_equal(a['points'],b['points']):raise ValueError('rail mapping grid changed; rebuild the coarse graph')
+        return [lane['segments'] for lane in rebuilt]
+    # Hand-supplied synthetic lanes in tests have explicit literal vertices.
+    return [straight_pieces(lane['points']) for lane in g.lanes]
+
+
 def climb(points, window: float = 4.0) -> tuple:
     """(steepest uphill slope as rise over run over about `window` of arc length, total ascent) riding the points
     in order."""
@@ -367,3 +485,25 @@ def climb(points, window: float = 4.0) -> tuple:
     j = np.minimum(len(P) - 1, np.searchsorted(s, s + window))
     run = np.maximum(h[j] - h, 0.5 * window)
     return float(np.max((P[j, 1] - P[:, 1]) / run)), float(dy[dy > 0].sum())
+
+
+def axis_bends(tubes):
+    """Circumcurvature from mesh ring centres, independent of coarse spacing."""
+    from collections import defaultdict
+    from scipy.spatial import cKDTree
+
+    around = defaultdict(list)
+    for a,b in zip(tubes[:,:3],tubes[:,3:6]):
+        around[tuple(np.round(a,5))].append(b-a)
+        around[tuple(np.round(b,5))].append(a-b)
+    bends = []
+    for p, ds in around.items():
+        if len(ds)!=2:
+            continue  # no unique continuation at a branch
+        a,b = ds
+        la,lb,span = np.linalg.norm(a),np.linalg.norm(b),np.linalg.norm(b-a)
+        if min(la,lb,span)<=1.e-7:
+            continue
+        k = 2*np.linalg.norm(np.cross(a,b))/(la*lb*span)
+        bends.append((np.asarray(p),-a/la,b/lb,float(k)))
+    return (cKDTree([b[0] for b in bends]), bends) if bends else (None, ())

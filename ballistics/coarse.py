@@ -8,7 +8,7 @@ Nodes are ball-centre positions: places where a ball lowered onto the map comes 
 it (sampled every `STEP` units, every level of the map), and the points along the rail lanes. Edges say a ball can
 get from one node to the next: rolling between neighbouring rest places (down small steps too), along a lane, on
 and off a lane's ends. Falls and flights are not edges of positions: where a ball comes down depends on the speed
-it leaves with, so they are made by running the physics kernel (launch.py).
+it leaves with, so they are proposed by the closed-form model (`takeoff.py`).
 
 Every threshold here is a working choice for proposing ways, not a statement about the game: ASSUMED throughout,
 except where a comment says otherwise."""
@@ -26,8 +26,8 @@ from .geometry import BALL_R, Mesh, _distance as _distance_near, _lower
 
 STEP = 1.0            # spacing of the rest samples
 WALK_NY = 0.6         # a face this upright (normal y) or more can hold a resting ball
-ROLL_SLOPE = 0.55     # rise over run between neighbouring rest places that still counts as rolling up (READ: a wood ball holds 0.75 from a standstill; kept well inside)
-STEP_UP = 1.5         # MEASURED once: the recorded level 1 run takes a wood ball up a step 1.45 high (floor at -4.15, ramp edge at -2.70) beside the sector 2 ramp, arriving about 15 across with keys held, and the physics kernel replays that passage. Higher steps are not proposed
+ROLL_SLOPE = 0.55     # Legacy coarse/staged only; solve replaces these links with conformal support.
+STEP_UP = 1.5         # Legacy step proposal only. MEASURED once: the recorded level 1 run takes a wood ball up a step 1.45 high (floor at -4.15, ramp edge at -2.70) beside the sector 2 ramp, arriving about 15 across with keys held, and the physics kernel replays that passage. Higher steps are not proposed
 SNAP = 0.75           # a sample this close to the border of a floor is moved onto it (just over half the diagonal of a sample cell, so no floor is missed)
 STEP_REACH = 3.6      # below a step the ball is held no closer than its radius to the riser, above it from the edge on; plus the sample spacing and SNAP
 SMALL_DROP = 1.5      # a step down no deeper than this is rolled down in contact; a deeper fall is a launch (launch.py), which depends on the speed the ball leaves with
@@ -158,6 +158,17 @@ def in_sector(mesh: Mesh, sector=None) -> Mesh:
     return Mesh(mesh.A[keep], mesh.B[keep], mesh.C[keep], mesh.owner[keep], mesh.rail[keep], mesh.tubes, ents, meta)
 
 
+def sector_mask(pos, info, sector):
+    """The sector's induced coarse graph, common to witness reduction and search."""
+    anchors = [info["start"], *info["checkpoints"], info["airship"]]
+    pts = [info["reset_points"][sector - 1]]
+    if anchors[sector] is not None:
+        pts.append(anchors[sector])
+    pts.extend(p["position"] for p in info["placements"] if p.get("sector") == sector)
+    P = np.asarray(pts, float)
+    return np.all((pos >= P.min(0) - 60.) & (pos <= P.max(0) + 60.), axis=1)
+
+
 def keep_out(placements) -> list:
     """[(x, y, z, distance)] for the placed objects a wood ball has to stay clear of."""
     out = []
@@ -168,7 +179,23 @@ def keep_out(placements) -> list:
     return out
 
 
-_ROUND = np.stack([np.cos(np.arange(36) * math.pi / 18), np.sin(np.arange(36) * math.pi / 18)], axis=1)
+def horizontal_balance(H, tol=1.e-3):
+    """Origin in the convex hull of horizontal reactions (or within tol)."""
+    # Nonzero generators lie in an open semicircle iff the complement of
+    # their largest angular gap is smaller than pi. Else the origin is in
+    # their convex hull. If outside, its nearest point lies on an edge;
+    # testing all segments includes the boundary even for a degenerate hull.
+    if np.min(np.linalg.norm(H,axis=1),initial=math.inf)<=tol:
+        return True
+    a=np.sort(np.arctan2(H[:,1],H[:,0]))
+    if np.max(np.diff(np.r_[a,a[0]+2*math.pi]))<=math.pi:
+        return True
+    for i,p in enumerate(H):
+        for q in H[:i]:
+            d=q-p; dd=d@d
+            if dd>0 and np.linalg.norm(p+np.clip(-(p@d)/dd,0.,1.)*d)<=tol:
+                return True
+    return False
 
 
 def _held(mesh: Mesh, contacts) -> bool:
@@ -204,7 +231,7 @@ def _held(mesh: Mesh, contacts) -> bool:
     if len(up) < 2:
         return False
     H = np.array([(n[0], n[2]) for n in up])
-    return bool(((H @ _ROUND.T).max(axis=0) >= -1e-3).all())
+    return horizontal_balance(H)
 
 
 def build(mesh: Mesh, avoid=(), radius: float = BALL_R, log=lambda *a: None) -> Graph:
@@ -320,8 +347,10 @@ def build(mesh: Mesh, avoid=(), radius: float = BALL_R, log=lambda *a: None) -> 
             near = np.flatnonzero((d <= 3.0) & (np.abs(dy) <= 1.6))
             for v in near[np.argsort(d[near])[:4]]:
                 link(end, int(v), "rail end", both=True, cost=float(d[v]) + (6.0 if thin else 0.0))      # riding one rail is the last resort
+    rest_cell=np.empty((n_floor,2),dtype=int)
+    for ij,ids in cell.items():rest_cell[ids]=ij
     return Graph(P, np.array(kind), np.array(lane_of), adj, lns, dict(rest_places=n_floor, lane_points=len(P) - n_floor, edge_places=int(edge_node.sum()),
-                                                                    edge_node=edge_node))
+                                                                    edge_node=edge_node,rest_cell=rest_cell))
 
 
 # ---- flights
@@ -490,7 +519,7 @@ _INF = 1e300
 
 
 @njit(cache=True)
-def _state_togo(n, M, bptr, bsrc, bcost, bek, bmask, bclear, tk, tcost, lptr, lsrc, lcost, lk, lmask, lclear, cptr, csrc, ccost, cmech, ctype, cside, goal, lock):
+def _state_togo(n, M, bptr, bsrc, bcost, bek, bmask, bclear, breq, tk, tcost, lptr, lsrc, lcost, lk, lmask, lclear, cptr, csrc, ccost, cmech, ctype, cside, goal, lock):
     """How far each (state, place) is from the goal, which counts in any state. A state is kind * 2^M + bits (bit m:
     mechanism m's state). Backwards over: plain edges (u -> v; v inside a transformer's range makes the ball its
     kind there, at tcost unless it is that kind already; a link that passes through a range, bek, likewise; a link
@@ -515,12 +544,15 @@ def _state_togo(n, M, bptr, bsrc, bcost, bek, bmask, bclear, tk, tcost, lptr, ls
             t = tk[v] if tk[v] >= 0 else bek[e]
             u = bsrc[e]
             nd = d + bcost[e]
+            req = breq[e]
             if t < 0:
-                if nd < togo[s, u]:
+                if (req < 0 or k == req) and nd < togo[s, u]:
                     togo[s, u] = nd
                     heapq.heappush(heap, (nd, s, u))
             elif k == t:
                 for k2 in range(3):
+                    if req >= 0 and k2 != req:
+                        continue
                     s2 = (k2 << M) | bits
                     nd2 = nd + (0.0 if k2 == t else tcost)
                     if nd2 < togo[s2, u]:
@@ -545,8 +577,19 @@ def _state_togo(n, M, bptr, bsrc, bcost, bek, bmask, bclear, tk, tcost, lptr, ls
             typ = ctype[e]
             preds = (-1, -1)
             if typ == 1:                                   # through an open gate
-                if bit == 1:
+                side = cside[e]
+                if bit == 1 and not side:
                     preds = (s, -1)
+                elif bit == 1:
+                    t = tk[v]
+                    for k2 in range(3):
+                        if not side & (1 << k2) or k != (t if t >= 0 else k2):
+                            continue
+                        s2 = (k2 << M) | bits
+                        nd2 = nd + (tcost if k2 != k else 0.0)
+                        if nd2 < togo[s2, u]:
+                            togo[s2, u] = nd2
+                            heapq.heappush(heap, (nd2, s2, u))
             elif typ == 2:                                 # a stone ball pushes the gate open (a wood one too, side GATE_WOOD)
                 if bit == 1 and (k == 1 or (k == 0 and cside[e] == 1)) and not (lock & (1 << m)):
                     preds = (s & ~(1 << m), -1)
@@ -659,7 +702,7 @@ class StateGraph:
     that goes on ever finds it broken. floats: box float rows with a mask of ball kinds allowed at entry, no bit;
     pendulums and timed mechanisms: stateless directed crossings for all three balls; transformation on arrival works like a plain edge."""
 
-    def __init__(self, rel, g, region, trafo_kind, trafo_cost: float, lifts, mechs: list, operate_cost: float, links=None, skip=(), bridges=(), guards=None, floats=(), pendulums=(), timed=()):
+    def __init__(self, rel, g, region, trafo_kind, trafo_cost: float, lifts, mechs: list, operate_cost: float, links=None, skip=(), bridges=(), guards=None, floats=(), pendulums=(), timed=(), launch_eligible=None):
         N = len(g.pos)
         self.g, self.N, self.mechs = g, N, list(mechs)
         self.M = len(self.mechs)
@@ -676,6 +719,12 @@ class StateGraph:
         self.fwd = [[] for _ in range(n)]
         self.guards = {}  # local (u, v, kind) -> mask of bits that must be clear; required bits live in fwd
         guards = guards or {}
+        from . import takeoff
+        self.launch_cost = {}
+        self.terrain_masks = {}
+        terrain_masks = g.info.get("terrain_ball_masks", {})
+        if launch_eligible is None:
+            launch_eligible = lambda _u, _v, _e: True
         base, base_kind = [], []
         for gu in ids:
             u = int(loc[gu])
@@ -689,9 +738,29 @@ class StateGraph:
                         continue
                     if off:
                         self.guards[u, v, k] = off
+                    es = takeoff.variants(g, int(gu), int(v_)) if k == "launch" else ()
+                    # The pair is shared by geometry/region readers, but the state graph
+                    # must use only the current ball's variant in either search direction.
+                    if es and all("flight_ticks" in e for e in es):
+                        costs = {KIND_INDEX[e["ball"]]: float(c) + takeoff.cost(e) - takeoff.cost(es[0]) for e in reversed(es)
+                                 if launch_eligible(gu, v_, e)}
+                        required = int(trafo_kind[gu])
+                        if required >= 0:
+                            costs = {k: val for k, val in costs.items() if k == required}
+                        self.launch_cost[u, v] = costs
+                    else:
+                        terrain_mask=terrain_masks.get((int(gu),int(v_),k),7)
+                        if terrain_mask==7:
+                            costs={-1:float(c)}
+                        else:
+                            self.terrain_masks[u,v,k]=terrain_mask
+                            costs={j:float(c) for j in range(3) if terrain_mask&(1<<j)}
+                    if not costs:
+                        continue
                     self.fwd[u].append((v, float(c), k, int(ek), int(mask)))
-                    base.append((u, v, float(c), int(ek), int(mask), off))
-                    base_kind.append(k)
+                    for req, price in costs.items():
+                        base.append((u, v, price, int(ek), int(mask), off, req))
+                        base_kind.append(k)
         self.tk = np.array([int(trafo_kind[gu]) for gu in ids], np.int64)
         self.tcost = float(trafo_cost)
         self.lfwd = [[] for _ in range(n)]
@@ -715,9 +784,21 @@ class StateGraph:
                 if u < 0 or v < 0:
                     continue
                 c = float(c) + (operate_cost if typ in (*OPERATE, FLAP_PUSH, *PENDULUM_OPERATE, ELEVATOR) else 0.0)
-                self.cfwd[u].append((v, c, kind, m, typ, side))
-                cond.append((u, v, c, m, typ, side))
-                cond_kind.append(kind)
+                es = takeoff.variants(g, gu, gv) if typ == GATE_THROUGH and kind == "launch" else ()
+                if es and all("flight_ticks" in e for e in es):
+                    choices = [(c + takeoff.cost(e) - takeoff.cost(es[0]), 1 << KIND_INDEX[e["ball"]]) for e in es
+                               if trafo_kind[gu] in (-1, KIND_INDEX[e["ball"]]) and launch_eligible(gu, gv, e)]
+                else:
+                    terrain_mask=terrain_masks.get((int(gu),int(gv),kind),7)
+                    if typ==GATE_THROUGH and terrain_mask!=7:
+                        requirement=(side or 7)&terrain_mask
+                        choices=[(c,requirement)] if requirement else []
+                    else:
+                        choices = [(c, side)]
+                for price, requirement in choices:
+                    self.cfwd[u].append((v, price, kind, m, typ, requirement))
+                    cond.append((u, v, price, m, typ, requirement))
+                    cond_kind.append(kind)
         self.bridges = sorted({b[3] for b in bridges})
         for gu, gv, c, name in bridges:
             u, v = int(loc[gu]), int(loc[gv])
@@ -808,7 +889,7 @@ class StateGraph:
     def _arrays(self):
         n = self.n
         base = [e for e, k in zip(self._base, self._base_kind) if (e[0], e[1], k) not in self._dropped]
-        self.bptr, self.bsrc, self.bcost, (self.bek, self.bmask, self.bclear) = _csr(n, base or [(0, 0, _INF, -1, 0, 0)])
+        self.bptr, self.bsrc, self.bcost, (self.bek, self.bmask, self.bclear, self.breq) = _csr(n, base or [(0, 0, _INF, -1, 0, 0, -1)])
         lift = self._lift or [(0, 0, _INF, -1, 0, 0)]
         self.lptr, self.lsrc, self.lcost, (self.lk, self.lmask, self.lclear) = _csr(n, lift)
         cond = self._cond or [(0, 0, _INF, 0, 0, 0)]
@@ -841,7 +922,7 @@ class StateGraph:
         gl = int(self.loc[goal])
         if gl < 0:
             return out
-        t = _state_togo(self.n, self.M, self.bptr, self.bsrc, self.bcost, self.bek, self.bmask, self.bclear, self.tk, self.tcost, self.lptr, self.lsrc, self.lcost, self.lk, self.lmask, self.lclear,
+        t = _state_togo(self.n, self.M, self.bptr, self.bsrc, self.bcost, self.bek, self.bmask, self.bclear, self.breq, self.tk, self.tcost, self.lptr, self.lsrc, self.lcost, self.lk, self.lmask, self.lclear,
                         self.cptr, self.csrc, self.ccost, self.cmech, self.ctype, self.cside, gl, lock)
         t[t >= _INF / 2] = np.inf
         out[:, self.glob] = t
@@ -853,8 +934,13 @@ class StateGraph:
         k, bits = s >> M, s & ((1 << M) - 1)
         out = []
         for v, c, kind, ek, mask in self.fwd[u]:
+            if not self.terrain_masks.get((u,v,kind),7)&(1<<k):continue
             if (bits & mask) != mask or bits & self.guards.get((u, v, kind), 0):
                 continue
+            if kind == "launch" and (prices := self.launch_cost.get((u, v))) is not None:
+                if k not in prices:
+                    continue
+                c = prices[k]
             t = self.tk[v] if self.tk[v] >= 0 else ek
             if t >= 0 and t != k:
                 out.append(((int(t) << M) | bits, v, c + self.tcost, kind))
@@ -872,8 +958,9 @@ class StateGraph:
                     out.append((s, v, c, "lift"))
         for v, c, kind, m, typ, side in self.cfwd[u]:
             bit = (bits >> m) & 1
-            if typ == GATE_THROUGH and bit == 1:
-                out.append((s, v, c, kind))
+            if typ == GATE_THROUGH and bit == 1 and (not side or side & (1 << k)):
+                t = int(self.tk[v]) if side and self.tk[v] >= 0 else k
+                out.append(((t << M) | bits, v, c + (self.tcost if t != k else 0.), kind))
             elif typ in OPERATE and bit == 0 and not (lock & (1 << m)) and (k == STONE or (k == WOOD and (typ == T_PUSH or (typ == GATE_OPERATE and side == GATE_WOOD)))):
                 out.append((s | (1 << m), v, c, "operate" if typ == GATE_OPERATE else kind))
             elif typ in PENDULUM_OPERATE and bit == 0 and k != PAPER and not (lock & (1 << m)):
@@ -919,3 +1006,10 @@ class StateGraph:
             nodes.append(int(best[1]))
             kinds.append(best[3])
         return [int(self.glob[x]) for x in nodes], kinds, states
+
+
+def nearest_node(g, togo, pos, reach: float = 3.0) -> int:
+    d = np.sqrt(((g.pos - pos) ** 2).sum(1))
+    d[~np.isfinite(togo)] = np.inf
+    near = np.flatnonzero(d <= reach)
+    return int(near[np.argmin(d[near])]) if len(near) else int(d.argmin())
