@@ -316,8 +316,11 @@ def add(tf, g,obs,layout, *, log=lambda *_:None, target_priorities=()):
     pick=_mapping(g,layout,surface)
     rolling,rolling_pending,rolling_stats=supportededges.build(tf,g,obs,layout,pick,log=log)
     log('shared rolling: %s' % rolling_stats)
-    for a,b in (*rolling,*rolling_pending):candidates[a].add(b)
+    for a,b in (*rolling,*rolling_pending):
+        a,b=parts.get(a,a),parts.get(b,b)
+        if a!=b:candidates[a].add(b)
     rail_witnesses,rail_stats,rail_entries,rail_example=sharedrail.wave(tf,g,obs,layout,chains,momentum_seeds,log=log)
+    rail_stats['verified_rings']=sharedrail.mark_ring_witnesses(g,layout,rail_witnesses)
     for (a,b),rows in rail_witnesses.items():
         witnesses[a,b].extend(rows);candidates[a].add(b)
     # One fixed label per destination support chart in this relaxation.

@@ -24,7 +24,7 @@ from .sweep import chord as _chord, curve as _curve
 
 FOLLOW_SPEED = 9.0
 STOP_COST = 9.0
-RULE = "closed form ledges and rail ends, three balls, supported momentum continuation and analytic manifolds and mesh rail corridors and conformal road slopes, finite rail joints, local step support and paired rail crowns, normal impulses, confirmed rail goals and joint conformal runways and feature rim clearance and conformal search catalogue v26 shared supported crossings and rail outlets"
+RULE = "closed form ledges and rail ends, three balls, supported momentum continuation and analytic manifolds and mesh rail corridors and conformal road slopes, finite rail joints, local step support and paired rail crowns, normal impulses, confirmed rail goals and joint conformal runways and feature rim clearance and conformal search catalogue v27 finite portal verdicts and supported crossings"
 GRAVITY_IMPULSE = ph.GRAVITY * ph.DT
 FLOOR = ph.Params().floor
 XZ = [0, 2]

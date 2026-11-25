@@ -382,12 +382,69 @@ def scan(g, info, sector: int, world, entry_kind: str = "wood", operate_cost: fl
     return res
 
 
+def shared_route(g, starts, goals, *, allow=None):
+    """Choose connectivity directly on shared nodes, not projected edges.
+
+    This is a sequence of local representatives, not a continuous replay.
+    Unknown portals are excluded. Prefer checked edges, then fewer links.
+    A caller with a mechanism state can further restrict allowed transfers.
+    """
+    from collections import defaultdict
+    from heapq import heappop, heappush
+    from itertools import count
+    shared=g.info['shared_motion_graph']; layout=g.info['conformal_search']
+    edges=defaultdict(dict)
+    def add(a,b,status,kind,row):
+        if a==b or (allow is not None and not allow(a,b,row)):return
+        if b in edges[a] and edges[a][b]['status']=='verified':return
+        edges[a][b]=dict(source=a,target=b,status=status,kind=kind,witness=row)
+    for (a,b),row in shared['rolling'].items():add(a,b,'verified','roll',row)
+    for (a,b),rows in shared['witnesses'].items():
+        row=min((r for r in rows if allow is None or allow(a,b,r)),key=lambda r:r['ticks'],default=None)
+        if row is not None:add(a,b,'verified','rail' if row.get('rail_parts') else 'air',row)
+    # The retained archive's coarse indices are only endpoint anchors; all
+    # traversal after admission is over the shared nodes.
+    support=g.info.get('terrain_support',())
+    for (u,v),edge in g.info.get('launches',{}).items():
+        if not (0<=u<len(support) and 0<=v<len(support)):continue
+        for row in edge.get('variants',(edge,)):
+            if row.get('witness_status')!='retained_legacy':continue
+            for a in layout.mapped(row['ball'],support[u]):
+                for b in layout.mapped(row['ball'],support[v]):add(a,b,'retained_legacy','air',row)
+    prev={a:None for a in starts}; score=dict.fromkeys(prev,(0,0)); order=count()
+    heap=[(0,0,next(order),a) for a in prev]; goals=set(goals)
+    while heap:
+        legacy,hops,_,a=heappop(heap)
+        if score[a]!=(legacy,hops):continue
+        if a in goals:
+            path=[]
+            while prev[a] is not None:
+                row=prev[a];path.append(row);a=row['source']
+            return dict(status='local_witness_sequence',nodes=[a,*[r['target'] for r in reversed(path)]],
+                        edges=path[::-1],reached_count=len(prev))
+        for b,row in edges.get(a,{}).items():
+            cost=(legacy+(row['status']!='verified'),hops+1)
+            if b in score and score[b]<=cost:continue
+            prev[b]=row;score[b]=cost;heappush(heap,(*cost,next(order),b))
+    frontier=[(a,b) for a in prev for b in shared['candidates'].get(a,()) if b not in prev]
+    return dict(status='no_route_in_checked_shared_subgraph',nodes=[],edges=[],reached_count=len(prev),
+                unresolved_frontier=frontier)
+
+
 def link(res: dict) -> dict:
     """Step 2: the links between a sector's regions (`scan`), the way through them with the fewest breaks, and the
     coarse level's own cheapest plan as regions. Adds them to res and returns it."""
     sg, R, M = res["sg"], res["R"], len(res["mechs"])
     res["links"] = links_of(sg, R)
     res["breaks"], res["path"], res["free"] = connect(res["links"], res["start"], res["goal_regions"], res.get("lock", 0))
+    # Keep the mechanism-aware compatibility route separate until the
+    # shared graph has guarded transitions and transformer splits.
+    graph=sg.g
+    if 'shared_motion_graph' in graph.info:
+        layout=graph.info['conformal_search']; support=graph.info['terrain_support']
+        u,v=res['start_place'],res['goal']; kind=KINDS[res['start'][1]]
+        if 0<=u<len(support) and 0<=v<len(support):
+            res['shared_route']=shared_route(graph,layout.mapped(kind,support[u]),layout.mapped(kind,support[v]))
     nodes, kinds, states = sg.plan(res["s0"], res["start_place"], res["togo"], lock=res.get("lock", 0))
     plan = []
     for i, gu in enumerate(nodes):
@@ -666,6 +723,13 @@ def summary_links(res: dict) -> dict:
         links.append(dict(**{"from": R.name(key[1]), "to": R.name(key[2])}, what=desc, cost=round(e["cost"], 1), count=e["count"], **launch_proof(key,e),
                           at=[[round(float(x), 2) for x in P[e["at"][0]]], [round(float(x), 2) for x in P[e["at"][1]]]],
                           is_break=bool(key[0] == "plain" and key[3] in BREAK), big=bool(min(res["regions"][key[1]]["places"], res["regions"][key[2]]["places"]) >= BIG)))
+    selected=res.get('shared_route')
+    shared={}
+    if selected is not None:
+        from dataclasses import asdict
+        shared['shared_route']=dict(status=selected['status'],nodes=[asdict(n) for n in selected['nodes']],
+                                    edges=[dict(kind=e['kind'],status=e['status']) for e in selected['edges']],
+                                    unresolved_frontier_count=len(selected.get('unresolved_frontier',())))
     return dict(sector=res["sector"], entry_kind=res["entry_kind"], exit_kind=res.get("exit_kind"), start_region=R.name(res["start"][0]), goal_regions=[R.name(r) for r in res["goal_regions"]],
                 fewest_breaks=res["breaks"], breaks_by_entry_and_exit_kind=res.get("options"),
                 way=[dict(region=R.name(r), kind=KINDS[k], mechanism_bits=b, by=what, link=describe(key, ride=res["links"].get(key, {}).get("elevator")), **launch_proof(key,res["links"].get(key))) for r, k, b, what, key in res["path"]],
@@ -673,7 +737,7 @@ def summary_links(res: dict) -> dict:
                              for p in res["plan"]],
                 links=[{k: v for k, v in l.items() if k not in ("is_break", "big")} for l in links if not l["is_break"]],
                 breaks=[{k: v for k, v in l.items() if k not in ("is_break", "big")} for l in links if l["is_break"] and l["big"]],
-                breaks_all=sum(1 for l in links if l["is_break"]),
+                breaks_all=sum(1 for l in links if l["is_break"]), **shared,
                 note=("mechanism_bits: bit m is mechanism m's state (gate open, push board down, seesaw low at its other end, rock dropped, T board down"
                       + (", elevator used" if any(m["type"] == "elevator" for m in res["mechs"]) else "")
                       + (", flap in pose B" if any(m["type"] == "flap" for m in res["mechs"]) else "") + ")") if res["mechs"] else "")
