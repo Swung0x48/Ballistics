@@ -180,10 +180,16 @@ def path_for(e):
     return e['motion'] if 'motion' in e else lines(np.asarray(e.get('way',()),dtype=float))
 
 
+def guard_path_for(edge):
+    """Guard both the witness and its coarse attachment, not just one endpoint."""
+    chords=edge.get('projection_chords')
+    return path_for(edge) if not chords else (chords[0],*path_for(edge),chords[1])
+
+
 def edge_paths(g,u,v,kind):
     if kind=='launch':
         from .takeoff import variants
-        return tuple(path_for(e) for e in variants(g,u,v))
+        return tuple(guard_path_for(e) for e in variants(g,u,v))
     if kind=='lift':
         e=g.info.get('lifts',{}).get((u,v))
         return (path_for(e),) if e else ()

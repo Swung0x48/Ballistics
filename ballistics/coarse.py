@@ -702,7 +702,7 @@ class StateGraph:
     that goes on ever finds it broken. floats: box float rows with a mask of ball kinds allowed at entry, no bit;
     pendulums and timed mechanisms: stateless directed crossings for all three balls; transformation on arrival works like a plain edge."""
 
-    def __init__(self, rel, g, region, trafo_kind, trafo_cost: float, lifts, mechs: list, operate_cost: float, links=None, skip=(), bridges=(), guards=None, floats=(), pendulums=(), timed=(), launch_eligible=None):
+    def __init__(self, rel, g, region, trafo_kind, trafo_cost: float, lifts, mechs: list, operate_cost: float, links=None, skip=(), bridges=(), guards=None, floats=(), pendulums=(), timed=(), launch_eligible=None, gate_launch_eligible=None):
         N = len(g.pos)
         self.g, self.N, self.mechs = g, N, list(mechs)
         self.M = len(self.mechs)
@@ -722,10 +722,14 @@ class StateGraph:
         from . import takeoff
         self.launch_cost = {}
         self.launch_evidence = {}
+        self.route_evidence = {}
         self.terrain_masks = {}
         terrain_masks = g.info.get("terrain_ball_masks", {})
         if launch_eligible is None:
             launch_eligible = lambda _u, _v, _e: True
+        if gate_launch_eligible is None:
+            gate_launch_eligible = lambda u,v,e,_name: launch_eligible(u,v,e)
+        self.gate_route_evidence = {}
         base, base_kind = [], []
         for gu in ids:
             u = int(loc[gu])
@@ -747,6 +751,7 @@ class StateGraph:
                         costs = {kind: float(c) + takeoff.cost(e) - takeoff.cost(es[0]) for kind,e in allowed.items()}
                         for kind,e in allowed.items():
                             self.launch_evidence[u,v,kind] = e.get('witness_status','legacy_unclassified')
+                            self.route_evidence[u,v,kind] = e
                         required = int(trafo_kind[gu])
                         if required >= 0:
                             costs = {k: val for k, val in costs.items() if k == required}
@@ -789,8 +794,13 @@ class StateGraph:
                 c = float(c) + (operate_cost if typ in (*OPERATE, FLAP_PUSH, *PENDULUM_OPERATE, ELEVATOR) else 0.0)
                 es = takeoff.variants(g, gu, gv) if typ == GATE_THROUGH and kind == "launch" else ()
                 if es and all("flight_ticks" in e for e in es):
-                    choices = [(c + takeoff.cost(e) - takeoff.cost(es[0]), 1 << KIND_INDEX[e["ball"]]) for e in es
-                               if trafo_kind[gu] in (-1, KIND_INDEX[e["ball"]]) and launch_eligible(gu, gv, e)]
+                    best = {}
+                    for e in es:
+                        req=KIND_INDEX[e['ball']]
+                        if req not in best and trafo_kind[gu] in (-1,req) and gate_launch_eligible(gu,gv,e,mc['name']):
+                            best[req]=e
+                    choices=[(c + takeoff.cost(e) - takeoff.cost(es[0]),1 << req) for req,e in best.items()]
+                    for req,e in best.items():self.gate_route_evidence[u,v,m,req]=e
                 else:
                     terrain_mask=terrain_masks.get((int(gu),int(gv),kind),7)
                     if typ==GATE_THROUGH and terrain_mask!=7:

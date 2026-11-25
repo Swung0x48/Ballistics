@@ -439,14 +439,6 @@ def link(res: dict) -> dict:
     sg, R, M = res["sg"], res["R"], len(res["mechs"])
     res["links"] = links_of(sg, R)
     res["breaks"], res["path"], res["free"] = connect(res["links"], res["start"], res["goal_regions"], res.get("lock", 0))
-    # Keep the mechanism-aware compatibility route separate until the
-    # shared graph has guarded transitions and transformer splits.
-    graph=sg.g
-    if 'shared_motion_graph' in graph.info:
-        layout=graph.info['conformal_search']; support=graph.info['terrain_support']
-        u,v=res['start_place'],res['goal']; kind=KINDS[res['start'][1]]
-        if 0<=u<len(support) and 0<=v<len(support):
-            res['shared_route']=shared_route(graph,layout.mapped(kind,support[u]),layout.mapped(kind,support[v]))
     nodes, kinds, states = sg.plan(res["s0"], res["start_place"], res["togo"], lock=res.get("lock", 0))
     plan = []
     for i, gu in enumerate(nodes):
@@ -703,18 +695,81 @@ def summary_regions(res: dict) -> dict:
                                     for d in res["regions"].values() if d["kind"] == KINDS[k]} for k in range(3)})
 
 
-def summary_links(res: dict) -> dict:
+def route_steps(res):
+    """Expand the selected regional links with actual directed rolling edges.
+
+    The SCC only asserts reachability. Do not draw a straight line across
+    that component or use a different ball's route through it.
+    """
+    from collections import deque
+    sg,R,P=res['sg'],res['R'],res['places']
+    if not res['path']:
+        return []
+    result=[]
+    here=int(sg.loc[res['start_place']]); r,k,bits=res['start']
+
+    def inside(goal):
+        if here == goal:
+            return
+        todo=deque([here]); prev={here:None}
+        while todo and goal not in prev:
+            u=todo.popleft()
+            for v,_,kind,ek,mask in sg.fwd[u]:
+                if (kind not in ROLL or mask or ek not in (-1,k) or (u,v,kind) in sg.guards
+                        or v in prev or R.of(k,v)!=r
+                        or not (sg.terrain_masks.get((u,v,kind),7)&(1<<k))):
+                    continue
+                prev[v]=(u,kind); todo.append(v)
+        if goal not in prev:
+            raise ValueError('regional route endpoints are not joined by the rolling component')
+        path=[]; v=goal
+        while v!=here:
+            u,kind=prev[v]; path.append(dict(source='coarse_roll' if kind=='roll' else kind,
+                edge_type=kind, ball=KINDS[k], region=R.name(r), at=[P[u].tolist(),P[v].tolist()],
+                anchors=[int(sg.glob[u]),int(sg.glob[v])]))
+            v=u
+        result.extend(reversed(path))
+
+    way=summary_links(res, only_way=True)
+    for (nr,nk,nb,_,key),desc in zip(res['path'][1:], way[1:]):
+        u,v=res['links'][key]['at']; inside(u)
+        result.append(dict(desc, from_region=R.name(r), ball=KINDS[k],
+                           at=[P[u].tolist(),P[v].tolist()],anchors=[int(sg.glob[u]),int(sg.glob[v])]))
+        here,r,k,bits=v,nr,nk,nb
+    inside(int(sg.loc[res['goal']]))
+    return result
+
+
+def summary_links(res: dict, *, only_way=False) -> dict | list:
     """Step 2 as plain data: the links between the sector's regions, and the way with the fewest breaks."""
     P, R = res["places"], res["R"]
     links = []
     def launch_proof(key,e):
-        if key is None or e is None or key[0]!='plain':return {}
-        u,v=e['at']
-        if key[3] in BREAK:
-            return {'missing_witness': True, 'missing_from': _r1(P[u]), 'missing_to': _r1(P[v])}
-        if key[3]!='launch':return {}
-        evidence=getattr(res.get('sg'),'launch_evidence',{}).get((u,v,key[5]))
-        return {'witness_status':evidence} if evidence is not None else {}
+        if key is None or e is None:return {}
+        u,v=e['at']; at=[_r1(P[u]),_r1(P[v])]
+        sg=res.get('sg')
+        if key[0]=='mech' and key[3]==coarse.GATE_THROUGH:
+            row=getattr(sg,'gate_route_evidence',{}).get((u,v,key[4],key[6]))
+            kind='launch' if row is not None else describe(key)
+        elif key[0]!='plain':
+            return dict(source=key[0],edge_type=describe(key),at=at)
+        else:
+            kind=key[3]
+            row=getattr(sg,'route_evidence',{}).get((u,v,key[5])) if kind=='launch' else None
+        if kind in BREAK:
+            return dict(source='missing',edge_type=kind,at=at,missing_witness=True,
+                        missing_from=at[0],missing_to=at[1])
+        if row is not None:
+            status=row.get('witness_status','legacy_unclassified')
+            return dict(source=status,edge_type=row.get('route_type',kind),at=at,witness_status=status,
+                        reference=row.get('retained_reference'),support_patches=row.get('support_patches'),
+                        witness_at=[_r1(row['launch_position']),_r1(row['landing_position'])] if 'launch_position' in row else None)
+        return dict(source='coarse_roll' if kind=='roll' else kind,edge_type=kind,at=at)
+    way=[dict(region=R.name(r), kind=KINDS[k], mechanism_bits=b, by=what,
+              link=describe(key, ride=res['links'].get(key, {}).get('elevator')),
+              **launch_proof(key,res['links'].get(key))) for r,k,b,what,key in res['path']]
+    if only_way:
+        return way
     for key, e in sorted(res["links"].items(), key=lambda kv: (kv[0][1], kv[0][2], str(kv[0]))):
         ride = e.get("elevator")
         desc = describe(key, ride=ride)
@@ -722,24 +777,17 @@ def summary_links(res: dict) -> dict:
             flights = [r["gap"] for r in e["elevator_exits"].values() if r["flight"]]
             if flights:
                 desc += "; alternate exits " + _elevator_flight(min(flights), upper=max(flights))
-        links.append(dict(**{"from": R.name(key[1]), "to": R.name(key[2])}, what=desc, cost=round(e["cost"], 1), count=e["count"], **launch_proof(key,e),
+        links.append(dict(**{"from": R.name(key[1]), "to": R.name(key[2])}, what=desc, cost=round(e["cost"], 1), count=e["count"], **{k:v for k,v in launch_proof(key,e).items() if k!="at"},
                           at=[[round(float(x), 2) for x in P[e["at"][0]]], [round(float(x), 2) for x in P[e["at"][1]]]],
                           is_break=bool(key[0] == "plain" and key[3] in BREAK), big=bool(min(res["regions"][key[1]]["places"], res["regions"][key[2]]["places"]) >= BIG)))
-    selected=res.get('shared_route')
-    shared={}
-    if selected is not None:
-        from dataclasses import asdict
-        shared['shared_route']=dict(status=selected['status'],nodes=[asdict(n) for n in selected['nodes']],
-                                    edges=[dict(kind=e['kind'],status=e['status'],reference=e['witness'].get('retained_reference')) for e in selected['edges']],
-                                    unresolved_frontier_count=len(selected.get('unresolved_frontier',())))
     return dict(sector=res["sector"], entry_kind=res["entry_kind"], exit_kind=res.get("exit_kind"), start_region=R.name(res["start"][0]), goal_regions=[R.name(r) for r in res["goal_regions"]],
                 fewest_breaks=res["breaks"], breaks_by_entry_and_exit_kind=res.get("options"),
-                way=[dict(region=R.name(r), kind=KINDS[k], mechanism_bits=b, by=what, link=describe(key, ride=res["links"].get(key, {}).get("elevator")), **launch_proof(key,res["links"].get(key))) for r, k, b, what, key in res["path"]],
+                way=way,
                 coarse_plan=[dict(region=R.name(p["region"]) if p["region"] >= 0 else None, kind=p["kind"], mechanism_bits=p["bits"], by=p["how"], at=_r1(p["at"]))
                              for p in res["plan"]],
                 links=[{k: v for k, v in l.items() if k not in ("is_break", "big")} for l in links if not l["is_break"]],
                 breaks=[{k: v for k, v in l.items() if k not in ("is_break", "big")} for l in links if l["is_break"] and l["big"]],
-                breaks_all=sum(1 for l in links if l["is_break"]), **shared,
+                breaks_all=sum(1 for l in links if l["is_break"]),
                 note=("mechanism_bits: bit m is mechanism m's state (gate open, push board down, seesaw low at its other end, rock dropped, T board down"
                       + (", elevator used" if any(m["type"] == "elevator" for m in res["mechs"]) else "")
                       + (", flap in pose B" if any(m["type"] == "flap" for m in res["mechs"]) else "") + ")") if res["mechs"] else "")

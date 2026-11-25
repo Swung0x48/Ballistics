@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import math
 import pickle
+from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
@@ -105,7 +106,12 @@ def gate_edges(g, info: dict, parts: list) -> dict:
     open (slid GATE_OPEN along its own x) are kept per gate, to be put back for a plan that opens it first.
     Per gate: dict(sector, edges [(u, v, cost, kind)], axis (its x in world), face (the middle of the target
     plate's face that is pushed), operate (the place the ball pushes from, on the lower road, or -1))."""
+    from .takeoff import variants
     out = {}
+    launch_refs = {(u,v):(c, variants(g,u,v)) for u,row in enumerate(g.adj)
+                   for v,c,k in row if k=='launch' and variants(g,u,v)}
+    screened_launches = defaultdict(set)
+    variant_paths = None
     bodies: dict = {}
     for b in parts:
         if b["kind"] == "P_Modul_01_Pusher":
@@ -127,6 +133,9 @@ def gate_edges(g, info: dict, parts: list) -> dict:
         for u in np.flatnonzero(np.linalg.norm(g.pos - centre, axis=1) < reach):
             keep = []
             for v, c, k in g.adj[u]:
+                if k=='launch' and (int(u),v) in launch_refs:
+                    keep.append((v,c,k))  # screen every variant after the fixed edges
+                    continue
                 paths=motion.edge_paths(g,u,v,k) or ((motion.line(g.pos[u],g.pos[v]),),)
                 if _hits(paths[0],closed,0.1,pushed=(ti,face,axis)):
                     if not _hits(paths[0],opened,0.1):
@@ -134,9 +143,40 @@ def gate_edges(g, info: dict, parts: list) -> dict:
                     continue
                 keep.append((v, c, k))
             g.adj[u] = keep
+        if variant_paths is None:
+            variant_paths=[]
+            for (u,v), (_c,ways) in launch_refs.items():
+                for e in ways:
+                    e.pop('route_gates',None)
+                    path=motion.guard_path_for(e)
+                    bounds=[p.bounds(0.,p.end) for p in path]
+                    if bounds:
+                        variant_paths.append((u,v,e,path,np.min([x[0] for x in bounds],axis=0),
+                                              np.max([x[1] for x in bounds],axis=0)))
+        extents=[np.maximum(abs(axes).T@half,np.max(abs(np.asarray(tris).reshape(-1,3)),axis=0))
+                 if tris else abs(axes).T@half for _,half,axes,tris in closed]
+        # An outer box is only a rejection screen. The actual hit and
+        # gate-open test still see each trajectory separately.
+        gate_lo=np.min([c-d for (c,*_),d in zip(closed,extents)],axis=0)-BALL_R
+        gate_hi=np.max([c+d for (c,*_),d in zip(closed,extents)],axis=0)+BALL_R
+        for u,v,e,path,lo,hi in variant_paths:
+            if np.any(lo>gate_hi) or np.any(hi<gate_lo):
+                continue
+            if _hits(path,closed,0.1,pushed=(ti,face,axis)):
+                opened_clear=not _hits(path,opened,0.1)
+                e['route_gates']=(*e.get('route_gates',()),(place,opened_clear))
+                screened_launches[u,v].add(place)
         spot = face - (BALL_R + 0.3) * axis
         op = g.nearest(spot, 3.0)
         out[place] = dict(sector=p.get("sector"), edges=edges, axis=axis, face=face, operate=int(op), pieces=closed)
+    for (u,v),names in screened_launches.items():
+        c,ways=launch_refs[u,v]
+        if not any(not e.get('route_gates') for e in ways):
+            g.adj[u]=[x for x in g.adj[u] if x[0]!=v or x[2]!='launch']
+        for name in sorted(names):
+            if any((name,True) in e.get('route_gates',()) for e in ways):
+                out[name]['edges'].append((u,v,float(c),'launch'))
+    g.info['variant_gate_screened']=True
     return out
 
 
@@ -1912,12 +1952,18 @@ def state_graph_for(g, info: dict, sector: int, world, operate_cost: float, cork
     from .takeoff import valid_in_sector
     trigger_paths = [(np.asarray(t['pos'], float), t['kind']) for t in trafos]
 
-    def launch_eligible(_u, v, edge):
+    def launch_eligible(_u, v, edge, gate=None):
+        required = {name: opened for name,opened in edge.get('route_gates', ()) if name not in without}
+        if required and (set(required) != {gate} or not required[gate]):
+            return False
+        if gate is not None and g.info.get('variant_gate_screened') and gate not in required:
+            return False
         return valid_in_sector(edge, g.pos[v], trigger_paths, R.radius)
 
     sg = coarse.StateGraph(rel, g, region, tk, cost, lifts, mechs, operate_cost, guards=guards,
                            links=links, skip=skip, bridges=bridges,
-                           floats=active_floats, pendulums=pendulums, timed=timed, launch_eligible=launch_eligible)
+                           floats=active_floats, pendulums=pendulums, timed=timed, launch_eligible=launch_eligible,
+                           gate_launch_eligible=launch_eligible)
     sg.float_row_names = {r["name"] for r in floats}
     M = len(mechs)
 
@@ -2020,6 +2066,8 @@ def graph_for(mesh: Mesh, info: dict, cache: Path | None = None, log=print, *, l
         sharedsearch.add(takeoff,g,obs,layout,log=log,target_priorities=priorities,rail_outlet_targets=rail_outlet_targets)
         g.info['takeoff_stats']['retained']=retained.attach(takeoff,g,archive,info)
         g.info['takeoff_stats']['retained_rolling']=retained.attach_rolling(g,rolling_archive,info)
+        from . import routeprojection
+        g.info['takeoff_stats']['retained_rolling_projection']=routeprojection.attach(takeoff,g,flights=False,rolling=False)
         log("retained witnesses: %s" % g.info['takeoff_stats']['retained'])
     else:
         R = trafo.rules()

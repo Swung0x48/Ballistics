@@ -436,8 +436,12 @@ def inverse_outlets(tf,g,obs,layout,chains,targets):
                             if other is None:continue
                             outcome['next_rail_line']=paths.line_for(other.lane)
                             outcome['second_outlets']=[]
-                            for nxt in paths.walk(tf,ball,other,controls=lambda _:((math.inf,release_key),),clock=prefix['ticks'],
-                                                  search_side=False,require_groove_stability=True):
+                            onward=paths.walk(tf,ball,other,controls=lambda _:((math.inf,release_key),),clock=prefix['ticks'],
+                                              search_side=False,require_groove_stability=True)
+                            if other.rebound is not None and other.crown is not None and not other.crown.get('supported',False):
+                                from itertools import chain
+                                onward=chain(onward,(railride.Departure(other.rebound,0.,'rail_rebound',other,(),(),release_key),))
+                            for nxt in onward:
                                 detail={}
                                 road,code=_trace(tf,paths,ball,nxt,release_key,prefix['ticks'],diagnostic=detail); stats['relay_'+code]+=1
                                 outcome['second_outlets'].append(dict(reason=code,position=nxt.body.pos,velocity=nxt.body.vel,**detail))

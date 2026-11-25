@@ -284,13 +284,6 @@ def build(tf,g,obs,layout,pick,*,log=lambda *_:None):
     def publish(a,b,row):
         if a==b or (a,b) in verified:return
         verified[a,b]=row;pending.discard((a,b))
-        if row.get('quasistatic'):return  # do not export a literal coarse roll
-        i,j=pick(row['source_patch'],row['origin']),pick(row['target_patch'],row['position'])
-        if i<0 or j<0 or i==j:return
-        how='roll'; bit=1<<tf.KIND_INDEX[a.ball]; masks=g.info.setdefault('terrain_ball_masks',{})
-        group=(i,j,how); previous=any(e[0]==j and e[2]==how for e in g.adj[i]);masks[group]=masks.get(group,7 if previous else 0)|bit
-        if not previous:g.adj[i].append((j,max(EPS,float(np.linalg.norm(row['position']-row['origin']))),how))
-        row['mapped']=(i,j)
     def record(a,b,kind,pair,segment,row,reason,**extra):
         rec=dict(source=a,target=b,kind=kind,patch_pair=pair,segment=segment,
                  status='verified' if row is not None else 'unresolved',reason=reason,**extra)
