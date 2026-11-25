@@ -131,6 +131,7 @@ class SurfacePaths:
         self.lanes = {int(g.lane[ids[0]]): ids for ids in _lane_chains(g) if len(ids)}
         self.rail_geometry = rails.physical_lanes(g,obs.mesh)
         self.floor_edges = None
+        self.road_topology = None
         self.rail_bends = None
 
     def name(self, face):
@@ -372,23 +373,28 @@ class SurfacePaths:
         verdict='ideal_step_roll' if aligned and min(limits)>=0. else 'step_contact_unproved'
         return result,ticks,path,verdict,limits
 
-    def floor(self, tf, ball, face, node, body, normal, chosen_push=None, controls=None, clock=0.):
+    def floor(self, tf, ball, face, node, body, normal, chosen_push=None, controls=None, clock=0., *, follow_support=False):
         obs,m = self.obs,self.obs.mesh
         parts,way = [],[body.pos]
         elapsed = 0.
         returning_push = None
         surface = getattr(self.g,'info',{}).get('conformal')
+        if surface is not None and getattr(self,'road_topology',None) is None:
+            from .roadway import Topology
+            self.road_topology=Topology(surface)
         for _ in range(MAX_SUPPORT_PIECES):
             tri = obs.tris[face]
             k_patch = surface.face_patch[face] if surface is not None else -1
             patch = surface.patches[k_patch] if k_patch>=0 else None
+            if surface is not None and patch is None:
+                return Support('unmapped_support_patch',body,parts,way,node)
             plane = patch.normal if patch is not None else m.N[face] * np.sign(m.N[face] @ normal)
             offset = patch.offset if patch is not None else float(plane @ tri[0])
             if plane[1] < WALK_NY:
                 return Support('handoff',body,parts,way,node)
             vel = body.vel - (body.vel @ plane)*plane
             speed = np.linalg.norm(vel)
-            if speed <= EPS and returning_push is None:
+            if speed <= EPS and returning_push is None and not follow_support:
                 return Support('handoff',body,parts,way,node)
             push = returning_push if returning_push is not None else (keys_along(vel) if chosen_push is None else chosen_push)
             limit = math.inf
@@ -397,7 +403,7 @@ class SurfacePaths:
                 if limit <= EPS:
                     return Support('no_input_window',body,parts,way)
             rolling = law(ball,plane,push)
-            stop = slow_tick(rolling.along(vel),speed)
+            stop = math.inf if follow_support else slow_tick(rolling.along(vel),speed)
             stalled=False
             if patch is not None and self.g.info.get('terrain_ball_masks') is not None:
                 grade=np.linalg.norm(plane[XZ])/plane[1]
@@ -466,6 +472,7 @@ class SurfacePaths:
             _, points = tf._samples(start,rolling.impulse,rolling.loss,event,1.)
             parts.append(segment('floor',self.name(face),start,out,event,push,'key_change' if limit<min(t,stop) else ('uphill_turn' if stalled else 'slow') if stop<=t else 'step_contact' if lip_event is not None else 'patch_edge' if patch is not None else 'face_edge',
                                  geometry=(motion.rolling(start,rolling.impulse,rolling.loss,event),)))
+            parts[-1].update(patch=int(k_patch),normal=plane.copy())
             way.extend(points)
             elapsed += event
             if limit < min(t,stop):
@@ -492,18 +499,59 @@ class SurfacePaths:
                 face=lip.face; normal=m.N[face]; returning_push=None
                 continue
             f,a,b,outward=crossing
-            adjacent = self.floor_neighbours().get(self.edge_key(a,b),())
-            candidates = [i for i in adjacent if i != f and (patch is None or surface.face_patch[i]!=k_patch)]
+            foot=out.pos-(ball.radius+SKIN)*plane
+            if patch is not None:
+                candidates=[(j,f0,surface.patches[j].normal) for j,f0 in self.road_topology.neighbours(k_patch,a,b,foot)]
+            else:  # only legacy/synthetic calls without a conformal surface
+                adjacent=self.floor_neighbours().get(self.edge_key(a,b),())
+                candidates=[(-1,i,m.N[i]*np.sign(m.N[i]@plane)) for i in adjacent if i!=f]
             if candidates:
-                other = max(candidates,key=lambda i: abs(m.N[i] @ plane))
-                n1 = m.N[other] * np.sign(m.N[other] @ plane)
-                if out.vel @ n1 > EPS:
-                    rim = tf.convex_release(ball,out.pos,plane,n1,outward,out.vel,push,inertia_ratio(ball))
-                    if rim:
+                k_next,other,n1=max(candidates,key=lambda i: abs(i[2]@plane))
+                turn=unit(n1-(n1@plane)*plane)
+                if out.vel@turn>EPS:
+                    rim=tf.rim_release(ball,foot,plane,turn,out.vel,0,push=push,inertia_ratio=inertia_ratio(ball))
+                    bend=math.acos(float(np.clip(n1@plane,-1.,1.)))
+                    if rim is not None and rim.angle<bend-EPS:
                         parts.append(segment('rim',self.name(face),out,rim.start,rim.seconds/ph.DT,push,'convex',geometry=(rim.motion(),)))
                         way.extend(rim.way()); return Support('convex',rim.start,parts,way,rim=rim)
+                    if rim is not None and bend>EPS:
+                        path=motion.arc(foot,rim.radius*plane,rim.radius*turn,0.,bend,rim.along*rim.axis,rim.energy)
+                        seconds=path.duration(1.)
+                        # The rotating support is a finite edge, not an
+                        # infinite axis. Axial motion is uniform in the
+                        # existing rim law, so its endpoint is an event.
+                        edge_extent=sorted(float((x-foot)@rim.axis) for x in (a,b))
+                        to_end=math.inf
+                        if rim.along>EPS:to_end=max(0.,edge_extent[1]/rim.along)
+                        if rim.along<-EPS:to_end=max(0.,edge_extent[0]/rim.along)
+                        deadline=max(0.,(limit-event)*ph.DT)
+                        truncated=min(to_end,deadline)<seconds-EPS
+                        if truncated:
+                            from scipy.optimize import brentq
+                            seconds=min(to_end,deadline)
+                            bend*=brentq(lambda fraction:path.duration(fraction)-seconds,0.,1.) if seconds>EPS else 0.
+                            path=motion.arc(foot,rim.radius*plane,rim.radius*turn,0.,bend,rim.along*rim.axis,rim.energy)
+                        ticks=seconds/ph.DT
+                        if any(motion.box_hit(path,lo,hi) is not None for lo,hi in obs.boxes):
+                            return Support('support_obstruction',out,parts,way)
+                        c,x,y=rim.energy; v=math.sqrt(max(0.,c+x*(math.cos(bend)-1.)+y*math.sin(bend)))
+                        velocity=rim.along*rim.axis+v*(turn*math.cos(bend)-plane*math.sin(bend))
+                        body=ph.State(path.point(1.),velocity,ph.rolling_spin(velocity,n1,ball.radius))
+                        reason='convex_seam' if not truncated else 'seam_endpoint' if to_end<deadline else 'seam_input_window'
+                        parts.append(segment('rim',self.name(face),out,body,ticks,push,reason,geometry=(path,)))
+                        way.append(body.pos);elapsed+=ticks
+                        if truncated:
+                            if reason=='seam_input_window':return Support(reason,body,parts,way)
+                            end=tf.Rim(body,seconds,foot,plane,turn,rim.axis,rim.along,bend,rim.radius,rim.energy)
+                            return Support('convex',body,parts,way,rim=end)
+                        face,normal=other,n1
+                        returning_push=None
+                        continue
                 # Re-anchor to the same edge's offset on the neighbouring face.
-                p = out.pos - (ball.radius+SKIN)*plane + (ball.radius+SKIN)*n1
+                p=foot+(ball.radius+SKIN)*n1
+                if k_next>=0:
+                    nxt=surface.patches[k_next]
+                    p+=n1*(nxt.offset+ball.radius+SKIN-p@n1)
                 body = ph.State(p,out.vel,out.omega); face,normal = other,n1
                 returning_push=None
                 continue

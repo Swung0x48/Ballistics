@@ -24,7 +24,7 @@ from .sweep import chord as _chord, curve as _curve
 
 FOLLOW_SPEED = 9.0
 STOP_COST = 9.0
-RULE = "closed form ledges and rail ends, three balls, supported momentum continuation and analytic manifolds and mesh rail corridors and conformal road slopes, finite rail joints, local step support and paired rail crowns, normal impulses, confirmed rail goals and paper impact hypotheses v19"
+RULE = "closed form ledges and rail ends, three balls, supported momentum continuation and analytic manifolds and mesh rail corridors and conformal road slopes, finite rail joints, local step support and paired rail crowns, normal impulses, confirmed rail goals and joint conformal runways v21"
 GRAVITY_IMPULSE = ph.GRAVITY * ph.DT
 FLOOR = ph.Params().floor
 XZ = [0, 2]
@@ -277,79 +277,37 @@ def _box_triangles(lows, highs, tri_lo, tri_hi, grid):
     return ordered
 
 
-def _lip(p, d, normal, mesh, tris, lo, hi):
-    """Intersect the tangent contact ray with coplanar triangles and union intervals."""
-    q = p - (ph.WOOD.radius + FLOOR) * normal
-    end = q + 2 * STEP * d
-    reach = 2 * STEP
-    ids = _box_triangles(np.minimum(q, end)[None] - .03, np.maximum(q, end)[None] + .03, lo, hi, mesh._grid)
-    if not len(ids):
-        return 0.0
-    T = tris[ids]
-    T = T[np.max(np.abs((T - q) @ normal), axis=1) < .03]
-    intervals = []
-    for tri in T:
-        E = np.roll(tri, -1, axis=0) - tri
-        n = np.cross(E[0], E[1])
-        if np.linalg.norm(n) < EPS:
-            continue
-        a = np.cross(E, q - tri) @ n
-        b = np.cross(E, d) @ n
-        l, h = 0., reach
-        for x, y in zip(a, b):
-            if abs(y) < EPS:
-                if x < -EPS:
-                    h = -1.
-            elif y > 0:
-                l = max(l, -x / y)
-            else:
-                h = min(h, -x / y)
-        if h >= l - EPS:
-            intervals.append((l, h))
-    last = 0.
-    for l, h in sorted(intervals):
-        if l > last + EPS:
-            break
-        last = max(last, h)
-    return last
-
-
 def _sites(g, mesh, tris, lo, hi):
-    P = g.pos
-    support_adj = g.info.get("launch_runup_adj",g.adj)
-    n = g.info["rest_places"]
-    for u in np.flatnonzero(g.info["edge_node"][:n]):
-        contacts = _support(mesh, P[u], ph.WOOD.radius)
-        if not contacts:
-            continue
-        normal = contacts[0].normal
-        p = P[u].copy()
-        p[1] += (FLOOR - contacts[0].gap) / normal[1] + EPS
-        for key in KEYS:
-            push = ph.key_push(key, 0)[XZ]
-            d = push / np.linalg.norm(push)
-            def along(w, direction):
-                nearest, best = -1, .25 * STEP
-                for v, _, k in support_adj[w]:
-                    if k == "roll":
-                        vq = (P[v] - P[w])[XZ]
-                        length = vq @ direction
-                        off = np.linalg.norm(vq - length * direction)
-                        if length >= .5 * STEP and off < best:
-                            nearest, best = v, off
-                return nearest
-            if along(u, d) >= 0:
-                continue
-            slope = -float(normal[XZ] @ d) / normal[1]
-            tangent = np.array([d[0], slope, d[1]])
-            lip = _lip(p, tangent, normal, mesh, tris, lo, hi)
-            if lip >= 2 * STEP - EPS:
-                continue
-            q = p + tangent * (lip + EPS)
-            run = [int(u)]
-            while (v := along(run[-1], -d)) >= 0:
-                run.append(v)
-            yield int(u), key, q, d, slope, normal, run, np.r_[lip, lip + np.cumsum(np.linalg.norm(np.diff(P[run], axis=0)[:, XZ], axis=1))], None
+    from .roadway import Topology, Runway
+    from . import conformal
+    surface=g.info.get('conformal')
+    if surface is None:
+        surface=g.info['conformal']=conformal.build(mesh)
+    topo=Topology(surface)
+    P=g.pos
+    n=g.info['rest_places']
+    for u in np.flatnonzero(g.info['edge_node'][:n]):
+        contacts=_support(mesh,P[u],ph.WOOD.radius)
+        patches=dict.fromkeys(int(surface.face_patch[c.triangle]) for c in contacts
+                              if surface.face_patch[c.triangle]>=0)
+        for k in patches:
+            plane=surface.patches[k]; normal=plane.normal
+            p=P[u]-(P[u]@normal-plane.offset)*normal
+            for key in KEYS:
+                push=ph.key_push(key,0)[XZ]; d=push/np.linalg.norm(push)
+                track=Runway.trace(topo,mesh,k,p,d,2*STEP)
+                if track is None:continue
+                slope=-float(normal[XZ]@d)/normal[1]
+                tangent=np.array([d[0],slope,d[1]])
+                # The same numerical separation as the mesh event restart:
+                # do not interpret equality at the release point as landing.
+                q=track.points[0]+(ph.WOOD.radius+FLOOR+8*EPS)*normal+8*EPS*tangent
+                run=[int(u)]; lengths=[0.]
+                for i,(q0,q1) in enumerate(zip(track.points,track.points[1:])):
+                    v=g.nearest(q1+(ph.WOOD.radius+FLOOR)*track.normals[i],reach=2*STEP)
+                    if v>=0 and v not in run:
+                        run.append(v);lengths.append(track.arc[i+1])
+                yield int(u),key,q,d,slope,normal,run,np.asarray(lengths),track
     rail_geometry = rails.physical_lanes(g, mesh)
     for chain in _lane_chains(g):
         track = rail_geometry[int(g.lane[chain[0]])]
@@ -378,39 +336,6 @@ def _sites(g, mesh, tris, lo, hi):
 _GL_X, _GL_W = np.polynomial.legendre.leggauss(16)
 _GL_X = (_GL_X + 1.) * .5
 _GL_W = _GL_W * .5
-
-
-def lip_basis(obs, q, normal, tangent, r):
-    """Find an actual edge direction at the contact ray's exit, when on a face."""
-    pivot = q - r * normal
-    ids = _box_triangles(pivot[None] - .03, pivot[None] + .03, obs.lo, obs.hi, obs.mesh._grid)
-    found = None
-    for i in ids:
-        n = obs.mesh.N[i]
-        if abs(n @ normal) < 1 - 1e-4:
-            continue
-        tri = obs.tris[i]
-        for a, b in zip(tri, np.roll(tri, -1, axis=0)):
-            e = b - a
-            length = np.linalg.norm(e)
-            if length <= EPS:
-                continue
-            e /= length
-            projection = (pivot - a) @ e
-            if not -.03 <= projection <= length + .03:
-                continue
-            near = a + e * np.clip(projection, 0, length)
-            distance = np.linalg.norm(pivot - near)
-            outward = np.cross(e, n)
-            outward -= (outward @ normal) * normal
-            h = outward @ tangent
-            if distance < .03 and h > EPS:
-                rank = (distance, -h)
-                if found is None or rank < found[0]:
-                    found = rank, near, outward / np.linalg.norm(outward)
-    if found is None:
-        return pivot, tangent / np.linalg.norm(tangent)
-    return found[1:]
 
 
 def rail_lip(obs, q, normal, tangent, double, radius):
@@ -1105,15 +1030,23 @@ def air_geometry(ball, a, push, ticks):
 def _run_path(P,lengths,chain,lip,track):
     if track is None:
         return np.vstack([lip,P[chain]]), np.r_[0.,lengths]
+    if hasattr(track,'patches'):
+        return track.points,track.arc
     points,arc=track
     return np.vstack([lip,points]),np.r_[0.,lengths[0]+arc]
 
 
-def route_geometry(P,lengths,chain,L,lip,rim,ball,parts,center,source,target,track=None):
+def route_geometry(P,lengths,chain,L,lip,rim,ball,parts,center,source,target,track=None,run_parts=()):
     before,lens=_run_path(P,lengths,chain,lip,track)
     t = np.r_[L,lens[(lens>0.) & (lens<L)][::-1],0.]
     support = np.column_stack([np.interp(t,lens,x) for x in before.T])
-    pre = motion.lines(np.vstack([P[source],support]))
+    if run_parts:
+        first=run_parts[0]['start_position']; last=run_parts[-1]['end_position']
+        pre=(motion.line(P[source],first),*(piece for segment in run_parts for piece in segment['motion']),motion.line(last,lip))
+    elif hasattr(track,'patches'):
+        pre=(motion.line(P[source],lip),)
+    else:
+        pre = motion.lines(np.vstack([P[source],support]))
     arc = (rim.motion(),) if rim is not None and rim.seconds else ()
     return (*pre,*arc,*(air_geometry(ball,a,p,n) for a,p,n in parts),motion.line(center,P[target]))
 
@@ -1123,10 +1056,12 @@ def continued_motion(edge, pieces, center, landing):
     return (*prefix[:-1],*(x for p in pieces for x in p['motion']),motion.line(center,landing))
 
 
-def _way(P, lengths, chain, L, lip, rim, ball, parts, center, source, target, track=None):
+def _way(P, lengths, chain, L, lip, rim, ball, parts, center, source, target, track=None,run_parts=()):
     before,lens=_run_path(P,lengths,chain,lip,track)
     steps = np.r_[L, np.arange(math.ceil(L) - 1, 0, -1), 0.]
     support = np.column_stack([np.interp(steps, lens, v) for v in before.T])
+    if hasattr(track,'patches'):
+        support=np.asarray([run_parts[0]['start_position'],*(p['end_position'] for p in run_parts)]) if run_parts else lip[None]
     arc = rim.way() if rim is not None and rim.seconds else np.empty((0, 3))
     loss = ball.lin_damp * ph.DT
     flight = []
@@ -1251,7 +1186,14 @@ def add_launches(g, mesh, info=None, *, log=lambda *_: None, transformer_kind=No
     seed_paths = RailPaths(g,obs,landing_places) if np.any(mesh.rail) else None
     rail_seeds = {}
     best = {}
+    import sys
+    from .runreach import ControlledTrack, takeoff_rows
+    tf=sys.modules[__name__]
     directions = list(_sites(g, mesh, obs.tris, obs.lo, obs.hi))
+    # The old longitudinal witnesses stay in the proposal set. The new
+    # finite runway envelopes add non-aligned, checked release states.
+    if g.info.get('conformal') is not None:
+        directions.extend(takeoff_rows(tf,g,obs,directions.copy()))
     log("takeoff: %d places, %d sites, %d outgoing directions, 3 balls" %
         (len(P), len({e[0] for e in directions}), len(directions)))
     # Finish the constant-input pass for every direction at a site before
@@ -1267,8 +1209,12 @@ def add_launches(g, mesh, info=None, *, log=lambda *_: None, transformer_kind=No
                 scale = np.linalg.norm(tangent)
                 floor = site < g.info['rest_places']
                 departure = None if floor else rail_support(obs, q, ph.WOOD.radius)
-                if floor:
-                    pivot, outward = lip_basis(obs, q, normal, tangent, ph.WOOD.radius + FLOOR)
+                controlled=isinstance(track,ControlledTrack)
+                if controlled:
+                    pivot,support_n,outward,rho=track.rim.pivot,track.rim.normal,track.rim.outward,track.rim.radius
+                elif floor:
+                    pivot=track.points[0]; a,b,_=track.lip
+                    outward=_unit(np.cross(b-a,normal))
                     support_n, rho = normal, ph.WOOD.radius + FLOOR
                 else:
                     cap = rail_lip(obs, q, normal, tangent, g.lanes[g.lane[site]]['double'], ph.WOOD.radius)
@@ -1279,13 +1225,25 @@ def add_launches(g, mesh, info=None, *, log=lambda *_: None, transformer_kind=No
                         q = new_q
                 rimmed = floor or cap is not None
                 for ball in ph.BALLS.values():
+                    if controlled and track.audit['ball']!=ball.name:continue
                     ball_labels = labels[ball.name]
                     source_components = tuple(map(int, np.unique(ball_labels[chain])))
                     loss = ball.lin_damp * ph.DT
                     axis = cf.rolling(ball, normal, key).along(tangent)
                     terminal = axis.terminal_speed
-                    vmax = runway_speed(axis, lengths[-1] * scale) / scale
+                    if controlled:
+                        vmax=np.linalg.norm(track.rim.start.vel[XZ])
+                    elif floor:
+                        import sys
+                        tf=sys.modules[__name__]
+                        profiles=track.profiles(tf,ball,key)
+                        vmax=max(x[1] for x in profiles)/scale
+                        solved_run={}
+                    else:
+                        vmax = runway_speed(axis, lengths[-1] * scale) / scale
                     rim_zero = rim_release(ball, pivot, support_n, outward, np.zeros(3), key, rho) if rimmed else None
+                    if controlled:rim_zero=track.rim
+                    elif floor and not track.allows_release(rim_zero):rim_zero=None
                     vy = vmax * slope
                     peak_a, peak_b = _coeff(_peak(vy, loss), loss)
                     top = q[1] + max(0., vy * peak_a - GRAVITY_IMPULSE * peak_b)
@@ -1353,8 +1311,8 @@ def add_launches(g, mesh, info=None, *, log=lambda *_: None, transformer_kind=No
                             def representatives(fractions, from_rest=False):
                                 if from_rest and zero[j]:
                                     tried_speeds.append(0.)
-                                    yield (0., rim_zero, rim_zero.start, float(rA[j]), float(rB[j]), rDelta[j], 'rim_zero')
-                                if not nominal[j]:
+                                    yield (vmax if controlled else 0., rim_zero, rim_zero.start, float(rA[j]), float(rB[j]), rDelta[j], 'joint_runway' if controlled else 'rim_zero')
+                                if controlled or not nominal[j]:
                                     return
                                 for f in fractions:
                                     if f and high[j] - low[j] <= EPS:
@@ -1368,7 +1326,7 @@ def add_launches(g, mesh, info=None, *, log=lambda *_: None, transformer_kind=No
                                         continue
                                     tried_speeds.append(speed)
                                     end = rim_release(ball, pivot, support_n, outward, tangent * speed, key, rho) if rimmed else None
-                                    if rimmed and end is None:
+                                    if rimmed and (end is None or floor and not track.allows_release(end)):
                                         continue
                                     start = end.start if end is not None and end.seconds else ph.State(q, tangent * speed)
                                     if end is not None and end.seconds:
@@ -1390,10 +1348,22 @@ def add_launches(g, mesh, info=None, *, log=lambda *_: None, transformer_kind=No
                                     n = float(_time_at_b(b, loss))
                                     if n <= 1 + EPS and b <= EPS:
                                         continue
-                                    n1 = (math.log1p(-min(speed * scale / terminal, 1 - 1e-15)) / math.log1p(-axis.loss)
-                                          if terminal > 0 and speed > 0 else 0.)
-                                    L = max(0., float(axis.at(0., n1)[0]) / scale) if n1 else 0.
-                                    w = chain[min(int(np.searchsorted(lengths, max(0., L - EPS))), len(chain) - 1)]
+                                    run_parts=()
+                                    if controlled:
+                                        L=track.arc[-1]; n1=track.ticks; run_parts=track.parts; w=track.source
+                                    elif floor:
+                                        if speed not in solved_run:
+                                            solved_run[speed]=track.for_speed(tf,ball,key,speed*scale,profiles,obs)
+                                        run=solved_run[speed]
+                                        if run is None:continue
+                                        L,n1,run_parts=run
+                                        w=g.nearest(run_parts[0]['start_position'],reach=2*STEP) if run_parts else site
+                                        if w<0:continue
+                                    else:
+                                        n1 = (math.log1p(-min(speed * scale / terminal, 1 - 1e-15)) / math.log1p(-axis.loss)
+                                              if terminal > 0 and speed > 0 else 0.)
+                                        L = max(0., float(axis.at(0., n1)[0]) / scale) if n1 else 0.
+                                        w = chain[min(int(np.searchsorted(lengths, max(0., L - EPS))), len(chain) - 1)]
                                     rim_ticks = rim.seconds / ph.DT if rim is not None else 0.
                                     if fallback and phase == 0:
                                         continue
@@ -1514,8 +1484,10 @@ def add_launches(g, mesh, info=None, *, log=lambda *_: None, transformer_kind=No
                                                      landing_position=hit.copy(), landing_face=int(face), representative=shape,
                                                      bounce_count=trace.bounces, contacts=tuple(trace.contacts),
                                                      across=float(np.linalg.norm((hit - release_pos)[XZ])), down=float(release_pos[1] - hit[1]))
-                                            e['way'] = _way(P, lengths, chain, L, q, rim, ball, parts, hit, w, v, track)
-                                            e['motion'] = route_geometry(P,lengths,chain,L,q,rim,ball,parts,hit,w,v,track)
+                                            e['way'] = _way(P, lengths, chain, L, q, rim, ball, parts, hit, w, v, track,run_parts)
+                                            e['motion'] = route_geometry(P,lengths,chain,L,q,rim,ball,parts,hit,w,v,track,run_parts)
+                                            if run_parts:e['runway_segments']=run_parts
+                                            if controlled:e['runway_envelope']=track.audit
                                             for k in needed:
                                                 best[k] = (w, v, e)
                                             if seed_key is not None:
