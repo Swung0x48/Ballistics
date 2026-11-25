@@ -86,3 +86,36 @@ def integer_runway(axis,speed_bounds,distance):
     if last<first:return None
     tick=(first+last)//2
     return float(axis.at(0.,tick)[0]),tick
+
+
+def midrail_switch(first,second,initial,distance,speeds,clock):
+    """Invert final speed for one switch on a finite, straight groove.
+
+    Both runs have the same loss l. D = DT * (U*t - (v-v0)/l),
+    U=terminal speed. At fixed total length, d(v_end)/d(switch)
+    has the sign of U_first-U_second while both runs move forward.
+    Bracket that monotone inverse; intersect it with absolute integer ticks.
+    """
+    from scipy.optimize import brentq
+    if first.loss!=second.loss or min(first.impulse,second.impulse,initial,distance)<=EPS:return None
+    def forward(axis):
+        u=axis.terminal_speed
+        return u-(initial-u)*math.log1p(-axis.loss)/axis.loss>EPS
+    if not (forward(first) and forward(second)):return None
+    max_time=first.over(initial,distance)[1]/ph.DT
+    def outlet(t):
+        travelled,v=first.at(initial,t)
+        end=second.over(float(v),max(0.,distance-float(travelled)))
+        return end[0]
+    a,b=outlet(0.),outlet(max_time); u,v=max(min(a,b),speeds[0]),min(max(a,b),speeds[1])
+    if v-u<=EPS:return None
+    def invert(speed):
+        if abs(speed-a)<=EPS:return 0.
+        if abs(speed-b)<=EPS:return max_time
+        return brentq(lambda t:outlet(t)-speed,0.,max_time)
+    lo,hi=sorted((invert(u),invert(v)))
+    first_tick,last_tick=math.ceil(clock+lo+EPS),math.floor(clock+hi-EPS)
+    if last_tick<first_tick:return None
+    tick=(first_tick+last_tick)//2
+    span=tuple(float(first.at(initial,t)[0]) for t in (lo,hi))
+    return tick,span,(u,v),float(outlet(tick-clock))

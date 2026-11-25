@@ -85,7 +85,7 @@ def _lines(item):
         for g in item.geoms:yield from _lines(g)
 
 
-def _lip_track(tf,ball,patch,obs,f,a,b,*,bend=None,on_release=None):
+def _lip_track(tf,ball,patch,obs,f,a,b,*,bend=None,on_release=None, key_index=None, pressure_family=False, on_air=None):
     """One finite literal representative, from a whole rest patch.
 
     From rest a held key has a fixed tangent. Intersect its backwards ray
@@ -95,7 +95,8 @@ def _lip_track(tf,ball,patch,obs,f,a,b,*,bend=None,on_release=None):
     """
     n=patch.normal; r=ball.radius+sc.SKIN; mid=(a+b)*.5; mid[1]=patch.height(mid[XZ]); axis=sc.unit(b-a); out=sc.unit(np.cross(axis,n))
     laws=tuple(sc.law(ball,n,k) for k in KEYS)
-    i=int(np.argmax([l.impulse@out for l in laws])); law=laws[i]; strength=np.linalg.norm(law.impulse)
+    i=int(np.argmax([l.impulse@out for l in laws])) if key_index is None else key_index
+    law=laws[i]; strength=np.linalg.norm(law.impulse)
     if strength<=EPS or law.impulse@out<=EPS:return None,'no_outward_key'
     d=law.impulse/strength; scale=np.linalg.norm(d[XZ]); width=float(np.linalg.norm((patch.high-patch.low)[XZ])); start=mid[XZ]
     ray=LineString((start,start-d[XZ]/scale*(width+conformal.PLANE_ERROR)))
@@ -111,7 +112,23 @@ def _lip_track(tf,ball,patch,obs,f,a,b,*,bend=None,on_release=None):
     # Use the fitted face normal but the finite span from the original mesh.
     rim=tf.rim_release(ball,mid,n,out,speed*d,0.,push=push,inertia_ratio=sc.inertia_ratio(ball))
     if rim is None:return None,'no_release'
-    if bend is not None and rim.angle>=bend-EPS:return None,'convex_seam_rolls'
+    if bend is not None and rim.angle>=bend-EPS:
+        if not pressure_family:return None,'convex_seam_rolls'
+        # At the receiver's normal the pressure inequality is affine in
+        # squared transverse rim speed. Invert that interval on the whole
+        # finite approach chord, then check the actual first pressure root.
+        force=cf.air_impulse(ball,push=push)/ph.DT
+        an,at=float(force@n),float(force@out); c,s=math.cos(bend),math.sin(bend)
+        k=sc.inertia_ratio(ball)*(ball.radius/r)**2
+        need=math.sqrt(max(0.,-r*(an*c+at*s)-2*r/(1+k)*(an*(c-1)+at*s)))/float(d@out)
+        axis_law=law.along(d); cap=axis_law.over(0.,max(intervals)/scale)
+        if cap is None or cap[0]<=need+EPS:return None,'pressure_family_speed_below_release'
+        speed=(max(need,speed)+cap[0])*.5
+        if not 0.<speed<axis_law.terminal_speed:return None,'pressure_family_speed_unproved'
+        ticks=math.log1p(-speed/axis_law.terminal_speed)/math.log1p(-axis_law.loss)
+        distance=float(axis_law.at(0.,ticks)[0]);origin=mid+r*n-distance*d;start=ph.State(origin,np.zeros(3))
+        rim=tf.rim_release(ball,mid,n,out,speed*d,0.,push=push,inertia_ratio=sc.inertia_ratio(ball))
+        if rim is None or rim.angle>=bend-EPS:return None,'pressure_family_root_unproved'
     if not obs.support_clear(start,law.impulse,law.loss,ticks,int(obs.mesh.owner[f]),ball.radius-sc.RECAPTURE):
         return None,'runway_blocked'
     state,detail=rimclear.check(tf,ball,rim.motion(),obs,(a,b))
@@ -123,6 +140,7 @@ def _lip_track(tf,ball,patch,obs,f,a,b,*,bend=None,on_release=None):
     limit=cf.landing_step(ball,st,min(obs.bottom-r,st.pos[1]-r))
     if not limit:return None,'no_air_horizon'
     air=tf.trace_air(obs,ball,st,((float(limit),push),),rim=rim)
+    if on_air is not None:on_air(air)
     why,face,flight,at=air.result
     if why!='land' or flight<=EPS:return None,'air_'+why
     all_ticks=ticks+rim.seconds/ph.DT+flight
@@ -263,7 +281,7 @@ def add(tf, g,obs,layout, *, log=lambda *_:None, target_priorities=(), rail_outl
                     lows.append(low);highs.append(high)
                     stats['lip_features']+=1
                     inverse=(lambda *args:priority.from_release(tf,ball,obs,node,k,*args)) if node in priority.points else None
-                    result,why=_lip_track(tf,ball,p,obs,f,a,b,bend=bend,on_release=inverse);stats[why]+=1
+                    result,why=_lip_track(tf,ball,p,obs,f,a,b,bend=bend,on_release=inverse,pressure_family=inverse is not None);stats[why]+=1
                     if result is None:continue
                     result['source_patch']=k
                     momentum_seeds.append((node,result))
@@ -327,9 +345,10 @@ def add(tf, g,obs,layout, *, log=lambda *_:None, target_priorities=(), rail_outl
     entries.extend(crest_entries)
     for (a,b),rows in crest_carry.items():
         witnesses[a,b].extend(rows);candidates[a].add(b)
-    rail_witnesses,rail_stats,rail_entries,rail_example=sharedrail.wave(tf,g,obs,layout,chains,(*momentum_seeds,*crest_rail),log=log)
-    outlet_rows,outlet_attempts,outlet_stats=sharedrail.inverse_outlets(
-        tf,g,obs,layout,chains,sharedrail.outlet_priorities(g,chains,(*target_priorities,*rail_outlet_targets)))
+    outlet_targets=sharedrail.outlet_priorities(g,chains,(*target_priorities,*rail_outlet_targets))
+    rail_witnesses,rail_stats,rail_entries,rail_example=sharedrail.wave(
+        tf,g,obs,layout,chains,(*momentum_seeds,*crest_rail),log=log,targets=outlet_targets)
+    outlet_rows,outlet_attempts,outlet_stats=sharedrail.inverse_outlets(tf,g,obs,layout,chains,outlet_targets)
     for pair,rows in outlet_rows.items():rail_witnesses.setdefault(pair,[]).extend(rows)
     rail_stats['outlet_inverse']=outlet_stats
     rail_stats['verified_rings']=sharedrail.mark_ring_witnesses(g,layout,rail_witnesses)

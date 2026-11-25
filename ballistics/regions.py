@@ -382,7 +382,7 @@ def scan(g, info, sector: int, world, entry_kind: str = "wood", operate_cost: fl
     return res
 
 
-def shared_route(g, starts, goals, *, allow=None):
+def shared_route(g, starts, goals, *, allow=None, transformations=()):
     """Choose connectivity directly on shared nodes, not projected edges.
 
     This is a sequence of local representatives, not a continuous replay.
@@ -412,6 +412,7 @@ def shared_route(g, starts, goals, *, allow=None):
             if row.get('witness_status')!='retained_legacy':continue
             for a in layout.mapped(row['ball'],support[u]):
                 for b in layout.mapped(row['ball'],support[v]):add(a,b,'retained_legacy','air',row)
+    for a,b,row in transformations:add(a,b,'verified','transform',row)
     prev={a:None for a in starts}; score=dict.fromkeys(prev,(0,0)); order=count()
     heap=[(0,0,next(order),a) for a in prev]; goals=set(goals)
     while heap:

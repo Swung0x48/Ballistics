@@ -783,7 +783,7 @@ class RailPaths:
         return dict(reason='transfer',node=node,face=face,ticks=0.,state=body,segments=(),way=(p,q),contacts=(event,),
                     bounces=0,catch=c,clearance=0.,axes=())
 
-    def air(self, tf, ball, dep, controls=None, clock=0., *, diagnostics=False):
+    def air(self, tf, ball, dep, controls=None, clock=0., *, diagnostics=False, allow_zero_rail=False):
         if dep.kind=='crown_twin':
             transfer=self.twin_transfer(tf,ball,dep)
             if transfer is not None:return transfer
@@ -807,7 +807,8 @@ class RailPaths:
         why,i,dt,hit=air.result
         meta=dict(clearance=clear,axes=departure.axes if departure is not None else ())
         if diagnostics:meta.update(air_parts=air.parts,event=air.result,waived_faces=departure.faces if departure else ())
-        if (why!='land' or (dt<=EPS and self.obs.mesh.owner[i]==self.obs.mesh.owner[dep.source.triangle])
+        if (why!='land' or (dt<=EPS and self.obs.mesh.owner[i]==self.obs.mesh.owner[dep.source.triangle]
+                             and not (allow_zero_rail and self.obs.mesh.rail[i]))
                 or (dep.kind=='side' and dt<=max(.05,clear+EPS)) or (dep.kind=='joint_crest' and dt<=.05)):
             return dict(reason=why if why!='land' else 'never_airborne',contacts=air.contacts,**meta)
         node=self.landing.near(i,hit)
