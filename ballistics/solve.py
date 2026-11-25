@@ -1971,7 +1971,7 @@ def seesaw_edges(g, info: dict, parts: list) -> dict:
     return out
 
 
-def graph_for(mesh: Mesh, info: dict, cache: Path | None = None, log=print):
+def graph_for(mesh: Mesh, info: dict, cache: Path | None = None, log=print, *, legacy_takeoff=False):
     """The coarse graph of a map: the domes are geometry, the loose balls are not obstacles but cost to go through,
     a stone transformer costs its transformation, a paper transformer is kept out of."""
     mesh = coarse.in_sector(mesh)                         # the domes are geometry for the coarse level too (in every sector: it has one graph)
@@ -1987,6 +1987,7 @@ def graph_for(mesh: Mesh, info: dict, cache: Path | None = None, log=print):
                  seesaw_rule="a seesaw is crossed from its low end to beyond its high end, cost %.1f more; kept apart, by state" % SEESAW_COST,
                  state_rule="board, seesaw and gate edges and the transformations' costs are in the state graph, not the graph's own edges",
                  launch_rule=TAKEOFF_RULE,
+                 launch_backend="legacy_diagnostic" if legacy_takeoff else "shared_nodes",
                  lift_rule="fan lifts for a paper ball, ridden by their legs, with the kind they end in (exits 4 to 32 out, -1.5 to 25 up, always those by a transformer; two fans in a row within %.0f, braking %s): waits %s, %d entries and %d exits per fan, unsure x%.1f" % (LIFT_CHAIN, LIFT_CHAIN_BRAKES, LIFT_WAITS, LIFT_ENTRIES, LIFT_EXITS, LIFT_UNSURE))
     if cache is not None and cache.exists():
         g = pickle.load(open(cache, "rb"))
@@ -2001,34 +2002,35 @@ def graph_for(mesh: Mesh, info: dict, cache: Path | None = None, log=print):
     log('conformal: %d road faces, %d plane patches, %d rail chains' %
         ((surface.face_patch >= 0).sum(),len(surface.patches),len(surface.rails)))
     terrain.rebuild(g,mesh,surface,log=log)
-    # Geometry-domain topology is independent of coarse nodes. Until shared
-    # motion transfers have live witnesses, retain the existing route graph.
-    from . import conformalsearch, takeoff
-    layout = conformalsearch.build(takeoff, takeoff.Obstacles(mesh, info.get('death_boxes', ())), surface,
-                                   parts=parts, metadata=g.lanes, lips=g.info['terrain_lips'])
+    from . import conformalsearch, sharedsearch, takeoff
+    obs=takeoff.Obstacles(mesh,info.get('death_boxes', ()))
+    layout=conformalsearch.build(takeoff,obs,surface,parts=parts,metadata=g.lanes,lips=g.info['terrain_lips'])
     g.info['conformal_search'] = layout
-    log('conformal search: %d road nodes, %d rail nodes, %d geometric portals' %
+    log('conformal search: %d road nodes, %d rail pieces, %d geometric portals' %
         (len(layout.roads),len(layout.rail_segments),len(layout.portals)))
-    R = trafo.rules()
-    ball_at = {}
-    for t in trafo.of(info):
-        for k in np.flatnonzero(np.linalg.norm(g.pos - t["pos"], axis=1) < R.radius):
-            ball_at[int(k)] = t["kind"]
-    # Gate screening can split a component that looked connected when
-    # selecting launches. Compute witness labels with gates already closed,
-    # without changing the graph that supplies geometric run-up support.
-    from dataclasses import replace
-    shadow = replace(g, adj=[list(adj) for adj in g.adj])
-    gate_edges(shadow, info, parts)
-    g.info['launch_component_adj'] = shadow.adj
-    g.info['launch_sector_masks'] = [coarse.sector_mask(g.pos, info, sec)
-                                     for sec in range(1, len(info['reset_points']) + 1)]
-    del shadow
-    try:
-        add_launches(g, mesh, info, log=log, transformer_kind=ball_at)
-    finally:
-        g.info.pop('launch_component_adj', None)
-        g.info.pop('launch_sector_masks', None)
+    if not legacy_takeoff:
+        sharedsearch.add(takeoff,g,obs,layout,log=log)
+    else:
+        R = trafo.rules()
+        ball_at = {}
+        for t in trafo.of(info):
+            for k in np.flatnonzero(np.linalg.norm(g.pos - t["pos"], axis=1) < R.radius):
+                ball_at[int(k)] = t["kind"]
+        # Gate screening can split a component that looked connected when
+        # selecting launches. Compute witness labels with gates already closed,
+        # without changing the graph that supplies geometric run-up support.
+        from dataclasses import replace
+        shadow = replace(g, adj=[list(adj) for adj in g.adj])
+        gate_edges(shadow, info, parts)
+        g.info['launch_component_adj'] = shadow.adj
+        g.info['launch_sector_masks'] = [coarse.sector_mask(g.pos, info, sec)
+                                         for sec in range(1, len(info['reset_points']) + 1)]
+        del shadow
+        try:
+            add_launches(g, mesh, info, log=log, transformer_kind=ball_at)
+        finally:
+            g.info.pop('launch_component_adj', None)
+            g.info.pop('launch_sector_masks', None)
     # (a transformer is gone through at the cost of the transformation: by the ball's kind, in `coarse.StateGraph`)
     # a loose ball can be knocked aside: the edges that lead into where it lies cost more, by its kind
     for p in info.get("placements", ()):
