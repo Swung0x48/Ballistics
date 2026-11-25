@@ -430,7 +430,7 @@ def shared_route(g, starts, goals, *, allow=None, transformations=()):
             prev[b]=row;score[b]=cost;heappush(heap,(*cost,next(order),b))
     frontier=[(a,b) for a in prev for b in shared['candidates'].get(a,()) if b not in prev]
     return dict(status='no_route_in_checked_shared_subgraph',nodes=[],edges=[],reached_count=len(prev),
-                unresolved_frontier=frontier)
+                unresolved_frontier=frontier,reached_nodes=tuple(sorted(prev,key=repr)))
 
 
 def link(res: dict) -> dict:

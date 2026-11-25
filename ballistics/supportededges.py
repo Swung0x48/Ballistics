@@ -89,8 +89,10 @@ def _seam_flight(tf, obs, surface, ball, rim, start, key, prefix, ticks, source)
 def prove(tf,obs,surface,ball,source,target,bearing_span=None,*,details=None,alternate=None):
     k,f,a,b,xy=source; j,h,x,y,qxy=target
     p,q=surface.patches[k],surface.patches[j]; n,new=p.normal,q.normal; r=ball.radius+sc.SKIN
-    if not cs._rest(ball,p):return None,'source_requires_entry_velocity'
     t=sc.unit(b-a); outward=sc.unit(np.cross(t,n)); inward=-sc.unit(np.cross(y-x,new))
+    uphill=sc.UP-n[1]*n; steep=not cs._rest(ball,p)
+    if steep and (n[1]<cs.WALK_NY or -uphill@outward<=EPS):
+        return None,'source_uphill_or_crossing_requires_entry_velocity'
     u0=np.array([xy[0],p.height(xy),xy[1]]); u1=np.array([qxy[0],q.height(qxy),qxy[1]])
     tol=min(conformal.PLANE_ERROR,sc.RECAPTURE)
     if np.linalg.norm(u1-u0)>tol+EPS:return None,'support_gap'
@@ -104,7 +106,7 @@ def prove(tf,obs,surface,ball,source,target,bearing_span=None,*,details=None,alt
     choices=[]
     for key in KEYS:
         law=sc.law(ball,n,key); future=sc.law(ball,new,key)
-        if law.impulse@outward>EPS:
+        if law.impulse@outward>EPS and (not steep or law.impulse@uphill < -EPS):
             choices.append((float(law.impulse@outward),key,law,future))
     for _,key,law,future in sorted(choices,key=lambda x:-x[0]):
         d=sc.unit(law.impulse); scale=np.linalg.norm(d[XZ]); depth=_xy_depth(p,xy,d[XZ]);
@@ -186,7 +188,7 @@ def prove(tf,obs,surface,ball,source,target,bearing_span=None,*,details=None,alt
         pieces.extend((motion.line(at.pos,endpos),leg))
         return dict(kind='roll',source_patch=k,target_patch=j,origin=start.pos,position=final.pos,
                     origin_velocity=start.vel,end_velocity=final.vel,ticks=ticks+1.,key_table=((math.ceil(ticks+1.),key.copy()),),
-                    motion=tuple(pieces),mode='convex_supported' if convex else 'concave_or_flat'), 'literal_roll'
+                    motion=tuple(pieces),mode='convex_supported' if convex else 'concave_or_flat'), ('literal_gravity_downhill' if steep else 'literal_roll')
     return None,best
 
 
@@ -276,11 +278,13 @@ def slope_requirement(ball,patch,forward,distance):
 
 def build(tf,g,obs,layout,pick,*,log=lambda *_:None):
     from types import SimpleNamespace
+    from . import quasistatic
     surface=g.info['conformal']; verified={}; pending=set(); stats=Counter(); audit=[]; flights=defaultdict(list); rail_seeds=[]
     proofs={}
     def publish(a,b,row):
         if a==b or (a,b) in verified:return
         verified[a,b]=row;pending.discard((a,b))
+        if row.get('quasistatic'):return  # do not export a literal coarse roll
         i,j=pick(row['source_patch'],row['origin']),pick(row['target_patch'],row['position'])
         if i<0 or j<0 or i==j:return
         how='roll'; bit=1<<tf.KIND_INDEX[a.ball]; masks=g.info.setdefault('terrain_ball_masks',{})
@@ -316,7 +320,12 @@ def build(tf,g,obs,layout,pick,*,log=lambda *_:None):
                     if dest!=a:flights[a,dest].append(hit)
                 if others:stats['crest_flights']+=len(others)
                 guarded=any(k in layout.roads[node].guarded_patches for node,k in zip((a,b),pair))
-                rec=record(a,b,'finite_seam',pair,ends,row,reason,mechanism_screen_required=guarded)
+                extra={}
+                if row is None and not guarded:
+                    cert,code=quasistatic.certificate(tf,obs,surface,ball,u,v,ends,_xy_depth)
+                    if cert is not None:extra['literal_attempt']=reason;row,reason=cert,code
+                    else:extra['quasistatic_attempt']=code
+                rec=record(a,b,'finite_seam',pair,ends,row,reason,mechanism_screen_required=guarded,**extra)
                 proofs.setdefault((a.ball,pair),[]).append(rec)
     lips={(lip.lower,lip.upper,conformal.edge_key(lip.a,lip.b)):lip
           for group in g.info.get('terrain_lips',{}).values() for lip in group}
@@ -325,7 +334,10 @@ def build(tf,g,obs,layout,pick,*,log=lambda *_:None):
     for i,portal in enumerate(layout.portals):
         a,b=portal.source,portal.target; pair=portal.patch_pair; seg=portal.segment
         if portal.kind=='rail_ring':
-            record(a,b,portal.kind,pair,seg,None,'rail_ring_requires_supported_inlet',portal_index=i);continue
+            record(a,b,portal.kind,pair,seg,None,'rail_ring_requires_supported_inlet',portal_index=i,
+                   required_inlet=dict(ball=a.ball,chain=a.chain,line=a.line,direction=a.direction,piece=a.piece,
+                                       end_center=seg[0],next_center=seg[1],
+                                       conditions=('forward_axial_velocity','supported_cross_section','supported_receiving_span')));continue
         if portal.kind=='step_lip':
             lip=lips.get((*pair,conformal.edge_key(*seg)))
             if lip is None:row,reason,detail=None,'step_geometry_missing',{}
