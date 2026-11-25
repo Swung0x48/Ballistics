@@ -2001,6 +2001,14 @@ def graph_for(mesh: Mesh, info: dict, cache: Path | None = None, log=print):
     log('conformal: %d road faces, %d plane patches, %d rail chains' %
         ((surface.face_patch >= 0).sum(),len(surface.patches),len(surface.rails)))
     terrain.rebuild(g,mesh,surface,log=log)
+    # Geometry-domain topology is independent of coarse nodes. Until shared
+    # motion transfers have live witnesses, retain the existing route graph.
+    from . import conformalsearch, takeoff
+    layout = conformalsearch.build(takeoff, takeoff.Obstacles(mesh, info.get('death_boxes', ())), surface,
+                                   parts=parts, metadata=g.lanes, lips=g.info['terrain_lips'])
+    g.info['conformal_search'] = layout
+    log('conformal search: %d road nodes, %d rail nodes, %d geometric portals' %
+        (len(layout.roads),len(layout.rail_segments),len(layout.portals)))
     R = trafo.rules()
     ball_at = {}
     for t in trafo.of(info):
