@@ -398,6 +398,7 @@ def shared_route(g, starts, goals, *, allow=None):
         if a==b or (allow is not None and not allow(a,b,row)):return
         if b in edges[a] and edges[a][b]['status']=='verified':return
         edges[a][b]=dict(source=a,target=b,status=status,kind=kind,witness=row)
+    for (a,b),row in shared.get('retained_rolling',{}).items():add(a,b,'retained_verified_roll','roll',row)
     for (a,b),row in shared['rolling'].items():add(a,b,'verified','roll',row)
     for (a,b),rows in shared['witnesses'].items():
         row=min((r for r in rows if allow is None or allow(a,b,r)),key=lambda r:r['ticks'],default=None)
@@ -728,7 +729,7 @@ def summary_links(res: dict) -> dict:
     if selected is not None:
         from dataclasses import asdict
         shared['shared_route']=dict(status=selected['status'],nodes=[asdict(n) for n in selected['nodes']],
-                                    edges=[dict(kind=e['kind'],status=e['status']) for e in selected['edges']],
+                                    edges=[dict(kind=e['kind'],status=e['status'],reference=e['witness'].get('retained_reference')) for e in selected['edges']],
                                     unresolved_frontier_count=len(selected.get('unresolved_frontier',())))
     return dict(sector=res["sector"], entry_kind=res["entry_kind"], exit_kind=res.get("exit_kind"), start_region=R.name(res["start"][0]), goal_regions=[R.name(r) for r in res["goal_regions"]],
                 fewest_breaks=res["breaks"], breaks_by_entry_and_exit_kind=res.get("options"),

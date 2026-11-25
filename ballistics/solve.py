@@ -1980,7 +1980,9 @@ def graph_for(mesh: Mesh, info: dict, cache: Path | None = None, log=print, *, l
     fixed = mesh.meta.get("fixed_bodies")
     from . import props, trafo, retained
     archive=retained.archive_for(info,retained_archive) if not legacy_takeoff else None
+    rolling_archive=retained.rolling_archive_for(info) if not legacy_takeoff else None
     priorities=retained.priority_points(info) if not legacy_takeoff else ()
+    rail_outlet_targets=retained.outlet_priorities(info) if not legacy_takeoff else ()
     from .takeoff import RULE as TAKEOFF_RULE, add_launches
     marks = dict(fixed_bodies=fixed, transformers="wood and stone ones can be gone through, at the cost of the transformation",
                  loose_balls="bodies: gone through at a cost %s; parts of %s" % (sorted(props.COARSE_COST.items()), sorted(props.PARTS)),
@@ -1990,7 +1992,9 @@ def graph_for(mesh: Mesh, info: dict, cache: Path | None = None, log=print, *, l
                  state_rule="board, seesaw and gate edges and the transformations' costs are in the state graph, not the graph's own edges",
                  launch_rule=TAKEOFF_RULE,
                  retained_archive_version=retained.version(archive),
+                 retained_rolling_version=retained.version(rolling_archive),
                  target_priorities=priorities,
+                 rail_outlet_targets=rail_outlet_targets,
                  launch_backend="legacy_diagnostic" if legacy_takeoff else "shared_nodes",
                  lift_rule="fan lifts for a paper ball, ridden by their legs, with the kind they end in (exits 4 to 32 out, -1.5 to 25 up, always those by a transformer; two fans in a row within %.0f, braking %s): waits %s, %d entries and %d exits per fan, unsure x%.1f" % (LIFT_CHAIN, LIFT_CHAIN_BRAKES, LIFT_WAITS, LIFT_ENTRIES, LIFT_EXITS, LIFT_UNSURE))
     if cache is not None and cache.exists():
@@ -2013,8 +2017,9 @@ def graph_for(mesh: Mesh, info: dict, cache: Path | None = None, log=print, *, l
     log('conformal search: %d road nodes, %d rail pieces, %d geometric portals' %
         (len(layout.roads),len(layout.rail_segments),len(layout.portals)))
     if not legacy_takeoff:
-        sharedsearch.add(takeoff,g,obs,layout,log=log,target_priorities=priorities)
+        sharedsearch.add(takeoff,g,obs,layout,log=log,target_priorities=priorities,rail_outlet_targets=rail_outlet_targets)
         g.info['takeoff_stats']['retained']=retained.attach(takeoff,g,archive,info)
+        g.info['takeoff_stats']['retained_rolling']=retained.attach_rolling(g,rolling_archive,info)
         log("retained witnesses: %s" % g.info['takeoff_stats']['retained'])
     else:
         R = trafo.rules()

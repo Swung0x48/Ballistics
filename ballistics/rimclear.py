@@ -100,15 +100,10 @@ def feature_minimum(curve, tri, feature):
             distance = float(np.linalg.norm(centre-pt))
             if best is None or distance<best['distance']:
                 u = (t-lo)/(hi-lo) if hi>lo else 0.
-                actual = curve.point(u)
-                inside = H@actual-Y
                 # A point on a Voronoi boundary belongs to its lower-dimensional
                 # feature, not to the supporting face/edge interior.
                 bnd = bool(np.any((limits@w)[:strict]>=-EPS))
-                attained = (np.all(inside<=EPS) and np.all(inside[:strict]<-EPS))
-                best = dict(distance=distance, point=pt, center=centre, parameter=u,
-                            actual_distance=float(np.linalg.norm(P@(actual-tri[ids[0]]))) if attained else None,
-                            boundary_limit=bnd)
+                best = dict(distance=distance, point=pt, center=centre, parameter=u,boundary_limit=bnd)
         for a,b in zip(cuts,cuts[1:]):
             mid = (a+b)*.5
             # These are cells delimited by exact trigonometric roots, not probes.
@@ -118,6 +113,11 @@ def feature_minimum(curve, tri, feature):
         for t in cuts:
             if valid(t) and np.all((limits@basis(t))[:strict]<-EPS):
                 consider(t)
+    if best is not None:
+        actual = best['center'] if z0==z1 else curve.point(best['parameter'])
+        inside = H@actual-Y
+        attained=np.all(inside<=EPS) and np.all(inside[:strict]<-EPS)
+        best['actual_distance']=float(np.linalg.norm(P@(actual-tri[ids[0]]))) if attained else None
     return best
 
 
@@ -135,13 +135,15 @@ def support_edge(vertices, support):
             and min(s)>=-EPS and max(s)<=length+EPS)
 
 
-def check(tf, ball, curve, obs, support=None, *, details=False):
+def check(tf, ball, curve, obs, support=None, *, details=False, finite_span=None, incident_supports=(), stop_on_unproved=False):
     """Return clear, touching, penetrating or unproved_axial_envelope."""
     from . import motion, supportcarry as sc
 
     r = ball.radius+sc.SKIN
-    if support is not None and curve.kind == 'arc':
-        a,b = map(np.asarray,support)
+    if finite_span is None:finite_span=support
+    bearings=(() if support is None else (support,))+tuple(incident_supports)
+    if finite_span is not None and curve.kind == 'arc':
+        a,b = map(np.asarray,finite_span)
         d = b-a; length = np.linalg.norm(d)
         if length<=EPS:
             return 'outside_support', []
@@ -163,14 +165,20 @@ def check(tf, ball, curve, obs, support=None, *, details=False):
         tri = obs.tris[face]
         for feature in features(tri):
             kind, ids, *_ = feature; vertices = tri[list(ids)]
-            carried = kind=='edge' and support_edge(vertices,support)
-            q = feature_minimum(curve,tri,feature) if details or not carried else None
+            carried = kind=='edge' and any(support_edge(vertices,span) for span in bearings)
+            if not details:
+                if carried:continue
+                # Distance to the two axis-aligned boxes is a lower bound;
+                # skip only features which cannot reach the contact band.
+                gap=np.maximum(0.,np.maximum(lower-vertices.max(axis=0),vertices.min(axis=0)-upper))
+                if gap@gap>pad*pad:continue
+            q = feature_minimum(curve,tri,feature)
             if q is None:
                 continue
             distance = q['distance']; actual = q['actual_distance']
             # A limit at the boundary of an incident face can occur exactly at
             # the supported launch pose. It is not itself another contact.
-            at_support = kind=='face' and q['boundary_limit'] and support_edge(q['point'][None],support)
+            at_support = kind=='face' and q['boundary_limit'] and any(support_edge(q['point'][None],span) for span in bearings)
             if carried:
                 result = 'support'
             elif actual is not None and actual<r-conformal.PLANE_ERROR:
@@ -186,4 +194,8 @@ def check(tf, ball, curve, obs, support=None, *, details=False):
             if details or result not in ('clear','support'):
                 rows.append(dict(q,feature=kind,vertices=vertices,face=int(face),result=result,
                                  object=obs.mesh.entities[obs.mesh.owner[face]]['name']))
+                if stop_on_unproved and not details and result not in ('clear','support'):
+                    # One unwaived feature suffices to withhold this witness.
+                    # Detailed audits still find the closest across all faces.
+                    return result,rows
     return status, rows

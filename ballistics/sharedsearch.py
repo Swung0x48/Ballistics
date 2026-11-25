@@ -232,7 +232,7 @@ def display_way(tf,pieces,source,target):
 
 
 
-def add(tf, g,obs,layout, *, log=lambda *_:None, target_priorities=()):
+def add(tf, g,obs,layout, *, log=lambda *_:None, target_priorities=(), rail_outlet_targets=()):
     """Generate and propagate the bounded v24 shared catalogue.
 
     One union edge per ordered node pair. Unverified edges stay in the
@@ -319,7 +319,19 @@ def add(tf, g,obs,layout, *, log=lambda *_:None, target_priorities=()):
     for a,b in (*rolling,*rolling_pending):
         a,b=parts.get(a,a),parts.get(b,b)
         if a!=b:candidates[a].add(b)
-    rail_witnesses,rail_stats,rail_entries,rail_example=sharedrail.wave(tf,g,obs,layout,chains,momentum_seeds,log=log)
+    for (a,b),rows in g.info['crest_witnesses'].items():
+        witnesses[a,b].extend(rows);candidates[a].add(b)
+    crest_rail=g.info['crest_rail_seeds']
+    crest_seeds=[(a,row) for (a,_),rows in g.info['crest_witnesses'].items() for row in rows]
+    crest_entries,crest_carry,crest_stats,_=momentum.wave(tf,g,obs,layout,chains,(*crest_seeds,*crest_rail),log=log)
+    entries.extend(crest_entries)
+    for (a,b),rows in crest_carry.items():
+        witnesses[a,b].extend(rows);candidates[a].add(b)
+    rail_witnesses,rail_stats,rail_entries,rail_example=sharedrail.wave(tf,g,obs,layout,chains,(*momentum_seeds,*crest_rail),log=log)
+    outlet_rows,outlet_attempts,outlet_stats=sharedrail.inverse_outlets(
+        tf,g,obs,layout,chains,sharedrail.outlet_priorities(g,chains,(*target_priorities,*rail_outlet_targets)))
+    for pair,rows in outlet_rows.items():rail_witnesses.setdefault(pair,[]).extend(rows)
+    rail_stats['outlet_inverse']=outlet_stats
     rail_stats['verified_rings']=sharedrail.mark_ring_witnesses(g,layout,rail_witnesses)
     for (a,b),rows in rail_witnesses.items():
         witnesses[a,b].extend(rows);candidates[a].add(b)
@@ -359,8 +371,8 @@ def add(tf, g,obs,layout, *, log=lambda *_:None, target_priorities=()):
                                        witnesses=dict(witnesses),rest=rest,release_outer=envelope,example=example,
                                        momentum_entries=entries,momentum_example=momentum_example,target_inverse=priority.attempts,
                                        rolling=rolling,rolling_pending=rolling_pending,rail_witnesses=dict(rail_witnesses),
-                                       rail_entries=rail_entries,rail_example=rail_example)
+                                       rail_entries=rail_entries,rail_example=rail_example,outlet_attempts=outlet_attempts)
     detail=dict(stats,rail_nodes_before=len(parts),rail_nodes_after=len(chains),road_nodes=len(layout.roads),
                 candidate_edges=sum(map(len,candidates.values())),witness_edges=len(witnesses),projected_edges=len(launches),
-                expanded_abstract_labels=len(expanded),covered_abstract_labels=covered,live_joint_entrance_families=len(entries),momentum=momentum_stats,rolling=rolling_stats,rail=rail_stats,inverse_attempts=len(priority.attempts),inverse_witnesses=len(priority.rows),seconds=perf_counter()-t0)
+                expanded_abstract_labels=len(expanded),covered_abstract_labels=covered,live_joint_entrance_families=len(entries),momentum=momentum_stats,rolling=rolling_stats,crest_momentum=crest_stats,rail=rail_stats,inverse_attempts=len(priority.attempts),inverse_witnesses=len(priority.rows),seconds=perf_counter()-t0)
     g.info['takeoff_stats']=detail;log('shared takeoff: %s' % detail)

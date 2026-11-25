@@ -82,3 +82,36 @@ def attach(tf,g,path,info=None):
     g.info['retained_archive']=archived
     g.info['retained_unresolved']=unresolved
     return dict(variants=len(archived),playable=sum(map(len,groups.values())),unresolved=len(unresolved),pairs=len(groups))
+
+def rolling_archive_for(info):
+    path=archive_for(info)
+    return None if path is None else path.with_name(path.name.replace('-retained-witnesses','-retained-rolling'))
+
+
+def attach_rolling(g,path,info):
+    """Restore previously checked local rolling edges without re-certifying them."""
+    if path is None or not path.is_file():return dict(retained=0,rechecked=0)
+    data=json.loads(path.read_bytes()); surface=g.info['conformal']; layout=g.info['conformal_search']
+    if data['map']!=info.get('map') or data['geometry']!=signature(surface.triangles):
+        raise ValueError('retained rolling archive does not match conformal source geometry')
+    shared=g.info['shared_motion_graph']; old={}; checked=0
+    for row in data['rows']:
+        index=layout.patch_nodes[row['ball']]; a,b=(index[int(row[k])] for k in ('source_patch','target_patch'))
+        if a==b or (a,b) in shared['rolling'] or (a,b) in shared['witnesses']:
+            checked+=1;continue
+        witness=dict(row,witness_status='retained_verified_roll',retained_reference=data['version'],
+                     motion=tuple(decode_piece(x) for x in row['motion']))
+        old[a,b]=witness
+    shared['retained_rolling']=old
+    return dict(retained=len(old),rechecked=checked)
+
+
+def outlet_priorities(info):
+    if 'rail_outlet_targets' in info:return info['rail_outlet_targets']
+    archive=archive_for(info)
+    if archive is None:return ()
+    path=archive.with_name(archive.name.replace('-retained-witnesses','-rail-outlet-targets'))
+    if not path.is_file():return ()
+    data=json.loads(path.read_bytes())
+    if data['map']!=info.get('map'):raise ValueError('rail outlet priorities map identity mismatch')
+    return data['points']

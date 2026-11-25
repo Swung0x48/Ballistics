@@ -1,12 +1,12 @@
 """Supported, literal-key transfers between finite conformal road spans."""
-from collections import Counter
+from collections import Counter, defaultdict
 from itertools import product
 import math
 
 import numpy as np
 from shapely import LineString
 
-from . import conformal, conformalsearch as cs, motion, physics as ph, roadway, supportcarry as sc, terrain
+from . import closedform as cf, rimclear, conformal, conformalsearch as cs, motion, physics as ph, roadway, supportcarry as sc, terrain
 
 EPS=1.e-7
 XZ=[0,2]
@@ -65,34 +65,28 @@ def _xy_depth(p,at,d):
     return dist
 
 
-def _convex_clear(tf,obs,ball,curve,span,bearing):
-    """Analytic conservative clearance without feature roots at intended support.
-
-    The arc is enclosed by the axis chord at its middle radial vector
-    expanded by 2 r sin(angle/4). The two bearing patches have a separate
-    dot-product certificate, valid for every point of their raw triangles.
-    An overlapping enclosure is unknown, never a collision verdict.
-    """
-    a,b=span; t=sc.unit(b-a); r=ball.radius+sc.SKIN
-    angle=curve.arc[1]; axial=curve.arc[2]*curve.axial(curve.end)
-    along=np.array([(curve.p-a)@t,(curve.p+axial-a)@t]); length=np.linalg.norm(b-a)
-    if np.min(along)<-EPS or np.max(along)>length+EPS:return 'outside_support'
-    hull=obs.tris[list(bearing)].reshape(-1,3)-curve.p
-    u=hull@(curve.v/r); v=hull@(curve.b/r)
-    theta=np.arctan2(v,u); support=np.maximum(u,u*math.cos(angle)+v*math.sin(angle))
-    support=np.where((theta>=0.)&(theta<=angle),np.hypot(u,v),support)
-    # d^2 = r^2 + |q_perp|^2 - 2 r n(theta).q_perp + axial^2.
-    # This only waives the named bearing faces, within the support band.
-    min_clear=ball.radius-sc.RECAPTURE
-    if np.max(support,initial=-math.inf)>(r*r-min_clear*min_clear)/(2*r):return 'bearing_unproved'
-    mid=curve.p+curve.v*math.cos(angle*.5)+curve.b*math.sin(angle*.5)
-    margin=2*r*math.sin(angle*.25)
-    if cs._capsule_blocked(tf,obs,mid,mid+axial,r+conformal.PLANE_ERROR+margin,bearing):return 'clearance_unproved'
-    if any(motion.box_hit(curve,x,y) is not None for x,y in obs.boxes):return 'death_box'
-    return 'clear'
+def _seam_flight(tf, obs, surface, ball, rim, start, key, prefix, ticks, source):
+    """Keep the real first support, even if it is not the proposed portal."""
+    launch=rim.start
+    body=launch if rim.angle else ph.State(launch.pos+8*EPS*(rim.normal+rim.outward),launch.vel,launch.omega)
+    horizon=cf.landing_step(ball,body,min(obs.bottom-ball.radius-sc.SKIN,body.pos[1]-ball.radius))
+    if not horizon:return None,'convex_air_no_horizon'
+    flight=tf.trace_air(obs,ball,body,((float(horizon),key),),rim=rim,incoming_only=True,follow_below=True)
+    why,face,elapsed,pos=flight.result
+    if why!='land' or elapsed<=EPS:return None,'convex_air_'+('zero_contact' if why=='land' else why)
+    target=int(surface.face_patch[face])
+    if target<0 and not obs.mesh.rail[face]:return None,'convex_air_nonroad_support'
+    end=ticks+elapsed
+    return dict(kind='air',mode='convex_release',source_patch=source,target_patch=target,origin=start.pos,
+                position=pos,face=int(face),launch=launch.pos,velocity=launch.vel,ticks=end,
+                flight_ticks=elapsed,runup=float(np.linalg.norm(start.pos-rim.pivot-rim.radius*rim.normal)),
+                rim_ticks=rim.seconds/ph.DT,key_table=((math.ceil(end),key.copy()),),
+                contacts=tuple(dict(hit,tick=hit['tick']+ticks) for hit in flight.contacts),
+                motion=(*prefix,*(tf.air_geometry(ball,st,k,t) for st,k,t in flight.parts)),
+                release_tick=ticks,bounce_count=flight.bounces),'literal_convex_flight'
 
 
-def prove(tf,obs,surface,ball,source,target,bearing_span=None):
+def prove(tf,obs,surface,ball,source,target,bearing_span=None,*,details=None,alternate=None):
     k,f,a,b,xy=source; j,h,x,y,qxy=target
     p,q=surface.patches[k],surface.patches[j]; n,new=p.normal,q.normal; r=ball.radius+sc.SKIN
     if not cs._rest(ball,p):return None,'source_requires_entry_velocity'
@@ -137,31 +131,43 @@ def prove(tf,obs,surface,ball,source,target,bearing_span=None):
         start=ph.State(source_end-distance*d,np.zeros(3)); end=law.along(d).over(0.,distance)
         if end is None:continue
         speed,seconds=end; ticks=seconds/ph.DT; at=ph.State(source_end,speed*d); pieces=[motion.rolling(start,law.impulse,law.loss,ticks)]
-        if convex:
-            turn=sc.unit(new-n*(new@n)); angle=math.acos(float(np.clip(new@n,-1.,1.)))
-            rim=tf.rim_release(ball,u0,n,turn,at.vel,0,push=key,inertia_ratio=sc.inertia_ratio(ball))
-            if rim is None or rim.angle<angle-EPS:best='convex_release';continue
-            curve=motion.arc(u0,r*n,r*turn,0.,angle,rim.along*rim.axis,rim.energy)
-            v,c,e=rim.energy; across=math.sqrt(max(0.,v+c*(math.cos(angle)-1.)+e*math.sin(angle)))
-            at=ph.State(curve.point(1.),rim.along*rim.axis+across*(turn*math.cos(angle)-n*math.sin(angle)))
-            foot=at.pos-r*new
-            # Do not transport a convex run to an arbitrary seam midpoint.
-            u=foot[XZ]-qxy; side=np.array([inward[0],inward[2]])
-            if abs(u@side)>tol or np.linalg.norm(at.pos-new*(at.pos@new-q.offset-r)-at.pos)>tol:
-                best='convex_support_offset';continue
-            endpos=at.pos-new*(at.pos@new-q.offset-r); pieces.append(curve);ticks+=curve.duration(1.)/ph.DT
-        else:
-            endpos=source_end if concave else u1+r*new
-        if convex:
-            verdict=_convex_clear(tf,obs,ball,curve,(a,b) if bearing_span is None else bearing_span,set(p.faces)|set(q.faces))
-            if verdict!='clear':best='convex_'+verdict;continue
         radius=ball.radius-sc.RECAPTURE
-        # From rest under one constant plane input the swept spatial path is
-        # exactly a straight segment, regardless of the time parametrization.
-        # Solve sphere/feature quadratics on that segment, not air PSI roots.
+        # Check the actual incoming chord before solving rim features.
         if cs._capsule_blocked(tf,obs,start.pos,source_end,radius,set(p.faces)) or any(
                 motion.box_hit(motion.line(start.pos,source_end),lo,hi) is not None for lo,hi in obs.boxes):
             best='source_obstruction';continue
+        if convex:
+            turn=sc.unit(new-n*(new@n)); angle=math.acos(float(np.clip(new@n,-1.,1.)))
+            rim=tf.rim_release(ball,u0,n,turn,at.vel,0,push=key,inertia_ratio=sc.inertia_ratio(ball))
+            if rim is None:best='convex_no_passage';continue
+            release=rim.angle<angle-EPS
+            curve=rim.motion() if release else motion.arc(u0,r*n,r*turn,0.,angle,rim.along*rim.axis,rim.energy)
+            if not release:
+                v,c,e=rim.energy; across=math.sqrt(max(0.,v+c*(math.cos(angle)-1.)+e*math.sin(angle)))
+                at=ph.State(curve.point(1.),rim.along*rim.axis+across*(turn*math.cos(angle)-n*math.sin(angle)))
+                foot=at.pos-r*new; u=foot[XZ]-qxy; side=inward[XZ]
+                if abs(u@side)>tol or abs(at.pos@new-q.offset-r)>tol:
+                    best='convex_support_offset';continue
+                endpos=at.pos-new*(at.pos@new-q.offset-r)
+            verdict,features=rimclear.check(tf,ball,curve,obs,(a,b),finite_span=bearing_span,
+                                            incident_supports=((x,y),),details=details is not None,
+                                            stop_on_unproved=details is None)
+            if details is not None:
+                diagnostic=dict(key=key,angle=angle,pressure_angle=rim.angle,clearance=verdict,
+                                rim=curve,closest=min((f for f in features if f['result']!='support'),
+                                                     key=lambda f:f['distance'],default=None))
+                details.append(diagnostic)
+            if verdict!='clear':best='convex_'+verdict;continue
+            if release:
+                row,best=_seam_flight(tf,obs,surface,ball,rim,start,key,(*pieces,curve),ticks+rim.seconds/ph.DT,k)
+                if details is not None:diagnostic.update(flight_reason=best,flight=row)
+                if row is None:continue
+                if row['target_patch']==j:return row,best
+                if alternate is not None:alternate.append(row)
+                best='convex_air_other_support';continue
+            pieces.append(curve);ticks+=curve.duration(1.)/ph.DT
+        else:
+            endpos=source_end if concave else u1+r*new
         if cs._capsule_blocked(tf,obs,at.pos,endpos,radius,set(p.faces)|set(q.faces)) or any(motion.box_hit(motion.line(at.pos,endpos),lo,hi) is not None for lo,hi in obs.boxes):
             best='seam_obstruction';continue
         endvel=at.vel-new*(at.vel@new)
@@ -270,7 +276,7 @@ def slope_requirement(ball,patch,forward,distance):
 
 def build(tf,g,obs,layout,pick,*,log=lambda *_:None):
     from types import SimpleNamespace
-    surface=g.info['conformal']; verified={}; pending=set(); stats=Counter(); audit=[]
+    surface=g.info['conformal']; verified={}; pending=set(); stats=Counter(); audit=[]; flights=defaultdict(list); rail_seeds=[]
     proofs={}
     def publish(a,b,row):
         if a==b or (a,b) in verified:return
@@ -284,7 +290,9 @@ def build(tf,g,obs,layout,pick,*,log=lambda *_:None):
     def record(a,b,kind,pair,segment,row,reason,**extra):
         rec=dict(source=a,target=b,kind=kind,patch_pair=pair,segment=segment,
                  status='verified' if row is not None else 'unresolved',reason=reason,**extra)
-        if row is not None:rec['witness']=row;publish(a,b,row)
+        if row is not None:
+            rec['witness']=row
+            if row['kind']=='roll':publish(a,b,row)
         elif a!=b and (a,b) not in verified:pending.add((a,b))
         audit.append(rec);stats[reason]+=1
         return rec
@@ -298,7 +306,15 @@ def build(tf,g,obs,layout,pick,*,log=lambda *_:None):
                 if a==b:continue
                 pair=(u[0],v[0]); p=surface.patches[u[0]]
                 ends=np.column_stack((span[:,0],p.height(span),span[:,1]))
-                row,reason=prove(tf,obs,surface,ball,u,v,bearing_span=ends)
+                others=[]
+                row,reason=prove(tf,obs,surface,ball,u,v,bearing_span=ends,alternate=others)
+                if row is not None and row['kind']=='air':others.append(row)
+                for hit in others:
+                    if hit['target_patch']<0:
+                        rail_seeds.append((a,hit));continue
+                    dest=index[hit['target_patch']]
+                    if dest!=a:flights[a,dest].append(hit)
+                if others:stats['crest_flights']+=len(others)
                 guarded=any(k in layout.roads[node].guarded_patches for node,k in zip((a,b),pair))
                 rec=record(a,b,'finite_seam',pair,ends,row,reason,mechanism_screen_required=guarded)
                 proofs.setdefault((a.ball,pair),[]).append(rec)
@@ -326,4 +342,6 @@ def build(tf,g,obs,layout,pick,*,log=lambda *_:None):
                'no_positive_length_support_in_export_band' if r is None else r['reason'],portal_index=i,mechanism_screen_required=guarded)
     stats['pairs']=len(verified);stats['unresolved']=len(pending)
     g.info['portal_verdicts']=audit
+    g.info['crest_witnesses']=dict(flights)
+    g.info['crest_rail_seeds']=tuple(rail_seeds)
     return verified,pending,dict(stats)

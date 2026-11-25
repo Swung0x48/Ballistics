@@ -12,7 +12,7 @@ from .conformalsearch import Rail
 EPS=1.e-7
 
 
-def _trace(tf,paths,ball,dep,key,clock):
+def _trace(tf,paths,ball,dep,key,clock,*,rail_arrival=False):
     st=dep.body
     if dep.kind in ('foldback','crown_twin'):return None,'unresolved_rail_transition'
     limit=cf.landing_step(ball,st,min(paths.obs.bottom-ball.radius-sc.SKIN,st.pos[1]-ball.radius))
@@ -21,7 +21,8 @@ def _trace(tf,paths,ball,dep,key,clock):
     if q is None:return None,'rail_no_result'
     if q['reason']!='land':return None,'rail_'+q['reason']
     if not dep.pieces and dep.kind!='rail_rebound':return None,'rail_empty_ride'
-    if q['ticks']<=EPS or paths.obs.mesh.rail[q['face']]:return None,'rail_next_support_not_road'
+    if q['ticks']<=EPS:return None,'rail_zero_contact'
+    if paths.obs.mesh.rail[q['face']]:return (q if rail_arrival else None),'rail_next_support_not_road'
     return q,'rail_road_landing'
 
 
@@ -209,3 +210,93 @@ def wave(tf,g,obs,layout,chains,seeds,*,log):
         run(src,ball,seed,c,key,(arc,arc),'supported_groove_rest')
     stats.update(entries=len(entries),edges=len(out),seconds=perf_counter()-t0);log('shared rail: %s' % dict(stats))
     return out,dict(stats),entries,example
+
+
+def inverse_outlets(tf,g,obs,layout,chains,targets):
+    """Try target polygons from the entire final straight groove, not a midpoint.
+
+    Hold a literal key on the rail. Another key is allowed only if the
+    inverse admits an integer-tick outlet. Moving inlets remain separate.
+    """
+    from . import railoutlet, supportededges as se
+    surface=g.info['conformal']; stats=Counter(); found=defaultdict(list); attempts=[]
+    if not targets:return found,attempts,{}
+    paths=railride.RailPaths(g,obs,SimpleNamespace(near=lambda f,_:0 if surface.face_patch[f]>=0 else -1))
+    balls={b.name:b for b in ph.BALLS.values()}
+    for src,patches in targets.items():
+        if src not in chains or src.line!='groove':continue
+        lane=paths.lanes.get(src.chain)
+        if lane is None or not lane.double:continue
+        ball=balls[src.ball]; j=len(lane.length)-1 if src.direction>0 else 0
+        tangent=src.direction*lane.tangent[j]; up=railride.support_normal(tangent)
+        end=lane.p[j+1 if src.direction>0 else j]+sc.SKIN*up
+        length=lane.length[j]; total=float(chains[src].knots[-1]); arc_j=(total-length,total)
+        for key in se.KEYS:
+            law=sc.law(ball,up,key).along(tangent); top=law.over(0.,length)
+            if top is None:continue
+            for release_key in (*se.KEYS,np.zeros(2)):
+                switch=not np.array_equal(key,release_key)
+                for k in patches:
+                    patch=surface.patches[k]; stats['target_polygons']+=1
+                    for speeds,_,xz in railoutlet.band(ball,end,tangent,release_key,patch,(0.,top[0])):
+                        dist=railoutlet.runway_interval(law,length,speeds)
+                        if dist is None:continue
+                        lo,hi,run=dist; arc=(total-hi,total-lo); switch_tick=None
+                        if switch:
+                            representative=railoutlet.integer_runway(law,speeds,length)
+                            if representative is None:
+                                stats['outlet_no_integer_switch']+=1;continue
+                            run,switch_tick=representative
+                        p=end-run*tangent
+                        outcome=dict(source=src,target_patch=k,arc_interval=arc,speed_interval=speeds,
+                                     finite_segment=arc_j,landing_segment=xz,key=key,release_key=release_key,switch_tick=switch_tick,origin=p,reason='outlet_runway_support_unproved')
+                        attempts.append(outcome); stats['outlet_intervals']+=1
+                        face=paths.geometry_support(p,ball,True,tangent)
+                        if face<0:continue
+                        body=ph.State(p,np.zeros(3)); catch=railride.Catch(src.chain,j,src.direction,body,0.,face)
+                        outcome['reason']='outlet_held_support_unproved'
+                        for dep in paths.walk(tf,ball,catch,controls=lambda _:((math.inf,key),),search_side=False,require_groove_stability=True):
+                            if switch and (dep.kind!='chain_end' or abs(dep.tick-switch_tick)>EPS):
+                                outcome['reason']='outlet_integer_event_mismatch';continue
+                            hit,why=_trace(tf,paths,ball,dep,release_key,0.,rail_arrival=True); stats[why]+=1
+                            outcome.update(reason=why,release=dep.body.pos,velocity=dep.body.vel,release_tick=dep.tick)
+                            if hit is None:continue
+                            seed=dict(source_patch=-1,source_node=-1,origin=p,launch=end,velocity=dep.body.vel,
+                                      face=face,ticks=0.,flight_ticks=0.,runup=run,rim_ticks=0.,motion=(),contacts=())
+                            prefix=_append(seed,dep,hit,release_key)
+                            def keep(road,trace):
+                                actual=int(surface.face_patch[road['face']]); dest=layout.patch_nodes[ball.name][actual]
+                                if switch:trace['key_table']=((switch_tick,key.copy()),(math.ceil(trace['ticks']),release_key.copy()))
+                                trace.update(target_patch=actual,arc_interval=arc,inverse=True)
+                                found[src,dest].append(trace)
+                                outcome.update(reason='literal_target' if actual==k else 'literal_other_patch',actual_patch=actual,landing=road['state'].pos)
+                            if why=='rail_road_landing':keep(hit,prefix);continue
+                            # The solved outlet may end on a different rail.
+                            # Preserve the actual contact and try one direct,
+                            # same-key carry from that *same* captured state.
+                            other=hit.get('catch'); outcome.update(first_rail_face=hit['face'],first_rail_contact=hit['state'].pos)
+                            if other is None:continue
+                            outcome['next_rail_line']=paths.line_for(other.lane)
+                            outcome['second_outlets']=[]
+                            for nxt in paths.walk(tf,ball,other,controls=lambda _:((math.inf,release_key),),clock=prefix['ticks'],
+                                                  search_side=False,require_groove_stability=True):
+                                road,code=_trace(tf,paths,ball,nxt,release_key,prefix['ticks']); stats['relay_'+code]+=1
+                                outcome['second_outlets'].append(dict(reason=code,position=nxt.body.pos,velocity=nxt.body.vel))
+                                if road is None:continue
+                                trace=_append(prefix,nxt,road,release_key)
+                                trace['rail_parts']=(*prefix['rail_parts'],*trace['rail_parts'])
+                                keep(road,trace)
+    return found,attempts,dict(stats)
+
+
+def outlet_priorities(g,chains,points):
+    """Resolve optional project target anchors; the inverse uses polygons."""
+    targets=defaultdict(set)
+    if not points:return targets
+    support=g.info['terrain_support']
+    for row in points:
+        u=g.nearest(np.asarray(row['near']),3.,floor_only=False); v=g.nearest(np.asarray(row['far']),3.)
+        if u<0 or not 0<=v<len(support) or g.lane[u]<0:continue
+        for node in chains:
+            if node.chain==g.lane[u] and node.ball==row.get('ball',node.ball):targets[node].update(support[v])
+    return targets
