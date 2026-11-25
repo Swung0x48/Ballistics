@@ -222,42 +222,11 @@ def trace(ball,reach,schedule,patch,obs,owner):
     return start,tuple(pieces)
 
 
-def rim_clear(tf,ball,topology,patch_id,rim,obs):
-    """Check the lip arc and its release centre against other solids.
+def rim_clear(tf,ball,topology,patch_id,rim,obs,*,support=None):
+    """Certify release without treating the finite carried edge as an obstacle."""
+    from . import rimclear
+    return obs is None or rimclear.check(tf,ball,rim.motion(),obs,support)[0]=='clear'
 
-    A new runway can approach a lip from a new bearing, including one next
-    to a wall. An initially overlapped wall is not an airborne edge.
-    """
-    if obs is None:return True
-    path=rim.motion(); r=ball.radius+sc.SKIN
-    if any(motion.box_hit(path,lo,hi) is not None for lo,hi in obs.boxes):return False
-    lower,upper=path.bounds(0.,1.)
-    fs=np.asarray(tf._box_triangles((lower-r)[None],(upper+r)[None],obs.lo,obs.hi,obs.mesh._grid),dtype=int)
-    fs=fs[topology.surface.face_patch[fs]!=patch_id]
-    if not len(fs):return True
-    # Exact rim extrema in each face-normal direction. In particular a
-    # supported/tangent face cannot force a huge Lipschitz subdivision if
-    # its entire plane is on the nonpenetrating side of the threshold.
-    normals=obs.mesh.N[fs]; a,b=path.bounds(0.,1.,normals)
-    offsets=np.einsum('ij,ij->i',obs.mesh.A[fs],normals)
-    fs=fs[np.maximum(a-offsets,offsets-b)<r-8*EPS]
-    if not len(fs):return True
-    mask=np.zeros(len(obs.tris),bool);mask[fs]=True; mesh=obs.mesh.subset(mask)
-    # This is a proof of clearance, not a search for a contact point.
-    # An ambiguous cell within the existing conformal export tolerance
-    # is unknown: do not spend many subintervals declaring it clear, or
-    # use it to discard a previously witnessed departure.
-    from .conformal import PLANE_ERROR
-    work=[(0.,path.end)]
-    while work:
-        t0,t1=work.pop(); lo,hi=path.bounds(t0,t1)
-        radius=float(np.linalg.norm(hi-lo))*.5
-        d=mesh.distance((lo+hi)*.5,r+1.)[0]
-        if d-radius>=r-8*EPS:continue
-        if d+radius<r-8*EPS or radius<=PLANE_ERROR:return False
-        mid=(t0+t1)*.5
-        work.extend(((t0,mid),(mid,t1)))
-    return True
 
 def departures(tf,ball,topology,patch_id,position,velocity,obs=None,*,edges=None,allow_transfer=False,guide=None):
     """Yield collision-checked witnesses at analytic edge/time cells.
@@ -317,7 +286,7 @@ def departures(tf,ball,topology,patch_id,position,velocity,obs=None,*,edges=None
                                     edge_velocity_low=np.min(lows,axis=0),edge_velocity_high=np.max(highs,axis=0),boundary_state=state,
                                     entry_position=reach.origin,entry_velocity=reach.velocity,normal=n,radius=r)
                         if accept_air:
-                            if rim_clear(tf,ball,topology,patch_id,rim,obs):yield record
+                            if rim_clear(tf,ball,topology,patch_id,rim,obs,support=(raw_a,raw_b)):yield record
                         elif allow_transfer:
                             for j,_ in others:
                                 other=topology.surface.patches[j]; new=other.normal
@@ -416,11 +385,49 @@ class ControlledTrack:
         return np.r_[0.,np.cumsum(np.linalg.norm(np.diff(self.points[:,[0,2]],axis=0),axis=1))]
 
 
+def literal_runway(tf, ball, paths, topology, patch_id, position, velocity, schedule, *, source=-1, hold=False):
+    """Replay a real key table through exact support events, including seams.
+
+    ASSUMED: phase zero is the first PSI of the key table. A partial tick
+    at geometric release is not a key change. A key change during a rim
+    still requires a continuation model and is not certified here.
+    """
+    from . import rimclear
+
+    patch=topology.surface.patches[patch_id]
+    def controls(clock):
+        return next((((end-clock,push),) for end,push in schedule if end>clock+EPS),
+                    ((math.inf if hold else 0.,schedule[-1][1]),))
+    face=patch.faces[0]
+    z=paths.floor(tf,ball,int(face),source,ph.State(position,velocity),patch.normal,
+                  controls=controls,follow_support=True)
+    if z.rim is None or not z.parts or z.reason not in ('convex','floor_end'):
+        return z,None,[]
+    last=next((x for x in reversed(z.parts) if 'patch' in x),None)
+    if last is None:
+        return z,None,[]
+    exit_patch=topology.surface.patches[last['patch']]
+    def dist(item):
+        _,a,b=item; e=b-a
+        u=np.clip((z.rim.pivot-a)@e/(e@e),0.,1.)
+        return np.linalg.norm(z.rim.pivot-a-u*e)
+    _,a,b=min(exit_patch.boundary,key=dist)
+    if dist((None,a,b))>2*sc.SKIN+EPS:
+        return z,'unmatched_rim_support',[]
+    clock=sum(x['ticks'] for x in z.parts)
+    if z.rim.seconds>0. and any(clock-z.rim.seconds/ph.DT+EPS<end<clock-EPS for end,_ in schedule):
+        return z,'rim_input_change',[]
+    verdict,features=rimclear.check(tf,ball,z.rim.motion(),paths.obs,(a,b))
+    return z,verdict,features
+
+
 def takeoff_rows(tf,g,obs,rows):
     """Generate key-controlled alternatives to geometric lip proposals."""
     from .roadway import Topology
     from .conformal import edge_key
-    topo=Topology(g.info['conformal']); seen=set()
+    from .runfamily import literal_schedule
+    topo=Topology(g.info['conformal']); seen=set(); replayed=set()
+    paths=sc.SurfacePaths(g,obs,None)
     for site,key,q,d,slope,n,chain,lengths,track in rows:
         if not hasattr(track,'patches'):continue
         a,b,f=track.lip; patch_id=track.patches[0];patch=topo.surface.patches[patch_id]
@@ -443,3 +450,21 @@ def takeoff_rows(tf,g,obs,rows):
                     audit['ball']=ball.name
                     controlled=ControlledTrack(source,(patch_id,),rim,case['parts'],case['ticks'],audit)
                     yield site,key,pos,direction,float(vel[1]/h),n,[source],np.r_[controlled.arc[-1]],controlled
+                    schedule=literal_schedule(case['schedule'])
+                    ident=(source,patch_id,ball.name,tuple((t,tuple(p)) for t,p in schedule))
+                    if ident in replayed:continue
+                    replayed.add(ident)
+                    replay,verdict,_=literal_runway(tf,ball,paths,topo,patch_id,g.pos[source],np.zeros(3),schedule,
+                                                   source=source,hold=True)
+                    if verdict!='clear':continue
+                    new=replay.rim
+                    if not new.angle:
+                        from dataclasses import replace
+                        new=replace(new,start=ph.State(new.start.pos+8*EPS*(new.normal+new.outward),new.start.vel,new.start.omega))
+                    v=new.start.vel; size=np.linalg.norm(v[[0,2]])
+                    if size<=EPS:continue
+                    blocks=tuple(dict.fromkeys(x['patch'] for x in replay.parts if 'patch' in x))
+                    ticks=sum(x['ticks'] for x in replay.parts)-new.seconds/ph.DT
+                    actual=ControlledTrack(source,blocks,new,replay.parts,ticks,
+                                           dict(ball=ball.name,literal_runway=True,schedule=schedule))
+                    yield site,key,new.start.pos,v[[0,2]]/size,float(v[1]/size),new.normal,[source],np.r_[actual.arc[-1]],actual
