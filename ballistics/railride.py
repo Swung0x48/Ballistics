@@ -689,7 +689,7 @@ class RailPaths:
                     break
                 at=body;j=k
 
-    def walk(self, tf, ball, c, controls=None, clock=0., *, search_side=True):
+    def walk(self, tf, ball, c, controls=None, clock=0., *, search_side=True, require_groove_stability=False):
         """Advance between analytic key changes and geometric rail events."""
         lane=self.lanes[c.lane]; j,sign=c.j,c.direction; b=c.body
         if lane.axis is not None:
@@ -699,7 +699,8 @@ class RailPaths:
         while 0<=j<len(lane.length) and count<sc.MAX_SUPPORT_PIECES:
             count+=1; t=sign*lane.tangent[j]; up=support_normal(t)
             initial=b; speed=float(b.vel@t)
-            if speed<=EPS:return
+            if speed < -EPS or (speed<=EPS and not require_groove_stability):return
+            speed=max(0.,speed)
             k=j+sign
             p=lane.p[k if sign>0 else k+1]
             avail=max(0.,float((p-b.pos)@t)); push=sc.keys_along(t)
@@ -707,6 +708,10 @@ class RailPaths:
             if controls is not None:
                 limit,push=controls(clock0+elapsed)[0]
                 if limit<=EPS:return
+            if lane.double and require_groove_stability:
+                cross=sc.unit(np.cross(up,t))
+                if any(crest(ball,lane,up,sign*cross,max(0.,sign*c.lateral),push) is not None for sign in (-1,1)):
+                    return  # a possible side release is not a same-groove witness
             law=sc.law(ball,up,push).along(t)
             end=law.over(speed,avail)
             if end is None:return
