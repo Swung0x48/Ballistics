@@ -61,3 +61,53 @@ def swing(theta,v,g,f,r,k,inner):
         if event!='turn':break
         x=y;u=0.;d=-d
     return tuple(out)
+
+
+def miter_root(piece, vertex, incoming, outgoing):
+    """First forward intersection with the equal-radius inner seam.
+
+    With q measured from the common vertex, equal distances from the
+    two infinite lines mean (q.t0)^2=(q.t1)^2. The inner branch has
+    q.t0 <= 0 <= q.t1, hence q.(t0+t1)=0. Restrict to finite pieces at
+    the caller. Only admit a root if forward monotonicity is proved.
+    """
+    normal=incoming+outgoing
+    if normal@incoming<=EPS:return None
+    def value(x):return float((piece.point(x)-vertex)@normal)
+    a,b=value(0.),value(piece.end)
+    if a>EPS or b<-EPS:return None
+    if piece.kind=='arc':
+        from .physics import DT
+        x,turn,axis,c,A,B,roll=piece.arc
+        if not roll or axis@normal<=EPS:return None
+        speed,beta,loss=roll
+        ticks=piece.duration(piece.end)/DT
+        # The derivative of the interpolated axial displacement is an
+        # affine exponential (hence monotone). Bound the angular speed by
+        # the extrema of its energy sinusoid over this finite sweep.
+        derivative=lambda t:beta/loss-(speed-beta/loss)*math.log1p(-loss)/loss*math.exp(math.log1p(-loss)*t)
+        lo,hi=sorted((x,x+turn*piece.end))
+        e=c-A*math.cos(x)-B*math.sin(x)
+        extrema=[lo,hi,*roots(B,-A,0.,lo,hi)]
+        v2=max(0.,*(e+A*math.cos(t)+B*math.sin(t) for t in extrema))
+        projections=math.hypot(piece.v@normal,piece.b@normal)/np.linalg.norm(piece.v)
+        if min(derivative(0.),derivative(ticks))*(axis@normal)<=math.sqrt(v2)*projections+EPS:return None
+    elif piece.kind=='rolling':
+        from .motion import tangent
+        if min(tangent(piece,t)@normal for t in (0.,piece.end))<=EPS:return None
+    elif piece.kind=='line':
+        if piece.v@normal<=EPS:return None
+    else:return None
+    from scipy.optimize import brentq
+    z=0. if a>=-EPS else piece.end if b<=EPS else brentq(value,0.,piece.end)
+    q=piece.point(z)-vertex
+    return z if q@incoming<=EPS and q@outgoing>=-EPS else None
+
+
+def exposed_load(radial, velocity, force, radius):
+    """Instantaneous load per unit mass on the exposed vertex sphere.
+
+    This is not the cylindrical-barrel load. Positive load at this one
+    instant does not certify the continuation of a cap walk.
+    """
+    return -float(force@radial)-float(velocity@velocity)/radius

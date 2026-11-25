@@ -592,7 +592,46 @@ class RailPaths:
                                       way=(*way,*move.way),push=np.clip(aim[0],-1.,1.),intervals=span,
                                       aimed=w,horizon=aim[1]+1.,joint=joint,fallback=fraction in (.25,.75))
 
-    def walk_crown(self,tf,ball,c,controls,clock):
+    def crown_miter(self, ball, lane, j, sign, state, owner, push, *, report=None):
+        """Verify a continuous, compressive handoff on the actual tube skin."""
+        from .conformal import PLANE_ERROR
+        def reject(reason):
+            if report is not None:report['reason']=reason
+            return None
+        k=j+sign
+        base,t,up,side,r,inner=self.cross_section(lane,k,state.pos,ball)
+        q=state.pos-base; n=sc.unit(q); t=sign*t
+        if abs(np.linalg.norm(q)-r)>EPS or abs(n@t)>EPS:return reject('no_equal_finite_cylinder_contact')
+        theta=math.atan2(n@side,n@up)
+        if n[1]<=EPS or not inner-EPS<=theta<=math.pi/2:return reject('receiving_cross_section_not_supported')
+        vn=float(state.vel@n)
+        if vn>EPS or state.vel@t<=EPS:return reject('separating_or_reversing')
+        m=self.obs.mesh
+        contacts=m.contacts(state.pos,ball.radius,FIT)
+        if any(c.distance<ball.radius-sc.RECAPTURE for c in contacts):return reject('original_mesh_penetration')
+        start=lane.axis[k if sign>0 else k+1]
+        real=[]
+        for c in contacts:
+            if not m.rail[c.triangle] or m.owner[c.triangle]!=owner or c.normal[1]<=EPS or c.normal@n<=0.:continue
+            station=float((c.point-start)@t)
+            if not -PLANE_ERROR<=station<=lane.length[k]+PLANE_ERROR:continue
+            off=c.point-start-np.clip(station,0.,lane.length[k])*t
+            # PLANE_ERROR associates the mesh skin to the fitted cylinder.
+            # The ideal offset already contains SKIN; an export-sized
+            # discrepancy is not a second dynamic recapture allowance.
+            if abs(np.linalg.norm(off)-lane.tube)<=PLANE_ERROR and c.distance<=ball.radius+sc.SKIN+PLANE_ERROR:
+                real.append(c)
+        if not real:return reject('no_receiving_skin_contact')
+        elasticity=m.entities[owner].get('elasticity',.3)
+        rebound=-cf.collision_restitution(ball,elasticity)*vn*n
+        if sc.apex(ball,rebound,n,push)>sc.RECAPTURE:return reject('rebound_exceeds_recapture_band')
+        v=state.vel-vn*n
+        side_v=float(v@(side*math.cos(theta)-up*math.sin(theta)))
+        load=-float(cf.air_impulse(ball,push=push)@n)/ph.DT-side_v**2/r
+        if load<=EPS:return reject('receiving_normal_load_nonpositive')
+        return ph.State(state.pos,v,ph.rolling_spin(v,n,ball.radius)), int(real[0].triangle), load
+
+    def walk_crown(self,tf,ball,c,controls,clock,*,diagnostics=None,supported_track=None):
         """Separate exact axial recurrence and fixed-input cross-section events."""
         if not c.crown['supported']:return
         from scipy.optimize import brentq
@@ -602,33 +641,66 @@ class RailPaths:
             tuple(sc.keys_along(c.body.vel+a)) for a in (np.zeros(3),*[
                 q*sc.unit(np.cross(UP,lane.tangent[c.j]))*max(1.,np.linalg.norm(c.body.vel)) for q in (-1,1)])))
         for choice in holds:
-            j=c.j; at=c.body; elapsed=0.; pieces=[]; way=[at.pos]
+            j=c.j; at=c.body; elapsed=0.; pieces=[]; way=[at.pos]; face=c.triangle
             for _ in range(sc.MAX_SUPPORT_PIECES):
                 axis,t,up,side,r,inner=self.cross_section(lane,j,at.pos,ball)
                 t=sign*t; radial=at.pos-axis
                 theta=math.atan2(float(radial@side),float(radial@up))
                 across=side*math.cos(theta)-up*math.sin(theta)
                 v=float(at.vel@across); u=float(at.vel@t)
-                if u<=EPS:break
+                def note(event, position=None, **values):
+                    if diagnostics is not None:diagnostics.append(dict(event=event,piece=j,tick=elapsed,
+                        position=at.pos if position is None else position,angle=theta,lateral_speed=v,axial_speed=u,**values))
+                if u<=EPS:note('no_forward_velocity');break
                 push=np.array(choice) if controls is None else controls(clock+elapsed)[0][1]
                 limit=math.inf if controls is None else controls(clock+elapsed)[0][0]
                 if limit<=EPS:break
                 law=sc.law(ball,up,push).along(t)
                 finish=lane.axis[j+1 if sign>0 else j]; avail=max(0.,float((finish-axis)@t))
                 end=law.over(u,avail)
-                if end is None:break
-                n=end[1]/ph.DT; limit=min(limit,n)
+                stopped=end is None
+                n=cf._turn(u,law.impulse,law.loss) if stopped and law.impulse<0. else math.inf if stopped else end[1]/ph.DT
+                if not math.isfinite(min(limit,n)):note('axial_run_unproved');break
+                limit=min(limit,n)
                 f=cf.air_impulse(ball,push=push)/ph.DT
                 inertia=sc.inertia_ratio(ball)*(ball.radius/r)**2
                 actions=railcrown.swing(theta,v,-float(f@up),float(f@side),r,inertia,inner)
-                event='span'; body=at; used=0.; obstructed=False
+                event='span'; body=at; used=0.; obstructed=False; joined=None
+                k=j+sign; owner=int(self.obs.mesh.owner[face])
+                receiving=sign*lane.tangent[k] if 0<=k<len(lane.length) else None
+                bent=receiving is not None and receiving@t<1.-EPS and receiving@t>EPS
+                def joint(path, offset):
+                    if not bent:return None
+                    z=railcrown.miter_root(path,finish,t,receiving)
+                    if z is None:return None
+                    duration=z if path.kind=='rolling' else path.duration(z)/ph.DT
+                    _,sv=law.at(u,offset+duration)
+                    vel=t*sv
+                    if path.kind=='arc':
+                        x,turn,_,c0,A,B,roll=path.arc
+                        ang=x+turn*z
+                        v2=c0+A*(math.cos(ang)-math.cos(x))+B*(math.sin(ang)-math.sin(x))
+                        lv=math.copysign(math.sqrt(max(0.,v2)),turn)
+                        vel=vel+lv*(side*math.cos(ang)-up*math.sin(ang))
+                    p=path.point(z)
+                    report={}
+                    result=self.crown_miter(ball,lane,j,sign,ph.State(p,vel),owner,push,report=report if diagnostics is not None else None)
+                    if result is None:
+                        note('miter_mesh_or_load_unproved',p,**report)
+                        return None
+                    cut=path._replace(end=z) if path.kind=='rolling' else motion.arc(path.p,path.v,path.b,x,turn*z,t,(c0,A,B),roll)
+                    return result,cut,duration,vel
                 if not actions:
                     if controls is None:
                         yield from self.balanced_switches(tf,ball,c,j,at,t,up,side,theta,v,push,law,limit,parts,way,elapsed)
                     dx,speed=law.at(u,limit); body=ph.State(at.pos+t*dx,t*speed,at.omega); used=limit
                     geom=(motion.rolling(ph.State(at.pos,t*u),law.impulse*t,law.loss,used),)
-                    if not self.surface.clear(tf,ball,[at.pos,body.pos],self.obs.mesh.owner[c.triangle],up):break
+                    contact=joint(geom[0],0.)
+                    if contact is not None:
+                        joined,path,used,vel=contact; geom=(path,); body=ph.State(path.point(path.end),vel,at.omega)
+                    if not self.surface.clear(tf,ball,[at.pos,body.pos],owner,up):note('crown_mesh_obstruction');break
                     pieces.append(dict(sc.segment('rail',name,at,body,used,push,'crown_balance',geometry=geom),rail_line=lane.line))
+                    if supported_track is not None:supported_track.append(pieces[-1])
                     way.append(body.pos)
                 for action in actions:
                     initial=body; _,v0=law.at(u,used); dx,_=law.at(u,used)
@@ -649,13 +721,19 @@ class RailPaths:
                         used=limit;event='span'
                     else:
                         angle=action.end;v1=action.end_speed;used+=dur;event=action.event
+                    contact=joint(path,used-path.duration(1.)/ph.DT)
+                    if contact is not None:
+                        joined,cut,duration,vel=contact
+                        used+=duration-path.duration(1.)/ph.DT
+                        path=cut; event='miter'; angle=path.arc[0]+path.arc[1]
+                        v1=float(vel@(math.cos(angle)*side-math.sin(angle)*up))
                     _,speed=law.at(u,used); normal=math.cos(angle)*up+math.sin(angle)*side
                     velocity=speed*t+v1*(math.cos(angle)*side-math.sin(angle)*up)
                     body=ph.State(path.point(1.),velocity,ph.rolling_spin(velocity,normal,ball.radius))
                     # Preserve the analytic arc for the actual map guards.
                     m=self.obs.mesh;lo,hi=path.bounds(0.,1.);radius=ball.radius
                     near=tf._box_triangles((lo-radius)[None],(hi+radius)[None],self.obs.lo,self.obs.hi,m._grid)
-                    faces=[int(i) for i in near if m.owner[i]!=m.owner[c.triangle]]
+                    faces=[int(i) for i in near if m.owner[i]!=owner]
                     if faces:
                         mask=np.zeros(len(m.A),bool);mask[faces]=True; obs=m.subset(mask)
                         if motion.near_hit(path,lambda p:obs.distance(p,radius+1.)[0],radius-sc.RECAPTURE) is not None:
@@ -665,15 +743,22 @@ class RailPaths:
                     ticks=path.duration(1.)/ph.DT
                     pieces.append(dict(sc.segment('rail_crown',name,initial,body,ticks,push,event,geometry=(path,)),
                                        rail_line=lane.line,barrier=action.barrier,lateral_start=action.speed,lateral_end=v1))
+                    if supported_track is not None:supported_track.append(pieces[-1])
                     way.append(body.pos)
                     if event!='turn':break
                 else:
                     if actions:event='invalid'
-                if obstructed:break
+                if obstructed:note('crown_mesh_obstruction');break
                 if actions and (not pieces or not np.array_equal(way[-1],body.pos)) and used>EPS:break
                 elapsed+=used
+                if joined is not None:
+                    at,face,load=joined
+                    pieces[-1].update(crown_joint=dict(incoming_piece=j,receiving_piece=k,face=face,normal_load=load))
+                    note('miter_supported',at.pos,receiving_piece=k,normal_load=load,velocity=at.vel)
+                    j=k; continue
                 if event in ('pressure','open','twin'):
-                    source=replace(c,j=j,body=body,rebound=None)
+                    note(event,body.pos)
+                    source=replace(c,j=j,body=body,triangle=face,rebound=None)
                     # A finite time under this input is a degenerate inverse
                     # interval, not an invitation to choose a release station.
                     s=float((body.pos-lane.axis[j])@ (sign*t))
@@ -682,9 +767,18 @@ class RailPaths:
                 if event!='span':break
                 if used<n-EPS:
                     at=body;continue
-                k=j+sign
+                if stopped:note('axial_stop',body.pos);break
                 if not 0<=k<len(lane.length) or lane.tangent[k]@lane.tangent[j]<1.-EPS:
-                    source=replace(c,j=j,body=body,rebound=None)
+                    if receiving is None:
+                        note('finite_end',body.pos)
+                    else:
+                        q=sc.unit(body.pos-finish)
+                        if q@receiving<-EPS and q@t>=-EPS:
+                            load=railcrown.exposed_load(q,body.vel,f,r)
+                            note('noncollinear_joint',body.pos,exposed_cap_load=load,
+                                 cap_status='nonpositive_load' if load<=EPS else 'cap_motion_unproved')
+                        else:note('noncollinear_joint',body.pos)
+                    source=replace(c,j=j,body=body,triangle=face,rebound=None)
                     yield Departure(body,elapsed,'crown_end',source,tuple(pieces),tuple(way),push)
                     break
                 at=body;j=k

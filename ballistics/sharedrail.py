@@ -246,8 +246,13 @@ def wave(tf,g,obs,layout,chains,seeds,*,log,targets=None):
     paths=railride.RailPaths(g,obs,SimpleNamespace(near=near))
     balls={b.name:b for b in ph.BALLS.values()}
     targets=targets or {}
-    def run(src,ball,seed,c,key,interval,kind,relay=False,next_key=None):
+    def run(src,ball,seed,c,key,interval,kind,relay=False,next_key=None,history=frozenset(),steered=False):
         nonlocal example
+        chart=(c.lane,c.j,c.direction)
+        if chart in history:
+            stats['rail_chart_cycle_unresolved']+=1
+            return
+        branch=history|{chart}
         entry=dict(source=src,ball=ball.name,kind=kind,interval=interval,position=c.body.pos,velocity=c.body.vel,
                    rail_chain=paths.lanes[c.lane].parent,rail_line=paths.line_for(c.lane),direction=c.direction,
                    piece=c.j,key=key,outcomes=[])
@@ -259,7 +264,14 @@ def wave(tf,g,obs,layout,chains,seeds,*,log,targets=None):
         following=key if next_key is None else next_key
         def controls(when):
             return ((switch-when,key),) if next_key is not None and when<switch-EPS else ((math.inf,following),)
-        departures=paths.walk(tf,ball,c,controls=controls,clock=seed['ticks'],search_side=False,require_groove_stability=True)
+        target_crown=(paths.lanes[c.lane].axis is not None
+                      and any(x.ball==src.ball and x.chain==paths.lanes[c.lane].parent for x in targets))
+        if target_crown:
+            entry.update(crown_events=[],supported_track=[])
+            departures=paths.walk_crown(tf,ball,c,controls,seed['ticks'],diagnostics=entry['crown_events'],
+                                        supported_track=entry['supported_track'])
+        else:
+            departures=paths.walk(tf,ball,c,controls=controls,clock=seed['ticks'],search_side=False,require_groove_stability=True)
         # A real rebound is a separate branch with the already computed
         # impact impulse. Do not reuse it as a supported groove state.
         if relay and _free_rebound(paths,c):
@@ -286,11 +298,25 @@ def wave(tf,g,obs,layout,chains,seeds,*,log,targets=None):
             if q is None:continue
             if why in ('rail_next_support_not_road','rail_support_continues'):
                 other=q.get('catch')
-                if relay or other is None:continue
+                if other is None:continue
+                # Retain the original first relay. Additional relays are
+                # continuous co-support or a checked same-object successor
+                # on a nominated outlet. Each chart is expanded at most
+                # once on a branch; a rejected re-entry is unresolved.
+                lane=paths.lanes[c.lane]
+                target=any(x.ball==src.ball and x.chain==lane.parent for x in targets)
+                m=obs.mesh
+                same=m.owner[other.triangle]==m.owner[c.triangle]
+                if relay and why!='rail_support_continues' and not (target and same):continue
                 prefix=prefix_to_contact()
-                # Each branch replays the captured state once. A search
-                # budget exhaustion does not retire the candidate.
-                run(src,ball,prefix,other,following,_arc(paths,other),'rail_relay',relay=True)
+                switched=steered or next_key is not None
+                run(src,ball,prefix,other,following,_arc(paths,other),'rail_relay',relay=True,history=branch,steered=switched)
+                if target and same and not switched and paths.lanes[other.lane].axis is not None:
+                    from . import supportededges as se
+                    for second in se.KEYS:
+                        if not np.array_equal(second,following):
+                            run(src,ball,prefix,other,following,_arc(paths,other),'integer_input_on_receiving_crown',
+                                relay=True,history=branch,next_key=second,steered=True)
                 continue
             k=int(surface.face_patch[q['face']]); dest=layout.patch_nodes[ball.name].get(k)
             if dest is None or dest==src:continue
@@ -481,19 +507,30 @@ def inverse_outlets(tf,g,obs,layout,chains,targets):
                             if other is None:continue
                             outcome['next_rail_line']=paths.line_for(other.lane)
                             outcome['second_outlets']=[]
-                            onward=paths.walk(tf,ball,other,controls=lambda _:((math.inf,release_key),),clock=prefix['ticks'],
-                                              search_side=False,require_groove_stability=True)
-                            if _free_rebound(paths,other):
-                                from itertools import chain
-                                onward=chain(onward,(railride.Departure(other.rebound,0.,'rail_rebound',other,(),(),release_key),))
-                            for nxt in onward:
-                                detail={}
-                                road,code=_trace(tf,paths,ball,nxt,release_key,prefix['ticks'],diagnostic=detail); stats['relay_'+code]+=1
-                                outcome['second_outlets'].append(dict(reason=code,position=nxt.body.pos,velocity=nxt.body.vel,**detail))
-                                if road is None:continue
-                                trace=_append(prefix,nxt,road,release_key)
-                                trace['rail_parts']=(*prefix['rail_parts'],*trace['rail_parts'])
-                                keep(road,trace)
+                            owner=obs.mesh.owner[dep.source.triangle]
+                            def onward(carry, c, history):
+                                chart=(c.lane,c.j,c.direction)
+                                if chart in history:
+                                    stats['outlet_chart_cycle_unresolved']+=1
+                                    return
+                                branch=history|{chart}
+                                options=paths.walk(tf,ball,c,controls=lambda _:((math.inf,release_key),),clock=carry['ticks'],
+                                                   search_side=False,require_groove_stability=True)
+                                if _free_rebound(paths,c):
+                                    from itertools import chain
+                                    options=chain(options,(railride.Departure(c.rebound,0.,'rail_rebound',c,(),(),release_key),))
+                                for nxt in options:
+                                    detail={}
+                                    road, code=_trace(tf,paths,ball,nxt,release_key,carry['ticks'],rail_arrival=True,diagnostic=detail)
+                                    stats['relay_'+code]+=1
+                                    outcome['second_outlets'].append(dict(reason=code,chart=chart,position=nxt.body.pos,velocity=nxt.body.vel,**detail))
+                                    if road is None:continue
+                                    witness=_held_prefix(carry,nxt,road,release_key)
+                                    if code in ('rail_road_landing','rail_road_supported_join'):
+                                        keep(road,witness)
+                                    elif (successor:=road.get('catch')) is not None and (code=='rail_support_continues' or obs.mesh.owner[successor.triangle]==owner):
+                                        onward(witness,successor,branch)
+                            onward(prefix,other,frozenset({(dep.source.lane,dep.source.j,dep.source.direction)}))
     return found,attempts,dict(stats)
 
 
