@@ -24,7 +24,7 @@ def unit(v):
 
 def inertia_ratio(ball):
     # MEASURED: balls/README sections 2 and 6; effective paper approximation.
-    return .277 if ball.name == 'paper' else .4
+    return cf.inertia_ratio(ball)
 
 
 def law(ball, normal, push):
@@ -185,13 +185,14 @@ class SurfacePaths:
 
     def impact(self, tf, ball, hit, node, omega=None, chosen_push=None, controls=None, clock=0.):
         face = hit['triangle']
+        omega=hit.get('incoming_omega',omega)
         start = ph.State(hit['position'], hit['incoming'], np.zeros(3) if omega is None else omega)
         normal = hit['normal']
         if hit['kind'] == 'dual_rail' and 'support_normal' in hit:
             normal = hit['support_normal']
         material = self.obs.mesh.entities[self.obs.mesh.owner[face]]
-        reflected = cf.rebound(ball, start, normal, float(material.get('elasticity', tf.DEFAULT_ELASTICITY)), tf.BOUNCE_PARAMS)
-        roll = rolling_entry(ball, reflected.vel, normal, omega)
+        reflected, _ = cf.collision_impulse(ball, start, normal, float(material.get('elasticity', tf.DEFAULT_ELASTICITY)))
+        roll = rolling_entry(ball, reflected.vel, normal, reflected.omega)
         push = keys_along(roll) if chosen_push is None else chosen_push
         # Only carry momentum exceeding what the same local support can
         # supply from rest. The rail longitudinal gate is applied below.

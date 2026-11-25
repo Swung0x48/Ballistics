@@ -459,11 +459,25 @@ def rolling(ball: Ball, normal, keys=0, quarter=0) -> RollingLaw:
     return RollingLaw((b - (b @ unit) * unit) / effective_mass, damping * DT)
 
 
-def rebound(ball: Ball, at_impact: State, normal, surface_elasticity: float, params: Params | None = None) -> State:
-    """Normal-only bounce. Input velocity is AFTER the landing tick's free update.
+def inertia_ratio(ball):
+    # MEASURED effective paper rolling inertia; READ/DERIVED solid sphere otherwise.
+    return .277 if ball.name == 'paper' else ball.inertia/(ball.mass*ball.radius**2)
 
-    No friction or spin impulse here; threshold is the existing assumption.
-    """
+
+def collision_restitution(ball, elasticity):
+    # MEASURED: v7 leave-one-record-out paper normal response only.
+    return math.sqrt(ball.elasticity*elasticity)*(.9 if ball.name=='paper' else 1.)
+
+
+def collision_impulse(ball, at_impact, normal, elasticity):
+    """v18 stationary impact: no tangential or angular collision impulse."""
+    n=_unit(normal); v=at_impact.vel
+    jn=-(1.+collision_restitution(ball,elasticity))*min(0.,float(v@n))
+    return State(at_impact.pos.copy(),v+jn*n,at_impact.omega.copy()), 'normal_only' if jn else 'separating'
+
+
+def rebound(ball: Ball, at_impact: State, normal, surface_elasticity: float, params: Params | None = None) -> State:
+    """Legacy normal-only baseline, used for regression comparisons only."""
     p, unit = params or Params(), _unit(normal)
     vn = float(at_impact.vel @ unit)
     e = math.sqrt(ball.elasticity * surface_elasticity) * p.restitution_scale if vn < -p.bounce_speed else 0.0

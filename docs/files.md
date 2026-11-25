@@ -52,6 +52,8 @@ v12 的 `g.info["conformal"]` 与粗层图一起缓存：`patches` 保存平面�
 
 v14 的 `rail_itinerary` 保存按顺序实际承载的钢轨物体。`rail_departures` 中的 `joint` 是目标轨链和直段索引（没有瞄准钢轨时为空）；`source_piece` 是当前拟合直段索引，`clearance` 是原管可豁免的连续 PSI 前缀。`interval` 是对应释放区间沿原直段的弧长范围；链端固定释放时退化为一点。
 
+v16 的 `rail_lines` 区分槽、管顶和独立单轨。`rail_departures` 另带 `rail_line` 与单管捕获的截面角度、偏移、速度、势垒等量。粗层点编号不因走单轨增加。
+
 `g.lanes` 的两个几何字段（v11）：`points` 是原粗层落脚点（用于配对和映射）；`segments` 是 `(N, 3)` 的球心路径折点，相邻两行是一段直线，供捕获、沿轨、接缝、助跑和反解。两个数组的长度不必相同。双轨如果没有由两支管共同形成的有效段，`segments` 可以为空。新 `launch_rule` 会使旧的求解图缓存重建。
 | `segments` / `first_landing_node` | 有闭式续行的边记录首次飞行及后续 `rail`、`floor`、`rim`、`flight`、`release` 片段与首次落点节点；片段含物体、起止球心和速度、推力、PSI、游戏秒及结束原因。`landing_position` 指最终交回粗层的球心。命中同一节点对与球种的不同续行见证可共存于 `variants`。 |
 | `across` / `down` | 自由飞行起点到接触球心的水平距离 / 带符号落差 |
@@ -227,3 +229,5 @@ python -m ballistics route --map data/Level_02-map.json --results data --level 2
 - 跷跷板只在翻过来时标；木球、纸球从跷跷板上过去而没有翻它，现在不标。
 - 断点段的 `s` 为 `null`。
 - 还没有的：段开始时机关应处的状态（`states`）、分支、SR 和 HS 的数，都排在后面（见计划）。
+
+`paper_impact_cone` 是未证实的共形路面候选：`verified=false`；`impact_cone` 带接触类别、角度、速度外包和代表目标。绘图线不是经碰撞扫掠验证的后续轨迹。

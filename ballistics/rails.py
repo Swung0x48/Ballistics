@@ -419,7 +419,7 @@ def _lanes(seg, tube: float, ball: float) -> list:
             raw_b=_mesh_run(mesh_lines[j],len(B),int(near[a]),int(near[b]))
             track=paired_pieces(raw_a,raw_b,ball,tube)
             out.append(dict(points=mid + np.c_[np.zeros(len(idx)), rise, np.zeros(len(idx))], segments=track,
-                            double=True, gauge=float(np.median(2 * half))))
+                            double=True, gauge=float(np.median(2 * half)), axes=(raw_a,raw_b)))
             free[i][idx] = False
             free[j][near[idx]] = False
     for i, A in enumerate(lines):

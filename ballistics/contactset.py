@@ -4,7 +4,7 @@ from itertools import combinations
 import numpy as np
 
 
-def minimum_correction(normals, rhs):
+def minimum_correction(normals, rhs, *, multipliers=False):
     """Minimize |delta|^2 subject to N @ delta >= rhs, or return None.
 
     KKT: delta is a positive linear combination of active normals. In 3-D
@@ -15,8 +15,9 @@ def minimum_correction(normals, rhs):
     rhs = np.asarray(rhs)
     tol = 64 * np.finfo(float).eps * max(1., float(np.max(abs(rhs), initial=0.)))
     if np.all(rhs <= tol):
-        return np.zeros(3)
+        return (np.zeros(3),np.zeros(len(n))) if multipliers else np.zeros(3)
     best, cost = None, np.inf
+    reaction=np.zeros(len(n))
     for k in range(1, min(len(n),3)+1):
         for active in combinations(range(len(n)),k):
             a = n[list(active)]
@@ -31,7 +32,9 @@ def minimum_correction(normals, rhs):
             size=float(delta@delta)
             if size<cost and np.all(n@delta >= rhs-tol):
                 best,cost=delta,size
-    return best
+                reaction.fill(0.)
+                reaction[list(active)]=lam
+    return (best,reaction) if multipliers and best is not None else best
 
 
 def contact_set(obs, center, radius, i, point, normal, void_owner=-1, void_faces=None):

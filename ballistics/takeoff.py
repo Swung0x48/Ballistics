@@ -24,7 +24,7 @@ from .sweep import chord as _chord, curve as _curve
 
 FOLLOW_SPEED = 9.0
 STOP_COST = 9.0
-RULE = "closed form ledges and rail ends, three balls, supported momentum continuation and analytic manifolds and mesh rail corridors and conformal road slopes, finite rail joints and local step support v15"
+RULE = "closed form ledges and rail ends, three balls, supported momentum continuation and analytic manifolds and mesh rail corridors and conformal road slopes, finite rail joints, local step support and paired rail crowns, normal impulses, confirmed rail goals and paper impact hypotheses v19"
 GRAVITY_IMPULSE = ph.GRAVITY * ph.DT
 FLOOR = ph.Params().floor
 XZ = [0, 2]
@@ -1016,12 +1016,13 @@ def trace_air(obs, ball, start, schedule, *, rim=None, departure=None,
                     for g,q2,m in rails[:j]:
                         combined = contactset.opposed_support(n,m)
                         if combined is not None and np.linalg.norm(q-q2)>EPS and combined[1]>=WALK_NY:
-                            dual = (f,combined)
+                            dual = (f,combined, (dict(triangle=int(f),point=q,normal=n),
+                                                dict(triangle=int(g),point=q2,normal=m)))
                             break
                     if dual is not None:
                         break
             event = dict(kind=kind, triangle=int(i), object=entity.get('name', ''), tick=float(now),
-                         position=center.copy(), normal=normal, incoming=at_hit.vel.copy(), point=point)
+                         position=center.copy(), normal=normal, incoming=at_hit.vel.copy(), point=point, incoming_omega=at_hit.omega.copy())
             if len(rows)>1:
                 event['manifold']=tuple(dict(triangle=int(f),normal=n,point=q) for f,q,n,_ in rows)
             if same_psi:
@@ -1031,7 +1032,8 @@ def trace_air(obs, ball, start, schedule, *, rim=None, departure=None,
             else:
                 contacts.append(event)
             if supports or dual is not None:
-                f,n = (max(supports,key=lambda r:r[1][1]) if supports else dual)
+                f,n = (max(supports,key=lambda r:r[1][1]) if supports else dual[:2])
+                if dual is not None:event['manifold']=dual[2]
                 event['support_normal']=n
                 event['point'], event['normal'] = _impact(obs,'edge',f,center)
                 event['triangle']=int(f)
@@ -1051,23 +1053,24 @@ def trace_air(obs, ball, start, schedule, *, rim=None, departure=None,
                 return AirTrace(('undefined_contact_normal', i, now, center), parts, contacts, bounces)
             if len(rows)==1 and not same_psi:
                 offset = point + (radius + EPS * 8) * normal
-                body = cf.rebound(ball, ph.State(offset, at_hit.vel, at_hit.omega), normal,
-                                  float(entity.get('elasticity', DEFAULT_ELASTICITY)), BOUNCE_PARAMS)
+                body, regime = cf.collision_impulse(ball, ph.State(offset, at_hit.vel, at_hit.omega), normal,
+                              float(entity.get('elasticity', DEFAULT_ELASTICITY)))
+                event['impulse_regime']=regime
             else:
-                # Frictionless velocity impulse, with each material's normal
-                # restitution as a lower bound on the separating speed.
-                e = np.sqrt(ball.elasticity*np.array([obs.mesh.entities[obs.mesh.owner[f]].get('elasticity',DEFAULT_ELASTICITY) for f,_,_,_ in rows]))
-                vn = ns @ at_hit.vel
-                dv = contactset.minimum_correction(ns,-vn if same_psi else np.maximum(0.,-e*vn)-vn)
-                # Opposed constraints sometimes cannot satisfy restitution.
-                # Zero restitution is feasible (the ball can stop normally).
-                if dv is None:
-                    dv = contactset.minimum_correction(ns,-vn)
-                offset = contactset.minimum_correction(ns,radius+EPS*8-gaps)
+                # A compressive combination of concurrent normal impulses.
+                e=np.array([cf.collision_restitution(ball,obs.mesh.entities[obs.mesh.owner[f]].get('elasticity',DEFAULT_ELASTICITY))
+                            for f,_,_,_ in rows])
+                vn=ns@at_hit.vel
+                goal=np.zeros(len(ns)) if same_psi else np.maximum(0.,-e*vn)
+                dv=contactset.minimum_correction(ns,goal-vn)
+                if dv is None:dv=contactset.minimum_correction(ns,-vn)
+                offset=contactset.minimum_correction(ns,radius+EPS*8-gaps)
                 if dv is None or offset is None:
                     return AirTrace(('contact_jam',i,now,center),parts,contacts,bounces)
                 event['reaction_normal']=_unit(dv)
-                body = ph.State(center+offset,at_hit.vel+dv,at_hit.omega)
+                event['impulse_regime']='normal_manifold'
+                body=ph.State(center+offset,at_hit.vel+dv,at_hit.omega.copy())
+            event['outgoing_omega']=body.omega.copy()
             event['outgoing'] = body.vel.copy()
             if same_psi:
                 contacts[-1]['outgoing']=body.vel.copy()
@@ -1076,7 +1079,6 @@ def trace_air(obs, ball, start, schedule, *, rim=None, departure=None,
     return AirTrace(('no_contact', -1, now, None), parts, contacts, bounces)
 
 
-BOUNCE_PARAMS = ph.Params(bounce_speed=0.)
 
 
 def trajectory(obs, ball, start, t, push, switch, rim, departure=None, clearance=0., cached_first=None):
@@ -1148,6 +1150,10 @@ def rail_seed_key(site, source, target, ball, capture):
     # ASSUMED quantization: retain one speed interval per local floor-skin
     # escape speed, separately for the transverse component. This is a search
     # resolution, not a claim of dominance of different states in a bin.
+    if getattr(capture,'crown',None) is not None:
+        return (site,source,ball.name,capture.lane,capture.direction,capture.j,
+                capture.body.pos.tobytes(),capture.body.vel.tobytes(),
+                capture.rebound.vel.tobytes() if capture.rebound is not None else None)
     dv = math.sqrt(2*ph.GRAVITY*FLOOR)
     return (site, source, ball.name, capture.lane, capture.direction, capture.j,
             target, math.floor(np.linalg.norm(capture.body.vel)/dv), math.floor(capture.lateral/dv))
@@ -1550,7 +1556,7 @@ def add_launches(g, mesh, info=None, *, log=lambda *_: None, transformer_kind=No
     return len(launches)
 
 
-def carry_contact(paths, ball, contact, node, *, coast=False, controls=None, clock=0., initial_omega=None):
+def carry_contact(paths, ball, contact, node, *, coast=False, controls=None, clock=0., initial_omega=None, aim=None):
     """Follow supported/air events after a known impact, without time integration.
 
     controls optionally provides recorded input for replay audits. Normal
@@ -1563,6 +1569,12 @@ def carry_contact(paths, ball, contact, node, *, coast=False, controls=None, clo
     pieces, way, contacts = [], [], []
     air_ticks = bounces = elapsed = 0.
     omega = initial_omega
+    bearings={}
+    def finish(**out):
+        if bearings:
+            out['bearings']=tuple(bearings.values())
+            if out.get('reason')!='handoff':out['bearing']=next(reversed(bearings.values()))
+        return out
     for count in range(sc.MAX_CARRIES + 1):
         if controls is not None:
             chosen = controls(clock+elapsed)[0][1]
@@ -1571,13 +1583,21 @@ def carry_contact(paths, ball, contact, node, *, coast=False, controls=None, clo
         else:
             chosen = None
         support = paths.impact(tf, ball, contact, node, omega, chosen, controls, clock+elapsed)
+        # A later failed continuation does not invalidate an earlier
+        # mapped road contact with an actual supported rolling segment.
+        if (not obs.mesh.rail[contact['triangle']] and node>=0 and contacts and
+                support.parts and support.parts[0]['kind']=='floor' and
+                support.parts[0]['ticks']>EPS):
+            bearings.setdefault(node,dict(reason='handoff',node=node,pieces=tuple(pieces),way=tuple(way),contacts=tuple(contacts),
+                         ticks=elapsed,air_ticks=air_ticks,bounce_count=int(bounces),
+                         state=ph.State(contact['position'],contact['incoming'],omega)))
         pieces.extend(support.parts); way.extend(support.way)
         elapsed += sum(s['ticks'] for s in support.parts)
         if support.reason == 'handoff':
-            return dict(reason='handoff' if support.node >= 0 else 'no_landing_node', node=support.node, pieces=pieces, way=way, contacts=contacts,
+            return finish(reason='handoff' if support.node >= 0 else 'no_landing_node', node=support.node, pieces=pieces, way=way, contacts=contacts,
                         ticks=elapsed, air_ticks=air_ticks, bounce_count=int(bounces), state=support.body)
         if support.reason not in ('chain_end','floor_end','side_release','convex','rebound') or count == sc.MAX_CARRIES:
-            return dict(reason=support.reason if count < sc.MAX_CARRIES else 'carry_budget', pieces=pieces,
+            return finish(reason=support.reason if count < sc.MAX_CARRIES else 'carry_budget', pieces=pieces,
                         contacts=contacts, ticks=elapsed)
         start = support.body
         obj = paths.name(contact['triangle'])
@@ -1590,11 +1610,16 @@ def carry_contact(paths, ball, contact, node, *, coast=False, controls=None, clo
         if controls is None:
             push = sc.keys_along(start.vel) if support.push is None else support.push
             t = cf.landing_step(ball,start,below)
+            if aim is not None:
+                from .rail_inverse import objective
+                desired=objective(tf,ball,start,aim)
+                if desired is not None and np.max(np.abs(desired[0]))<=1.+EPS:
+                    push=np.clip(desired[0],-1.,1.)
             schedule = ((float(t),push),) if t else ()
         else:
             schedule = controls(clock+elapsed)
         if not schedule or schedule[-1][0] <= EPS:
-            return dict(reason='no_air_window', pieces=pieces, contacts=contacts, ticks=elapsed)
+            return finish(reason='no_air_window', pieces=pieces, contacts=contacts, ticks=elapsed)
         clearance = obs.rail_clearance(ball,start,schedule[0][1],schedule[0][0],support.departure)
         if clearance < 0:
             # An actual collision, not a fictitious supported prefix, decides
@@ -1620,7 +1645,7 @@ def carry_contact(paths, ball, contact, node, *, coast=False, controls=None, clo
         elapsed += dt
         air_ticks += dt
         if why != 'land' or dt <= clearance+EPS:
-            return dict(reason=why if why != 'land' else 'never_airborne', pieces=pieces, contacts=contacts,ticks=elapsed)
+            return finish(reason=why if why != 'land' else 'never_airborne', pieces=pieces, contacts=contacts,ticks=elapsed)
         node = paths.landing.near(face,hit)
         contact = tr.contacts[-1]
         last, push, n = tr.parts[-1]
@@ -1656,32 +1681,34 @@ def add_continuations(g, mesh, info, *, obs=None, landing=None):
                 break  # coasting would make exactly the same pre-floor trajectory
             outcome = carry_contact(paths,ball,last,v,coast=coast)
             stats['carry_' + outcome['reason']] += 1
-            if outcome['reason'] != 'handoff' or not outcome['pieces']:
-                continue
-            w = outcome['node']
-            if w < 0 or w == u:
-                continue
-            first = sc.segment('flight',last['object'],ph.State(e['launch_position'],e['launch_velocity']),
-                               ph.State(e['landing_position'],last['incoming']),e['flight_ticks'],e['keys_in_air'],'first_support')
-            ticks = e['ticks'] + outcome['ticks']
-            target = outcome['state'].pos
-            edge = dict(e,ticks=ticks,time=ticks/132.,flight_ticks=e['flight_ticks']+outcome['air_ticks'],
-                        landing_position=target.copy(),down=float(e['launch_position'][1]-target[1]),
-                        across=float(np.linalg.norm((target-e['launch_position'])[XZ])),
-                        bounce_count=e['bounce_count']+outcome['bounce_count'],
-                        contacts=e['contacts']+tuple(dict(c,tick=c['tick']+last['tick']) for c in outcome['contacts']),
-                        segments=(first,*outcome['pieces']), carry_coast=coast,
-                        motion=continued_motion(e,outcome['pieces'],target,g.pos[w]),
-                        way=densify_way(np.vstack([e['way'][:-1],*outcome['way'],target,g.pos[w]])),
-                        representative='support_carry',first_landing_node=v)
-            if outcome['contacts']:
-                edge['landing_face'] = outcome['contacts'][-1]['triangle']
-            # The coast flag can yield an identical chain if it never
-            # reaches a floor. Keep exact distinct witnesses, not quotas.
-            same = proposals[u,w]
-            if not any(a['ball']==edge['ball'] and motion.signature(motion.path_for(a))==motion.signature(edge['motion']) for a in same):
-                same.append(edge)
-                stats['carry_kept'] += 1
+            outcomes=(*outcome.get('bearings',()),outcome)
+            for outcome0 in outcomes:
+                if outcome0['reason'] != 'handoff' or not outcome0['pieces']:
+                    continue
+                w = outcome0['node']
+                if w < 0 or w == u:
+                    continue
+                first = sc.segment('flight',last['object'],ph.State(e['launch_position'],e['launch_velocity']),
+                                   ph.State(e['landing_position'],last['incoming']),e['flight_ticks'],e['keys_in_air'],'first_support')
+                ticks = e['ticks'] + outcome0['ticks']
+                target = outcome0['state'].pos
+                edge = dict(e,ticks=ticks,time=ticks/132.,flight_ticks=e['flight_ticks']+outcome0['air_ticks'],
+                            landing_position=target.copy(),down=float(e['launch_position'][1]-target[1]),
+                            across=float(np.linalg.norm((target-e['launch_position'])[XZ])),
+                            bounce_count=e['bounce_count']+outcome0['bounce_count'],
+                            contacts=e['contacts']+tuple(dict(c,tick=c['tick']+last['tick']) for c in outcome0['contacts']),
+                            segments=(first,*outcome0['pieces']), carry_coast=coast,
+                            motion=continued_motion(e,outcome0['pieces'],target,g.pos[w]),
+                            way=densify_way(np.vstack([e['way'][:-1],*outcome0['way'],target,g.pos[w]])),
+                            representative='support_carry',first_landing_node=v)
+                if outcome0['contacts']:
+                    edge['landing_face'] = outcome0['contacts'][-1]['triangle']
+                # The coast flag can yield an identical chain if it never
+                # reaches a floor. Keep exact distinct witnesses, not quotas.
+                same = proposals[u,w]
+                if not any(a['ball']==edge['ball'] and motion.signature(motion.path_for(a))==motion.signature(edge['motion']) for a in same):
+                    same.append(edge)
+                    stats['carry_kept'] += 1
     for (u,v), extra in proposals.items():
         original = variants(g,u,v)
         entries = tuple(sorted((*original,*extra), key=lambda e:(e['ticks'],e['ball'])))
@@ -1696,13 +1723,37 @@ def add_continuations(g, mesh, info, *, obs=None, landing=None):
     return stats
 
 
+def paper_cone_connections(tf, paths, edge, event, u, stats):
+    """A measured-direction outer envelope, not a swept flight witness."""
+    from . import paperimpact
+    targets=getattr(paths.landing,'conformal_targets',None)
+    if not targets:return
+    cone=paperimpact.for_event(paths.obs.mesh,event,FLOOR)
+    if cone is None:return
+    _,_,vlo,vhi=cone.ranges(); radius=ph.PAPER.radius+FLOOR
+    for w,q,patch,label in paperimpact.road_candidates(tf,cone,targets,radius,stats):
+        if w==u:continue
+        # An ordering estimate, not a trajectory or an exact time bound.
+        fall=cf.landing_step(ph.PAPER,cone.center,min(q[1],cone.position[1]-EPS)) or 0.
+        ticks=edge['ticks']+fall
+        yield w,patch,label,dict(edge,ticks=ticks,time=ticks/132.,flight_ticks=edge['flight_ticks']+fall,
+                                 representative='paper_impact_cone',paper_impact_cone=True,verified=False,
+                                 impact_cone=dict(category=cone.category,half_angle_degrees=math.degrees(cone.angle),
+                                                  origin=cone.position.tolist(),normal=cone.normal.tolist(),
+                                                  velocity_low=vlo.tolist(),velocity_high=vhi.tolist(),
+                                                  velocity_center=cone.center.vel.tolist(),target=q.tolist(),
+                                                  patch=int(patch),rolling_component=int(label)),
+                                 landing_position=q.copy(),way=np.vstack((edge['way'],q)),
+                                 landing_face=int(targets.surface.patches[patch].faces[0]))
+
+
 def add_rail_departures(g, mesh, info, *, obs=None, landing=None, transformer_kind=None):
     """Supplement restored v6 witnesses with target-inverted rail exits."""
     from .railride import RailPaths, support_normal
     from . import supportcarry as sc
     import sys
     tf = sys.modules[__name__]
-    t0=perf_counter(); stats=Counter(); records=[]; best={}
+    t0=perf_counter(); stats=Counter(); records=[]; best={}; hypotheses={}; confirmed=defaultdict(set)
     obs=obs if obs is not None else Obstacles(mesh,info.get('death_boxes',[]))
     if landing is None:
         contacts=[_support(mesh,p,ph.WOOD.radius) or tuple(c for c in mesh.contacts(p,ph.WOOD.radius,RAIL_CONTACT_QUERY)
@@ -1722,6 +1773,11 @@ def add_rail_departures(g, mesh, info, *, obs=None, landing=None, transformer_ki
     for u,v,e,c in seeds:
         b=by_name[e['ball']]
         last=e['contacts'][-1]
+        if b.name=='paper':
+            for w,patch,label,candidate in paper_cone_connections(tf,paths,e,last,u,stats):
+                key=(u,e['site'],patch,label)
+                if key not in hypotheses or candidate['ticks']<hypotheses[key][2]['ticks']:
+                    hypotheses[key]=(u,w,candidate)
         if c is None:
             c=paths.capture(b,last,v)
         if c is None:
@@ -1733,7 +1789,7 @@ def add_rail_departures(g, mesh, info, *, obs=None, landing=None, transformer_ki
         if np.linalg.norm(c.body.vel) <= sc.local_speed(sc.law(b,support_normal(t),sc.keys_along(t)).along(t)):
             continue
         stats['rail_capture_seeds']+=1
-        for r in paths.search(tf,b,c,stats=stats):
+        for r in paths.search(tf,b,c,stats=stats,confirmed=confirmed[u,b.name]):
             w=r['node']
             if u==w:continue
             dep=r['departures'][-1]
@@ -1743,6 +1799,7 @@ def add_rail_departures(g, mesh, info, *, obs=None, landing=None, transformer_ki
             record=dict(site=int(e['site']),source=int(u),first_rail=int(v),target=int(w),ball=e['ball'],
                         dest_component=int(l[w]),mode=dep['mode'],rail=dep['object'],target_node=dep['target_node'],
                         rail_itinerary=itinerary,joint=dep.get('joint'),
+                        rail_lines=tuple(dict.fromkeys((paths.line_for(c.lane),*(a['rail_line'] for a in r['departures'])))),
                         launch=e['launch_position'].tolist(), depart=dep['position'].tolist(),
                         depart_velocity=dep['velocity'].tolist(), landing=r['state'].pos.tolist(),
                         push=dep['push'].tolist(),interval=list(dep['interval']),
@@ -1753,7 +1810,7 @@ def add_rail_departures(g, mesh, info, *, obs=None, landing=None, transformer_ki
             record['target_patch']=patch
             # A verified relay is a distinct route even if a direct flight
             # reaches the same rolling component faster.
-            key=(e['site'],u,e['ball'],int(l[w]),patch,tuple(itinerary))
+            key=(e['site'],u,e['ball'],int(l[w]),patch,tuple(itinerary),record['rail_lines'] if any('crown' in x for x in record['rail_lines']) else ())
             if key not in best or record['ticks']<best[key][2]['ticks']:
                 best[key]=(u,w,record,e,r)
     pairs=defaultdict(list)
@@ -1769,11 +1826,12 @@ def add_rail_departures(g, mesh, info, *, obs=None, landing=None, transformer_ki
                   bounce_count=e['bounce_count']+r['bounces'],contacts=e['contacts']+tuple(dict(h,tick=h['tick']+last['tick']) for h in r['contacts']),
                   segments=(first,*r['segments']),motion=continued_motion(e,r['segments'],target,g.pos[w]),way=densify_way(np.vstack([init[:k+1],*r['way'],target,g.pos[w]])),
                   representative='rail_inverse',first_landing_node=record['first_rail'],rail_departures=r['departures'],
-                  rail_itinerary=tuple(record['rail_itinerary']))
+                  rail_itinerary=tuple(record['rail_itinerary']),rail_lines=record['rail_lines'])
         pairs[u,w].append(edge)
+    for u,w,e in hypotheses.values():pairs[u,w].append(e)
     for (u,v), extra in pairs.items():
         old=variants(g,u,v)
-        es=tuple(sorted((*old,*extra),key=lambda e:(e['ticks'],e['ball'])))
+        es=tuple(sorted((*old,*extra),key=lambda e:(not e.get('verified',True),e['ticks'],e['ball'])))
         launches[u,v]=dict(es[0],variants=es)
         if old:
             g.adj[u]=[(w,cost(es[0]) if w==v and k=='launch' else p,k) for w,p,k in g.adj[u]]
@@ -1784,5 +1842,6 @@ def add_rail_departures(g, mesh, info, *, obs=None, landing=None, transformer_ki
     stats['rail_inverse_seconds']=perf_counter()-t0
     stats['rail_mapped_candidates']=len(records)
     stats['rail_retained']=len(best)
+    stats['paper_impact_cone_provisional']=len(hypotheses)
     g.info.setdefault('takeoff_stats',{}).update(stats)
     return stats
