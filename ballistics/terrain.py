@@ -5,7 +5,7 @@ from itertools import combinations
 import math
 
 import numpy as np
-from shapely import LineString, Point
+from shapely import LineString, Point, Polygon, box, union_all
 from shapely.affinity import translate
 
 from . import closedform as cf, conformal, motion, physics as ph
@@ -65,30 +65,69 @@ def torque_ratio(height, radius):
 
 
 def step_verdict(ball,height,radius,forward):
-    return slope_verdict(ball,torque_ratio(height,radius),forward) if height>0 else -1
+    """Ideal sharp-lip torque, not the C19 sustained-slope bracket."""
+    if height<=0.:return -1
+    required=torque_ratio(height,radius)
+    available=ratio(ball)*float(np.sum(np.abs(forward)))
+    return 1 if required<available-EPS else -1 if required>available+EPS else 0
 
 
-def step_energy(ball, height, speed, forward, inertia, *, push=None):
-    """Specific energy surplus at the work barrier of a sharp step.
+def step_work(height,radius,force):
+    theta=math.acos(1-height/radius)
+    critical=min(theta,max(0.,math.atan2(force,ph.GRAVITY)))
+    potential=lambda a:radius*(ph.GRAVITY*math.cos(a)+force*math.sin(a))
+    return theta, potential(critical)-potential(theta), potential(theta)-ph.GRAVITY*radius
 
-    Read the incoming speed before impact. Angular momentum about the lip
-    is conserved in an ideal capture; neglect further losses along the arc.
-    Returns (surplus, circle speed at the crown); None if outside geometry.
-    """
+
+def step_entry_speed(ball,height,forward,inertia,*,push=None):
+    """Required horizontal rolling approach in the ideal inelastic pivot model."""
     r=ball.radius
+    if not 0.<height<r:return math.inf
+    force=ratio(ball)*ph.GRAVITY*float(np.sum(np.abs(forward)) if push is None else np.asarray(push)@forward)
+    _, barrier, _=step_work(height,r,force)
+    return math.sqrt(2*max(0.,barrier)/(1+inertia))/(1-height/(r*(1+inertia)))
+
+
+def step_energy(ball, height, speed, forward, inertia, *, push=None, radius=None):
+    """Ideal angular momentum capture followed by work along a fixed lip."""
+    r=ball.radius if radius is None else radius
     if not 0.<height<r:return None
-    force=ratio(ball)*ph.GRAVITY
-    force*=float(np.sum(np.abs(forward)) if push is None else np.asarray(push)@forward)
-    theta=math.acos(1-height/r)
-    arm=r*math.sin(theta)
+    force=ratio(ball)*ph.GRAVITY*float(np.sum(np.abs(forward)) if push is None else np.asarray(push)@forward)
+    _, barrier, crown=step_work(height,r,force)
     pivot_speed=max(0.,speed)*(1-height/(r*(1+inertia)))
     energy=.5*(1+inertia)*pivot_speed**2
-    start=ph.GRAVITY*(r-height)+force*arm
-    critical=min(theta,max(0.,math.atan2(force,ph.GRAVITY)))
-    maximum=r*(ph.GRAVITY*math.cos(critical)+force*math.sin(critical))
-    surplus=energy+start-maximum
-    crown=energy+start-r*ph.GRAVITY
-    return surplus, math.sqrt(max(0.,2*crown/(1+inertia)))
+    return energy-barrier, math.sqrt(max(0.,2*(energy+crown)/(1+inertia)))
+
+
+def step_runup(axis, initial_speed, distance, required_speed):
+    """A witnessed straight run-up, not an assumed terminal entry speed.
+
+    The caller must establish support, clearance and available input on
+    the whole run; a positive result alone does not certify the lip.
+    """
+    crossing=axis.over(initial_speed,distance)
+    return crossing, crossing is not None and crossing[0]>required_speed+EPS
+
+
+def step_contact_limits(height,radius,force,inertia,pivot_speed,mu):
+    """(Impact friction margin, least N/m, least (mu*N-|T|)/m).
+
+    For a horizontal rolling entry (zero speed means no impact). N and
+    N +/- T/mu are affine in sin/cos on the constant-force energy arc;
+    their extrema are endpoints or stationary angles, not probes.
+    """
+    theta=math.acos(1-height/radius); g=ph.GRAVITY
+    c,s=math.cos(theta),math.sin(theta)
+    impact=mu-inertia/(1+inertia)*(1-c)/s if pivot_speed>EPS else mu
+    scale=2/(1+inertia)
+    offset=-pivot_speed**2/radius-scale*(g*c+force*s)
+    nc,ns=(1+scale)*g,(1+scale)*force
+    tc,ts=inertia/(1+inertia)*force,-inertia/(1+inertia)*g
+    def minimum(a,b,d):
+        angle=math.atan2(b,a)
+        xs=[0.,theta]+[x for x in (angle,angle+math.pi,angle-math.pi) if 0.<x<theta]
+        return min(d+a*math.cos(x)+b*math.sin(x) for x in xs)
+    return (impact,minimum(nc,ns,offset),min(minimum(mu*nc+j*tc,mu*ns+j*ts,mu*offset) for j in (-1,1)))
 
 
 @dataclass(frozen=True)
@@ -119,43 +158,96 @@ def neighbours(surface):
     return incident,pairs
 
 
-def step_lips(mesh,surface,incident):
-    """Vertical risers attached to an upper lip and a lower road at the foot.
+def _parts(geometry):
+    if geometry.is_empty:
+        return
+    if hasattr(geometry, 'geoms'):
+        for part in geometry.geoms:
+            yield from _parts(part)
+    else:
+        yield geometry
 
-    The road can be exported with a T-junction along the foot of the riser,
-    so the lower support is identified by its polygon and plane, not by a
-    second identical pair of vertex indices.
+
+def step_lips(mesh,surface,incident):
+    """Find supported intervals of finite horizontal lips on vertical risers.
+
+    The wall is a polygon in (distance along lip, height). Remove the
+    projection of its missing area from the lip interval; intersect what
+    remains with the lower patch footprint. Neither a single triangle's
+    low vertex nor coverage of the complete mesh edge proves local support.
     """
     from shapely import STRtree
+    from shapely.affinity import translate as shift
+    from shapely.ops import substring
     polygons=[p.polygon for p in surface.patches]
     if not polygons:return {}
     index=STRtree(polygons)
-    out=defaultdict(list); seen=set()
-    for i in np.flatnonzero((abs(mesh.N[:,1])<=math.sin(math.radians(.3))) & ~mesh.rail & ~mesh.placed):
+    eps=conformal.PLANE_ERROR
+    out=defaultdict(list); seen=set(); by_edge=defaultdict(list)
+    vertical=np.flatnonzero((abs(mesh.N[:,1])<=math.sin(math.radians(.3))) & ~mesh.rail & ~mesh.placed)
+    wall_edges={}
+    for i in vertical:
         tri=surface.triangles[i]
-        for a,b in zip(tri,np.roll(tri,-1,axis=0)):
-            row=incident.get(conformal.edge_key(a,b),())
-            if not row or abs(a[1]-b[1])>conformal.PLANE_ERROR:continue
-            top=(a+b)*.5
-            if (h:=top[1]-tri[:,1].min())<=conformal.PLANE_ERROR:continue
-            fwd=mesh.N[i,XZ]; fwd=fwd/np.linalg.norm(fwd)
+        wall_edges[i]=tuple(conformal.edge_key(a,b) for a,b in zip(tri,np.roll(tri,-1,axis=0)))
+        for edge in wall_edges[i]:by_edge[edge].append(i)
+    for i in vertical:
+        tri=surface.triangles[i]
+        for (a,b),edge in zip(zip(tri,np.roll(tri,-1,axis=0)),wall_edges[i]):
+            row=incident.get(edge,())
+            if not row or abs(a[1]-b[1])>eps:continue
+            origin=a[XZ]; span=b[XZ]-origin; length=float(np.linalg.norm(span))
+            if length<=EPS:continue
+            along=span/length; top=(a+b)*.5
+            fwd=np.array([-along[1],along[0]])
+            foot=LineString([origin,b[XZ]])
             for upper,_,_,face in row:
-                # Orient into the upper road, not by a potentially reversed wall winding.
-                p=surface.patches[upper]; interior=surface.triangles[face].mean(0)[XZ]-top[XZ]
+                cap=surface.patches[upper]
+                interior=surface.triangles[face].mean(0)[XZ]-top[XZ]
                 forward=fwd if interior@fwd>0. else -fwd
-                foot=LineString([a[XZ],b[XZ]])
-                for lower in index.query(foot.buffer(conformal.PLANE_ERROR)):
-                    lower=int(lower)
-                    if lower==upper:continue
-                    p0=surface.patches[lower]
-                    if p0.normal[1]<conformal.ANGLE:continue
-                    if not (.0<top[1]-p0.height(top[XZ])<ph.WOOD.radius+EPS):continue
-                    if abs(p0.height(top[XZ])-tri[:,1].min())>conformal.PLANE_ERROR:continue
-                    if not p0.polygon.buffer(conformal.PLANE_ERROR).covers(foot):continue
-                    key=(lower,upper,conformal.edge_key(a,b))
-                    if key in seen:continue
-                    seen.add(key)
-                    out[lower].append(StepLip(lower,upper,a,b,forward,int(face),int(mesh.owner[i])))
+                candidates=[]
+                for lower in index.query(foot.buffer(eps)):
+                    lower=int(lower); floor=surface.patches[lower]
+                    if lower==upper or floor.normal[1]<conformal.ANGLE:continue
+                    level=floor.height(top[XZ]); h=top[1]-level
+                    if not eps<h<ph.WOOD.radius:continue
+                    if any(abs(floor.height(q[XZ])-level)>eps for q in (a,b)):continue
+                    # The lower floor must extend towards the approach, not
+                    # merely touch the riser from the upper side.
+                    arm=math.sqrt(h*(2*ph.WOOD.radius-h))
+                    lower_poly=floor.polygon.buffer(eps)
+                    coverage=lower_poly.intersection(foot).intersection(shift(lower_poly,*(arm*forward)))
+                    if not coverage.is_empty:candidates.append((lower,level,coverage))
+                if not candidates:continue
+                wall={i}; queue=[i]
+                for f in queue:
+                    for e in wall_edges[f]:
+                        for j in by_edge[e]:
+                            if j in wall or mesh.owner[i]!=mesh.owner[j]:continue
+                            if np.max(abs((surface.triangles[j][:,XZ]-origin)@fwd))>eps:continue
+                            wall.add(j);queue.append(j)
+                profile=union_all([Polygon(np.column_stack(((surface.triangles[j][:,XZ]-origin)@along,
+                                                             surface.triangles[j][:,1]))) for j in sorted(wall)]).buffer(eps)
+                for lower,level,coverage in candidates:
+                    # Test the vertical strip between the two planes, allowing
+                    # only the declared mesh tolerance at each end.
+                    rectangle=box(0.,level,length,top[1])
+                    missing=rectangle.difference(profile)
+                    allowed=LineString([(0.,0.),(length,0.)])
+                    for gap in _parts(missing):
+                        x0,_,x1,_=gap.bounds
+                        if x1-x0>EPS:allowed=allowed.difference(LineString([(x0,0.),(x1,0.)]))
+                    for interval in _parts(allowed):
+                        x0,_,x1,_=interval.bounds
+                        if x1-x0<=EPS:continue
+                        usable=substring(foot,x0,x1).intersection(coverage)
+                        for piece in _parts(usable):
+                            if piece.geom_type!='LineString' or piece.length<=EPS:continue
+                            t=sorted(float((np.array(q)-origin)@along/length) for q in (piece.coords[0],piece.coords[-1]))
+                            x,y=(a+np.clip(q,0.,1.)*(b-a) for q in t)
+                            key=(lower,upper,conformal.edge_key(x,y))
+                            if key in seen:continue
+                            seen.add(key)
+                            out[lower].append(StepLip(lower,upper,x,y,forward,int(face),int(mesh.owner[i])))
     return dict(out)
 
 
@@ -235,34 +327,47 @@ def rebuild(g,mesh,surface,log=lambda *_:None):
     by_patch=defaultdict(list)
     for i,fields in enumerate(support):
         for k in fields:by_patch[k].append(i)
+    step_checks={}
     for lower, steps in lips.items():
         for step in steps:
             a,b=step.a,step.b; f=step.forward
             span=b[XZ]-a[XZ]; span2=float(span@span)
             if span2<=EPS:continue
+            mu_surface=float(mesh.entities[step.owner].get('friction',.7)) if step.owner>=0 else .7
             for u in by_patch[lower]:
                 p=P[u,XZ]; x=float((p-a[XZ])@f); t=float((p-a[XZ])@span/span2)
                 if not (-ph.WOOD.radius-coarse.STEP<=x<=0. and 0.<=t<=1.):continue
                 pivot=a+t*(b-a); height=step.height(surface,pivot)
                 if not 0.<height<ph.WOOD.radius:continue
                 arm=math.sqrt(height*(2*ph.WOOD.radius-height))
-                # Floor-node chord approaches the pivot and exits on its cap.
                 if x > -arm+conformal.PLANE_ERROR:continue
-                valid=[v for v in by_patch[step.upper] if 0.<=float((P[v,XZ]-pivot[XZ])@f)<=coarse.STEP+
-                       ph.WOOD.radius and np.linalg.norm(P[v,XZ]-pivot[XZ])<=coarse.STEP+EPS]
-                if not valid:continue
-                v=min(valid,key=lambda v:np.linalg.norm(P[v,XZ]-pivot[XZ]))
-                if any(q==v and how=='roll' for q,_,how in g.adj[u]):continue
-                bits=0
-                for k,ball in enumerate(balls):
-                    state=step_verdict(ball,height,ball.radius,f)
-                    if state==1:bits|=1<<k
-                    if state==0:uncertain.append((u,v,ball.name,'step',height))
-                masks[u,v,'step']=bits; reasons[u,v,'step']='step_torque'
-                if not bits: continue
-                if blocked(u,v):continue
-                if not any(q==v and how=='step' for q,_,how in g.adj[u]):
-                    g.adj[u].append((v,float(np.linalg.norm(P[v]-P[u]))+10.,'step')); counts['step']+=1
+                # Do not mistake one chosen coarse node for the physical
+                # crown. Every locally connected cap node can represent it.
+                crown=Point(pivot[XZ]); reach=math.sqrt(2)*coarse.STEP+EPS
+                for v in by_patch[step.upper]:
+                    q=P[v,XZ]; d=q-pivot[XZ]
+                    if d@f < -EPS or d@d>reach**2:continue
+                    if not polygons[step.upper].covers(LineString([crown,q])):continue
+                    if any(j==v and how=='roll' for j,_,how in g.adj[u]):continue
+                    key=(u,v,'step'); bits=masks.get(key,0)
+                    for k,ball in enumerate(balls):
+                        if bits&(1<<k):continue
+                        inertia=.277 if ball.name=='paper' else .4
+                        state=step_verdict(ball,height,ball.radius,f)
+                        force=ratio(ball)*ph.GRAVITY*float(np.sum(np.abs(f)))
+                        margins=step_contact_limits(height,ball.radius,force,inertia,0.,ball.friction*mu_surface)
+                        why=('needs_momentum' if state!=1 else 'rolling_contact_unproved' if min(margins)<-EPS
+                             else 'placed_obstruction' if blocked(u,v) else 'static_torque')
+                        if why=='static_torque':bits|=1<<k
+                        entry=(why,height,step,step_entry_speed(ball,height,f,inertia))
+                        check=(u,v,ball.name)
+                        if check not in step_checks or why=='static_torque':step_checks[check]=entry
+                    masks[key]=bits; reasons[key]='step_torque'
+                    if bits and not any(j==v and how=='step' for j,_,how in g.adj[u]):
+                        g.adj[u].append((v,float(np.linalg.norm(P[v]-P[u]))+10.,'step')); counts['step']+=1
+    for (u,v,ball),(why,height,_,_) in step_checks.items():
+        if why!='static_torque':uncertain.append((u,v,ball,why,height))
+    g.info['terrain_step_checks']=step_checks
     g.info.update(terrain_ball_masks=masks,terrain_uncertain=uncertain,terrain_reasons=reasons,
                   launch_runup_adj=runup,terrain_counts=dict(counts))
     log('terrain: %d rolls, %d steps, %d riser lips, %d indeterminate ball edges' %

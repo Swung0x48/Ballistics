@@ -1,16 +1,16 @@
 """Supported rail corridors and closed-form departure opportunities."""
 from collections import defaultdict, deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import math
 
 import numpy as np
 from scipy.spatial import cKDTree
 
-from . import closedform as cf, physics as ph, supportcarry as sc, rail_inverse as inverse, motion, rails
+from . import closedform as cf, physics as ph, supportcarry as sc, rail_inverse as inverse, motion, rails, railjoint
 from .coarse import WALK_NY, _lane_chains
 
 UP, XZ, EPS = sc.UP, sc.XZ, sc.EPS
-MAX_CAPTURES = 4    # ASSUMED; each new rail capture consumes one event, not ticks
+MAX_CAPTURES = 4    # ASSUMED; distinct collision objects in a rail itinerary, not ticks
 MIN_ALIGN = math.sqrt(.5)  # ASSUMED: compatible directions at a fitted seam
 FIT = .25          # ASSUMED: existing coarse rail fitting/contact tolerance
 
@@ -34,6 +34,7 @@ class Catch:
     body: ph.State
     lateral: float               # signed in support cross-plane
     triangle: int
+    rebound: object = None
 
 
 @dataclass
@@ -50,6 +51,7 @@ class Departure:
     aimed: int = -1
     horizon: float | None = None
     fallback: bool = False
+    joint: tuple | None = None
 
 
 def support_normal(tangent):
@@ -177,7 +179,15 @@ class RailPaths:
             if abs(speed)<=EPS:continue
             v=speed*t; t=t*direction
             lateral=float(sv@sc.unit(np.cross(up,t)))
-            choices.append((not pair,dist,int(li),Catch(li,j,direction,ph.State(p,v,ph.rolling_spin(v,up,ball.radius)),lateral,hit['triangle'])))
+            reaction=hit.get('support_normal',n)
+            material=self.obs.mesh.entities[owner]
+            incoming=ph.State(hit['position'],hit['incoming'],np.zeros(3) if omega is None else omega)
+            bounced=cf.rebound(ball,incoming,reaction,float(material.get('elasticity',.3)))
+            if bounced.vel@reaction<=EPS:
+                bounced=None
+            else:
+                bounced.pos=bounced.pos+reaction*(8*EPS)
+            choices.append((not pair,dist,int(li),Catch(li,j,direction,ph.State(p,v,ph.rolling_spin(v,up,ball.radius)),lateral,hit['triangle'],bounced)))
         return min(choices,key=lambda k:k[:3])[-1] if choices else None
 
     def candidates_at_end(self, ball, dep):
@@ -202,43 +212,79 @@ class RailPaths:
             options.append((li,d,q,tangent))
         return options
 
-    def sleeve(self, tf, ball, dep, push, *, start=None, end=math.inf):
-        """Closed-form gap flight to a nearby downstream lane slice.
+    def target_sleeves(self, ball, catch):
+        """Nearby compatible successor chains; along each, use real mesh pieces."""
+        lane=self.lanes[catch.lane]
+        j=len(lane.length)-1 if catch.direction>0 else 0
+        end=lane.p[-1 if catch.direction>0 else 0]
+        tangent=catch.direction*lane.tangent[j]
+        at=Departure(ph.State(end,tangent),0.,'chain_end',catch,(),(),np.zeros(2))
+        for i,d,_,_ in self.candidates_at_end(ball,at):
+            dest=self.lanes[i]
+            half=(dest.gauge/2 if dest.double else ball.radius/2)+FIT
+            for k,t in enumerate(dest.tangent):
+                if np.linalg.norm(t[XZ])<EPS or d*t@tangent<MIN_ALIGN:continue
+                a,b=dest.p[k:k+2]
+                # This is an output ID, not a search target. The sleeve is
+                # entirely independent of the density of the coarse grid.
+                node=int(dest.ids[np.argmin(np.linalg.norm(self.g.pos[dest.ids]-a,axis=1))])
+                yield railjoint.Sleeve(i,k,d,a,b,half,node)
 
-        The fitted support-height plane is crossed in its finite sleeve;
-        matching tube reactions must exist there in the real collision mesh.
-        The physical mesh still gets first refusal on unrelated obstacles.
-        """
-        p=dep.body.pos
-        start=dep.body if start is None else start
-        best=None
-        for li,d,q,t in self.candidates_at_end(ball,dep):
-            lane=self.lanes[li]
-            # Fit planes between changes in slope, not each unit sample. Test
-            # the exact finite arc interval for a possible downstream capture.
-            indices=range(len(lane.length)) if d>0 else range(len(lane.length)-1,-1,-1)
-            for j in indices:
-                t=d*lane.tangent[j]; up=support_normal(t); a=lane.p[j+(d<0)]; n=up
-                if (a-p)[1] > FIT or n[1]<=EPS: continue
-                if (start.pos-a) @ n < -FIT: continue
-                h=cf.plane_hit(ball,start,a,n,radius=0.,push=push)
-                if h is None:continue
-                dt=h.step-1+h.fraction if h.step else 0.
-                if dt>end+EPS or best is not None and dt>=best[0]:continue
-                s=float((h.center-a)@t)
-                if not -FIT <= s <= lane.length[j]+FIT:continue
-                center=a+np.clip(s,0,lane.length[j])*t
-                side=sc.unit(np.cross(n,t)); width=lane.gauge/2 if lane.double else ball.radius/2
-                if abs((h.center-center)@side)>width+FIT:continue
-                f=self.geometry_support(center,ball,lane.double,t)
-                if f<0:continue
-                velocity=cf.flight(ball,start,max(0,math.ceil(dt)),push=push).vel
-                # Same application of v6 slip capture as at an ordinary rail hit.
-                v=sc.rolling_entry(ball,velocity,n) if dt>EPS else velocity
-                if v@t<=EPS:continue
-                body=ph.State(center,(v@t)*t,ph.rolling_spin((v@t)*t,n,ball.radius))
-                best=(dt,Catch(li,j,d,body,float(v@side),f),h.center,velocity)
-        return best
+    def joints(self, tf, ball, catch, law, end):
+        for shape in self.target_sleeves(ball,catch):
+            self.counts['rail_joint_targets']+=1
+            for point,interval in railjoint.invert_sleeve(tf,ball,law,0.,end,shape):
+                self.counts['rail_joint_intervals']+=1
+                yield shape,point,interval
+
+    def forward_joints(self, tf, ball, source, axis, hold, dur, segments, way, elapsed, recorded=False):
+        """A straight tube only releases tangentially under outward load."""
+        speed=float(np.linalg.norm(source.body.vel)); t=sc.unit(source.body.vel)
+        up=support_normal(t)
+        if cf.air_impulse(ball,push=hold)@up<=EPS:return
+        u=axis.terminal_speed
+        law=inverse.ReleaseLaw(source.body.pos,source.body.vel,ph.DT*u*t,
+                               -(speed-u)*ph.DT/axis.loss*t,(u-speed)*t,math.log1p(-axis.loss))
+        for target,q,(lo,hi) in self.joints(tf,ball,source,law,dur):
+            for root in dict.fromkeys((lo,(lo+hi)*.5,hi)):
+                state=law.at(root); aim=inverse.objective(tf,ball,state,q)
+                if aim is None:continue
+                push,n=aim
+                if max(abs(push))>1.+EPS:continue
+                if recorded:push=hold
+                if cf.air_impulse(ball,push=push)@up<=EPS:continue
+                c=replace(source,body=state,rebound=None)
+                piece=sc.segment('rail',self.surface.name(source.triangle),source.body,state,root,hold,'joint_inverse')
+                yield Departure(state,elapsed+root,'joint_tangent',c,(*segments,piece),(*way,state.pos),np.clip(push,-1.,1.),
+                                intervals=tuple(float(axis.at(speed,t0)[0]) for t0 in (lo,hi)),aimed=target.node,
+                                horizon=n+1.,joint=(target.lane,target.j))
+
+    def departure_support(self, tf,ball,dep,schedule):
+        """Attach the support prefix to the original tube faces, not all of an owner."""
+        m=self.obs.mesh; owner=int(m.owner[dep.source.triangle]); release=dep.body.pos
+        r=ball.radius+sc.SKIN
+        span=2*r
+        near=tf._box_triangles((release-span)[None],(release+span)[None],self.obs.lo,self.obs.hi,m._grid)
+        faces=np.array([i for i in near if m.owner[i]==owner and m.rail[i]],dtype=int)
+        axes,used=railjoint.bind_axes(m.tubes,self.obs.tris[faces],release,r)
+        if not axes:
+            # Synthetic or unfitted geometry can still use its actual
+            # connected upward mesh prefix. Never turn failure into immunity.
+            source=tf.rail_support(self.obs,dep.source.body.pos,ball.radius)
+            return source,max(0.,self.obs.rail_clearance(ball,dep.body,schedule[0][1],schedule[0][0],source))
+        source=tf.RailSupport(owner,np.sort(faces[used]),axes)
+        state=dep.body; prev=0.; loss=ball.lin_damp*ph.DT
+        for end,push in schedule:
+            width=end-prev
+            if width<=EPS:continue
+            imp=cf.air_impulse(ball,push=push)
+            piece=motion.flight(state,imp,loss,width)
+            exit=railjoint.support_end(piece,axes,r)
+            if exit<width-EPS:return source,prev+exit
+            at=cf.flight(ball,state,int(width),push=push)
+            state=ph.State(piece.point(width),at.vel,at.omega)
+            prev=end
+        return source,prev
 
     def continued_interval(self, tf, ball, law, end, ids=None):
         targets = getattr(self.landing,'conformal_targets',None)
@@ -313,7 +359,12 @@ class RailPaths:
                 actual=brentq(lambda a: advance(a)-avail,0.,actual)
             if actual<=EPS:continue
             visited=set()
-            for v,q,ab in self.continued_interval(tf,ball,release,actual,self.inverse_targets):
+            def aims():
+                for v,q,ab in self.continued_interval(tf,ball,release,actual,self.inverse_targets):
+                    yield v,q,ab,None
+                for target,q,ab in self.joints(tf,ball,c,release,actual):
+                    yield target.node,q,ab,(target.lane,target.j)
+            for v,q,ab,joint in aims():
                 # Endpoint/midpoint, then quartiles when an initial witness is
                 # blocked. They come from the solved interval, not a rail grid.
                 p1,p2=ab; s0=float(axis.at(speed,p1)[0]); s1=float(axis.at(speed,p2)[0]); total=arc+extra/ph.DT
@@ -324,7 +375,7 @@ class RailPaths:
                     force,n=aim
                     if np.max(abs(force))>1+1.e-6:continue
                     control=np.clip(force,-1,1) if controls is None else controls(clock+elapsed+root+total)[0][1]
-                    ident=(float(root),tuple(control),v)
+                    ident=(float(root),tuple(control),v) if controls is None else (float(root),tuple(control),joint is not None)
                     if ident in visited:continue
                     visited.add(ident)
                     displacement,sv=axis.at(speed,root); at=ph.State(pos+displacement*t,sv*t)
@@ -341,8 +392,8 @@ class RailPaths:
                     if rim is not None:
                         from dataclasses import replace
                         moved_rim=replace(rim,pivot=rim.pivot+(flight.pos-rim.start.pos),start=flight)
-                    yield Departure(flight,elapsed+root+total,'side',source,(*segments,prefix,part),
-                              (*way,at.pos,flight.pos),control,moved_rim,(s0,s1),v,n+1. if controls is None else None,f in (.25,.75))
+                    yield Departure(flight,elapsed+root+total,'side' if joint is None else 'joint_crest',source,(*segments,prefix,part),
+                              (*way,at.pos,flight.pos),control,moved_rim,(s0,s1),v,n+1. if controls is None else None,f in (.25,.75),joint)
 
     def walk(self, tf, ball, c, controls=None, clock=0., *, search_side=True):
         """Advance between analytic key changes and geometric rail events."""
@@ -366,6 +417,9 @@ class RailPaths:
             distance,end_speed=law.at(speed,move_tick) if limit<dur else (avail,end[0]); dest=b.pos+distance*t
             owner=self.obs.mesh.owner[c.triangle]; name=self.surface.name(c.triangle)
             if not self.surface.clear(tf,ball,[b.pos,dest],owner,up):return
+            if search_side:
+                yield from self.forward_joints(tf,ball,replace(c,j=j,body=b),law,push,move_tick,parts,way,elapsed,
+                                               recorded=controls is not None)
             if lane.double and search_side and self.geometry_support(b.pos,ball,True,t)>=0:
                 yield from self.side_departures(tf,ball,Catch(c.lane,j,sign,b,c.lateral,c.triangle),b.pos,speed,
                     law,t,up,push,move_tick,avail,parts,way,elapsed,controls=controls,clock=clock0)
@@ -401,14 +455,17 @@ class RailPaths:
         """A physical chain end/kink is a degenerate inverse interval."""
         from dataclasses import replace
         law=inverse.ReleaseLaw(dep.body.pos,dep.body.vel,np.zeros(3),np.zeros(3),np.zeros(3),-1.)
-        for v,q,_ in self.continued_interval(tf,ball,law,0.,self.inverse_targets):
+        def aims():
+            for v,q,_ in self.continued_interval(tf,ball,law,0.,self.inverse_targets):yield v,q,None
+            for target,q,_ in self.joints(tf,ball,dep.source,law,0.):yield target.node,q,(target.lane,target.j)
+        for v,q,joint in aims():
             objective=inverse.objective(tf,ball,dep.body,q)
             if objective is None:continue
             push,t=objective
             if np.max(abs(push))>1.+EPS:continue
-            yield replace(dep,push=np.clip(push,-1.,1.),intervals=(0.,0.),aimed=v,horizon=t+1.)
+            yield replace(dep,push=np.clip(push,-1.,1.),intervals=(0.,0.),aimed=v,horizon=t+1.,joint=joint)
 
-    def air(self, tf, ball, dep, controls=None, clock=0.):
+    def air(self, tf, ball, dep, controls=None, clock=0., *, diagnostics=False):
         launch=dep.body
         if controls is None:
             ticks=dep.horizon or cf.landing_step(ball,launch,min(self.obs.bottom-ball.radius-sc.SKIN,launch.pos[1]-ball.radius))
@@ -418,46 +475,20 @@ class RailPaths:
             schedule=controls(clock+dep.tick)
         if not len(schedule) or schedule[-1][0]<=EPS:return None
         hold=schedule[0][1]
-        departure=tf.rail_support(self.obs,dep.source.body.pos,ball.radius)
-        clear=self.obs.rail_clearance(ball,launch,hold,schedule[0][0],departure)
-        # Never give a whole object immunity: the existing check only waives
-        # the short connected support prefix. Zero still permits a real hit.
-        clear=max(0.,clear)
-        if dep.kind=='chain_end' and dep.aimed < 0 and self.candidates_at_end(ball,dep):
-            # Compose the unreflected gap curve exactly at key changes.
-            # Check the finite downstream sleeves in each segment until the
-            # first supported crossing, then check its whole flight prefix.
-            b=launch; cursor=0.; prefix=[]; hop=None
-            for limit,push in schedule:
-                width=limit-cursor
-                if width<=EPS:continue
-                hop=self.sleeve(tf,ball,dep,push,start=b,end=width)
-                if hop is not None:
-                    dt,c,hit,v=hop
-                    prefix.append((b,push,dt,ph.State(hit,v)))
-                    break
-                at=cf.flight(ball,b,int(width),push=push)
-                q=tf._points(b,width,ball.lin_damp*ph.DT,cf.air_impulse(ball,push=push))
-                at=ph.State(q,at.vel,at.omega)
-                prefix.append((b,push,width,at)); b=at; cursor=limit
-            if hop is not None:
-                dt,c,hit,v=hop
-                allowed={self.obs.mesh.owner[dep.source.triangle],self.obs.mesh.owner[c.triangle]}
-                checked=True; spent=0.
-                for b,push,width,at in prefix:
-                    k,f,_,_=self.obs.first_contact(ball,b,push,max(width,EPS),dep.rim if spent==0. else None,
-                          departure if spent==0. else None,clear if spent==0. else 0.,incoming_only=True)
-                    if k=='death_box' or k!='no_contact' and (not self.obs.mesh.rail[f] or self.obs.mesh.owner[f] not in allowed):
-                        checked=False;break
-                    spent+=width
-                if checked:
-                    return dict(reason='transfer',catch=c,ticks=cursor+dt,push=hold,state=ph.State(hit,v),
-                        segments=tuple(sc.segment('rail_gap',self.surface.name(c.triangle),x,z,n,p,'sleeve',geometry=(tf.air_geometry(ball,x,p,n),)) for x,p,n,z in prefix),
-                        way=(launch.pos,*(z.pos for _,_,_,z in prefix),c.body.pos),contacts=(),bounces=0)
+        if dep.kind=='side':
+            # Road-aimed side releases are the existing v13 path. Only
+            # steel-joint and endpoint/rebound proposals use the tube cap.
+            departure=tf.rail_support(self.obs,dep.source.body.pos,ball.radius)
+            clear=max(0.,self.obs.rail_clearance(ball,launch,hold,schedule[0][0],departure))
+        else:
+            departure,clear=self.departure_support(tf,ball,dep,schedule)
         air=tf.trace_air(self.obs,ball,launch,schedule,rim=dep.rim,departure=departure,clearance=clear,incoming_only=True)
         why,i,dt,hit=air.result
-        if why!='land' or dt<=clear+EPS or (dep.kind=='side' and dt<=.05):
-            return dict(reason=why if why!='land' else 'never_airborne')
+        meta=dict(clearance=clear,axes=departure.axes if departure is not None else ())
+        if diagnostics:meta.update(air_parts=air.parts,event=air.result,waived_faces=departure.faces if departure else ())
+        if (why!='land' or (dt<=EPS and self.obs.mesh.owner[i]==self.obs.mesh.owner[dep.source.triangle])
+                or (dep.kind=='side' and dt<=max(.05,clear+EPS)) or (dep.kind=='joint_crest' and dt<=.05)):
+            return dict(reason=why if why!='land' else 'never_airborne',contacts=air.contacts,**meta)
         node=self.landing.near(i,hit)
         omega=None
         segments=[]; way=[launch.pos]; cursor=0.
@@ -469,10 +500,14 @@ class RailPaths:
             segments.append(sc.segment('flight',piece['object'] if piece else '',state,end,t,push,piece['kind'] if piece else 'key_change',geometry=(tf.air_geometry(ball,state,push,t),)))
             _, points=tf._samples(state,cf.air_impulse(ball,push=push),ball.lin_damp*ph.DT,t,1.)
             way.extend(points); cursor+=t
-        if node<0:return dict(reason='no_landing_node')
         last=air.contacts[-1]; c=self.capture(ball,last,node,omega) if self.obs.mesh.rail[i] else None
+        if node<0 and c is not None:
+            ids=self.lanes[c.lane].ids
+            node=int(ids[np.argmin(np.linalg.norm(self.g.pos[ids]-c.body.pos,axis=1))])
+        if node<0:
+            return dict(reason='no_landing_node',contacts=air.contacts,**meta)
         return dict(reason='land',node=node,face=i,ticks=dt,push=hold,state=ph.State(hit,last['incoming'],omega),
-                    segments=tuple(segments),way=(*way,hit),contacts=air.contacts,bounces=air.bounces,catch=c)
+                    segments=tuple(segments),way=(*way,hit),contacts=air.contacts,bounces=air.bounces,catch=c,**meta)
 
     def search(self, tf, ball, c, *, controls=None, clock=0., stats=None):
         """Check representatives of solved exits; expand earliest arrival per next lane.
@@ -480,15 +515,18 @@ class RailPaths:
         All *mapped* exits are yielded before narrowing just the chain search.
         This limits repeated rail-to-rail expansions, not graph destinations.
         """
-        q=deque([(c,0.,0.,(),(),(),(),0,frozenset({(c.lane,c.direction)}))])
+        owner=self.obs.mesh.owner
+        q=deque([(c,0.,0.,(),(),(),(),0,frozenset({(c.lane,c.direction)}),frozenset({int(owner[c.triangle])}))])
         while q:
-            item,elapsed,onrail,path,way,contacts,exits,bounces,visited=q.popleft()
+            item,elapsed,onrail,path,way,contacts,exits,bounces,visited,objects=q.popleft()
             onward={}; covered=set()
             raw=self.walk(tf,ball,item,controls,clock+elapsed)
             def reps():
+                if item.rebound is not None:
+                    yield Departure(item.rebound,0.,'rail_rebound',item,(),(),sc.keys_along(item.body.vel))
                 for dep in raw:
                     yield dep
-                    if dep.kind!='side' and controls is None:
+                    if dep.kind not in ('side','joint_crest','joint_tangent') and controls is None:
                         yield from self.fixed_aims(tf,ball,dep)
             for dep in reps():
                 mark=(dep.aimed,dep.intervals,dep.source.j)
@@ -499,7 +537,8 @@ class RailPaths:
                 if stats is not None:stats['rail_candidate_'+why]+=1
                 if why not in ('land','transfer'):continue
                 status=dict(mode=dep.kind,object=self.surface.name(dep.source.triangle),position=dep.body.pos,
-                            velocity=dep.body.vel,tick=elapsed+dep.tick,push=dep.push,interval=dep.intervals,target_node=dep.aimed)
+                            velocity=dep.body.vel,tick=elapsed+dep.tick,push=dep.push,interval=dep.intervals,target_node=dep.aimed,
+                            joint=dep.joint,source_piece=dep.source.j,clearance=a['clearance'])
                 p=(*path,*dep.pieces,*a['segments']); w=(*way,*dep.way,*a['way']); after=elapsed+dep.tick+a['ticks'];
                 riding=onrail+dep.tick
                 hits=(*contacts,*(dict(x,tick=x['tick']+elapsed+dep.tick) for x in a['contacts']))
@@ -511,9 +550,19 @@ class RailPaths:
                     if n is None or n.lane!=item.lane:
                         yield dict(node=a['node'],face=a['face'],state=a['state'],ticks=after,ride_ticks=riding,
                                    segments=p,way=w,contacts=hits,departures=e,bounces=nb)
-                if n is None or len(visited)>=MAX_CAPTURES:continue
+                if n is None:continue
+                identities=objects|{int(owner[n.triangle])}
+                if len(identities)>MAX_CAPTURES:continue
                 key=(n.lane,n.direction)
-                if key in visited:continue
-                future=(n,after,riding,p,w,hits,e,nb,visited|{key})
-                if key not in onward or after<onward[key][1]:onward[key]=future
+                token=key
+                if key in visited:
+                    # A witnessed hop may land farther up the *same* physical
+                    # rail. Keep one such recontact event; it is not a route
+                    # to the same rolling component and cannot loop forever.
+                    if dep.kind!='rail_rebound' or n.lane!=item.lane or n.direction!=item.direction:continue
+                    advance=(n.body.pos-item.body.pos)@sc.unit(item.body.vel)
+                    token=(*key,'recontact')
+                    if advance<=EPS or token in visited:continue
+                future=(n,after,riding,p,w,hits,e,nb,visited|{token},identities)
+                if token not in onward or after<onward[token][1]:onward[token]=future
             q.extend(onward.values())

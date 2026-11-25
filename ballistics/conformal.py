@@ -345,6 +345,6 @@ def write_candidates(graph, stem):
         w=csv.writer(f); w.writerow(('site','key','ball','patch','rolling_region','representative_node','x','y','z'))
         w.writerows(road)
     with stem.with_name(stem.name+'-conformal-rail-candidates.csv').open('w',encoding='ascii',newline='') as f:
-        fields=('site','source','first_rail','target','ball','dest_component','target_patch','mode','rail','target_node',
+        fields=('site','source','first_rail','target','ball','dest_component','target_patch','mode','rail','target_node','rail_itinerary','joint',
                 'launch','depart','depart_velocity','landing','push','interval','ticks','seconds')
         w=csv.DictWriter(f,fields,extrasaction='ignore'); w.writeheader(); w.writerows(rail)

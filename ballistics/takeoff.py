@@ -24,7 +24,7 @@ from .sweep import chord as _chord, curve as _curve
 
 FOLLOW_SPEED = 9.0
 STOP_COST = 9.0
-RULE = "closed form ledges and rail ends, three balls, supported momentum continuation and analytic manifolds and mesh rail corridors and conformal road slopes and step torque v13"
+RULE = "closed form ledges and rail ends, three balls, supported momentum continuation and analytic manifolds and mesh rail corridors and conformal road slopes, finite rail joints and local step support v15"
 GRAVITY_IMPULSE = ph.GRAVITY * ph.DT
 FLOOR = ph.Params().floor
 XZ = [0, 2]
@@ -454,6 +454,7 @@ def rail_lip(obs, q, normal, tangent, double, radius):
 class RailSupport:
     owner: int
     faces: np.ndarray
+    axes: tuple = ()
 
 
 def rail_support(obs, q, radius):
@@ -735,7 +736,7 @@ def _rail_prefix(p, v, impulse, end, loss, r, tris, faces):
 
 @njit(cache=True)
 def _screen(p, v, impulse, end, loss, r, tris, normals, lo, hi, grid, pivot, axis, owner, rail,
-            void_owner, void_until, incoming_only, support_owner=-1, side_only=False):
+            void_owner, void_until, incoming_only, support_owner=-1, side_only=False, void_faces=None):
     logd = math.log1p(-loss)
     knots = [0., end]
     for j in range(3):
@@ -763,7 +764,13 @@ def _screen(p, v, impulse, end, loss, r, tris, normals, lo, hi, grid, pivot, axi
         normal = normals[i]
         if not normal.any():
             continue
-        ignore = void_until if rail[i] and owner[i] == void_owner else 0.
+        ignore = 0.
+        if void_until>0. and rail[i] and owner[i] == void_owner:
+            if void_faces is None:
+                ignore=void_until
+            else:
+                idx=np.searchsorted(void_faces,i)
+                if idx<len(void_faces) and void_faces[idx]==i:ignore=void_until
         t = _face_candidate(tris[i], normal, p, v, impulse, min(end, first), loss, logd, r, ignore, incoming_only, side_only)
         if t >= 0 and (t < first or kind == 2 and t <= first + EPS):
             kind, tri, first = 1, i, t
@@ -802,7 +809,8 @@ class Obstacles:
         axis = rim.axis if rim is not None else np.empty(0)
         kind, i, hit_t = _screen(start.pos, start.vel, impulse, t, loss, r,
                                  self.tris, self.mesh.N, self.lo, self.hi, self.mesh._grid, pivot, axis,
-                                 self.mesh.owner, self.mesh.rail, departure.owner if departure is not None else -1, clearance, incoming_only)
+                                 self.mesh.owner, self.mesh.rail, departure.owner if departure is not None else -1, clearance, incoming_only,
+                                 void_faces=departure.faces if departure is not None and departure.axes else None)
         if _death_hit(start, impulse, loss, min(t, hit_t), self.boxes, chords=True):
             return 'death_box', -1, min(t, hit_t), None
         if kind == 0:
@@ -943,13 +951,19 @@ def trace_air(obs, ball, start, schedule, *, rim=None, departure=None,
                 remaining = float(cf.landing_step(ball, body, below) or 0)
                 extend = False
                 boundary = now + remaining
-            void_owner = (departure.owner if first and departure is not None and clearance>0 else -1)
-            if first:
-                result = (cached_first if cached_first is not None else
-                          obs.first_contact(ball, body, push, remaining, rim, departure, clearance, incoming_only=incoming_only))
-                first = False
+            # Unlike the legacy lip test, the finite joint prefix can span
+            # several immutable input runs, but never a bounce or re-entry.
+            finite=departure is not None and bool(departure.axes) and not contacts
+            local_clear=max(0.,clearance-now) if finite else (clearance if first else 0.)
+            void_owner=departure.owner if departure is not None and local_clear>0. else -1
+            void_faces=departure.faces if finite else None
+            if first or (finite and local_clear>0.):
+                result=(cached_first if first and cached_first is not None else
+                        obs.first_contact(ball,body,push,remaining,rim if first else None,departure,local_clear,
+                                          incoming_only=incoming_only))
+                first=False
             else:
-                result = obs.first_contact(ball, body, push, remaining, incoming_only=(incoming_only or bool(bounces)))
+                result=obs.first_contact(ball,body,push,remaining,incoming_only=(incoming_only or bool(bounces)))
             kind, i, dt, center = result
             parts.append((body, push, dt))
             now += dt
@@ -982,7 +996,7 @@ def trace_air(obs, ball, start, schedule, *, rim=None, departure=None,
                 # connected co-active geometry in the same PSI episode.
                 rows = [(int(i),point,normal,float((center-point)@normal))]
             else:
-                rows = contactset.contact_set(obs,center,radius,i,point,normal,void_owner if dt<=clearance else -1)
+                rows = contactset.contact_set(obs,center,radius,i,point,normal,void_owner if dt<=local_clear else -1,void_faces)
             ns = np.array([r[2] for r in rows]); gaps = np.array([r[3] for r in rows])
             # A supporting upward reaction, or a combination of two opposing
             # rail reactions at this same centre. No history-based pairing.
@@ -997,7 +1011,7 @@ def trace_air(obs, ball, start, schedule, *, rim=None, departure=None,
                     known = {f for f,_,_ in rails}
                     rails.extend((c.triangle,c.point,c.normal) for c in obs.mesh.contacts(center,radius,FLOOR)
                                  if c.triangle not in known and obs.mesh.rail[c.triangle] and not obs.mesh.placed[c.triangle]
-                                 and c.normal[1]>EPS and not (dt<=clearance and c.entity==void_owner))
+                                 and c.normal[1]>EPS and not (dt<=local_clear and c.entity==void_owner and (void_faces is None or c.triangle in void_faces)))
                 for j,(f,q,n) in enumerate(rails):
                     for g,q2,m in rails[:j]:
                         combined = contactset.opposed_support(n,m)
@@ -1723,8 +1737,12 @@ def add_rail_departures(g, mesh, info, *, obs=None, landing=None, transformer_ki
             w=r['node']
             if u==w:continue
             dep=r['departures'][-1]
+            itinerary=[]
+            for name in (last['object'],*(d['object'] for d in r['departures'])):
+                if not itinerary or itinerary[-1]!=name:itinerary.append(name)
             record=dict(site=int(e['site']),source=int(u),first_rail=int(v),target=int(w),ball=e['ball'],
                         dest_component=int(l[w]),mode=dep['mode'],rail=dep['object'],target_node=dep['target_node'],
+                        rail_itinerary=itinerary,joint=dep.get('joint'),
                         launch=e['launch_position'].tolist(), depart=dep['position'].tolist(),
                         depart_velocity=dep['velocity'].tolist(), landing=r['state'].pos.tolist(),
                         push=dep['push'].tolist(),interval=list(dep['interval']),
@@ -1733,7 +1751,9 @@ def add_rail_departures(g, mesh, info, *, obs=None, landing=None, transformer_ki
             surface=g.info.get('conformal')
             patch=int(surface.face_patch[r['face']]) if surface is not None else -1
             record['target_patch']=patch
-            key=(e['site'],u,e['ball'],int(l[w]),patch)
+            # A verified relay is a distinct route even if a direct flight
+            # reaches the same rolling component faster.
+            key=(e['site'],u,e['ball'],int(l[w]),patch,tuple(itinerary))
             if key not in best or record['ticks']<best[key][2]['ticks']:
                 best[key]=(u,w,record,e,r)
     pairs=defaultdict(list)
@@ -1748,7 +1768,8 @@ def add_rail_departures(g, mesh, info, *, obs=None, landing=None, transformer_ki
                   across=float(np.linalg.norm((target-e['launch_position'])[XZ])),
                   bounce_count=e['bounce_count']+r['bounces'],contacts=e['contacts']+tuple(dict(h,tick=h['tick']+last['tick']) for h in r['contacts']),
                   segments=(first,*r['segments']),motion=continued_motion(e,r['segments'],target,g.pos[w]),way=densify_way(np.vstack([init[:k+1],*r['way'],target,g.pos[w]])),
-                  representative='rail_inverse',first_landing_node=record['first_rail'],rail_departures=r['departures'])
+                  representative='rail_inverse',first_landing_node=record['first_rail'],rail_departures=r['departures'],
+                  rail_itinerary=tuple(record['rail_itinerary']))
         pairs[u,w].append(edge)
     for (u,v), extra in pairs.items():
         old=variants(g,u,v)

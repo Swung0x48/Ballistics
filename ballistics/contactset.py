@@ -34,12 +34,13 @@ def minimum_correction(normals, rhs):
     return best
 
 
-def contact_set(obs, center, radius, i, point, normal, void_owner=-1):
+def contact_set(obs, center, radius, i, point, normal, void_owner=-1, void_faces=None):
     """Co-active features at the *same centre*, not nearby future impacts."""
     eps=1.e-7  # same world-space envelope tolerance as swept feature tests
     rows=[(int(i),point,normal,float((center-point)@normal))]
     for c in obs.mesh.contacts(center,radius,eps):
-        if c.triangle==i or c.entity==void_owner and obs.mesh.rail[c.triangle]:
+        if c.triangle==i or (c.entity==void_owner and obs.mesh.rail[c.triangle] and
+                             (void_faces is None or c.triangle in void_faces)):
             continue
         if c.distance>radius+eps or any(np.linalg.norm(c.normal-n)<=eps and abs(c.distance-g)<=eps for _,_,n,g in rows):
             continue

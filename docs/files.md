@@ -46,9 +46,11 @@ python -m ballistics export <地图.nmo> --out data
 | `launch_rule` / `motion` | v10 与旧缓存分开。缓存里的 `motion` 保存助跑直段、闭式飞行、支撑和绕棱／侧翻弧，供机关及变球器守卫求交。风扇暂保存完整内核步内弦。`way` 不提供这些判定的几何。 |
 | `rail_departures` | v8 沿轨串边的脱轨序列：方式、钢轨物体、位置、速度、轨上相对时刻、推力、瞄准粗层点和反解弧长区间；几何端点是零宽区间。缓存 `rail_departure_candidates` 保存映射成功的候选的紧凑行，测量脚本输出同内容的 CSV。 |
 
-v13 另存 `terrain_ball_masks`（`(u,v,kind)` 的木／石／纸球位掩码，未列为三种都能走）；`terrain_uncertain` 单列实测区间内未定的坡／台阶；`terrain_support`、`terrain_lips` 对应共形支撑和实际台阶棱。`launch_runup_adj` 是继承的几何起飞提案，不是分球种滚动图。新版 `launch_rule` 使旧图失效。
+v13 另存 `terrain_ball_masks`（`(u,v,kind)` 的木／石／纸球位掩码，未列为三种都能走）；`terrain_uncertain` 单列实测区间内未定的坡／台阶；`terrain_support`、`terrain_lips` 对应共形支撑和实际台阶棱。`launch_runup_adj` 是继承的几何起飞提案，不是分球种滚动图。v15 的 `terrain_step_checks` 另列分球种的局部台阶候选、棱高、有限棱和理想入棱速度；续行的 `contact_margins` 记录入棱摩擦、承压和圆弧摩擦余量。新版 `launch_rule` 使旧图失效。
 
 v12 的 `g.info["conformal"]` 与粗层图一起缓存：`patches` 保存平面法线、平面常数、原始面编号、公开边和 Shapely XZ 多边形；`face_patch`、`node_patch`、`node_patches` 保存面/落脚点索引（未归入共形路面的节点用 `-1`）；`regions` 按球种保存块 × 滚动区域的多边形和映射节点；`rails` 是 v11 真实轨心直段。重建时另外输出 `<名字>-conformal-candidates.csv`（经过包络核对的瞄准代表，未必飞得过）及 `<名字>-conformal-rail-candidates.csv`（已映射的钢轨续行候选，包括非最快代表）。旧图按 `launch_rule` 失效。
+
+v14 的 `rail_itinerary` 保存按顺序实际承载的钢轨物体。`rail_departures` 中的 `joint` 是目标轨链和直段索引（没有瞄准钢轨时为空）；`source_piece` 是当前拟合直段索引，`clearance` 是原管可豁免的连续 PSI 前缀。`interval` 是对应释放区间沿原直段的弧长范围；链端固定释放时退化为一点。
 
 `g.lanes` 的两个几何字段（v11）：`points` 是原粗层落脚点（用于配对和映射）；`segments` 是 `(N, 3)` 的球心路径折点，相邻两行是一段直线，供捕获、沿轨、接缝、助跑和反解。两个数组的长度不必相同。双轨如果没有由两支管共同形成的有效段，`segments` 可以为空。新 `launch_rule` 会使旧的求解图缓存重建。
 | `segments` / `first_landing_node` | 有闭式续行的边记录首次飞行及后续 `rail`、`floor`、`rim`、`flight`、`release` 片段与首次落点节点；片段含物体、起止球心和速度、推力、PSI、游戏秒及结束原因。`landing_position` 指最终交回粗层的球心。命中同一节点对与球种的不同续行见证可共存于 `variants`。 |

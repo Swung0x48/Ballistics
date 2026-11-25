@@ -336,12 +336,12 @@ class SurfacePaths:
         if not 0.<height<ball.radius:return None
         inertia=inertia_ratio(ball)
         speed=float(body.vel@forward)
-        result=terrain.step_energy(ball,height,speed,lip.forward,inertia,push=push)
+        result=terrain.step_energy(ball,height,speed,lip.forward,inertia,push=push,radius=r)
         if result is None or result[0]<=EPS:return None
         _,crown_speed=result
         theta=math.acos(1-height/r)
         force=terrain.ratio(ball)*ph.GRAVITY*float(push@lip.forward)
-        pivot_speed=max(0.,speed)*(1-height/(ball.radius*(1+inertia)))
+        pivot_speed=max(0.,speed)*(1-height/(r*(1+inertia)))
         energy=(pivot_speed**2,-2*r*ph.GRAVITY/(1+inertia),-2*r*force/(1+inertia))
         path=motion.arc(pivot,r*UP,-r*forward,theta,-theta,np.zeros(3),energy)
         ticks=path.duration(1.)/ph.DT
@@ -361,7 +361,15 @@ class SurfacePaths:
                 return None
         if any(motion.box_hit(path,a,b) is not None for a,b in obs.boxes):return None
         result=ph.State(path.point(1.),crown_speed*forward,ph.rolling_spin(crown_speed*forward,UP,ball.radius))
-        return result,ticks,path
+        material=m.entities[lip.owner] if lip.owner>=0 else {}
+        limits=terrain.step_contact_limits(height,r,force,inertia,pivot_speed,ball.friction*float(material.get('friction',.7)))
+        # An ideal-roll witness is not proof under the original contact
+        # solver when it requires tension/slip or an oblique impact.
+        aligned=np.linalg.norm(body.vel-speed*forward)<=EPS and abs(push@np.array([-forward[2],forward[0]]))<=EPS
+        # Keep the proposal for fine validation, rather than interpreting
+        # the omitted slip/detachment physics as proof of a blocked route.
+        verdict='ideal_step_roll' if aligned and min(limits)>=0. else 'step_contact_unproved'
+        return result,ticks,path,verdict,limits
 
     def floor(self, tf, ball, face, node, body, normal, chosen_push=None, controls=None, clock=0.):
         obs,m = self.obs,self.obs.mesh
@@ -476,8 +484,9 @@ class SurfacePaths:
                 result=self.climb_lip(tf,ball,lip,pivot,out,push,limit-event)
                 if result is None:
                     return Support('step_energy_or_obstacle',out,parts,way)
-                body,ticks,path=result
-                parts.append(segment('step',self.name(lip.face),out,body,ticks,push,'lip_energy',geometry=(path,)))
+                body,ticks,path,verdict,limits=result
+                parts.append(dict(segment('step',self.name(lip.face),out,body,ticks,push,verdict,geometry=(path,)),
+                                  contact_margins=limits))
                 way.append(body.pos); elapsed+=ticks
                 face=lip.face; normal=m.N[face]; returning_push=None
                 continue

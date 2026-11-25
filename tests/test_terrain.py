@@ -103,3 +103,38 @@ def test_slope_carry_returns_down_after_analytic_turn():
     assert r.parts[0]['reason']=='uphill_turn'
     assert r.parts[0]['end_position'][0]>start[0]
     assert r.parts[1]['end_position'][0]<start[0]
+
+
+def test_partial_footprint_and_split_riser_do_not_require_full_edge_coverage():
+    h=.30
+    a,b,c,d,e,f=map(np.asarray,[(8,0,-4),(8,0,4),(8,h,4),(8,h,-4),(8,h/2,-4),(8,h/2,4)])
+    m=mesh([(quad(0,8,-2,2,0)+quad(8,16,-4,4,h)+[(a,b,f),(a,f,e),(e,f,c),(e,c,d)],False)])
+    g=coarse.build(m);s=conformal.build(m);T.rebuild(g,m,s)
+    lips=[lip for xs in g.info['terrain_lips'].values() for lip in xs]
+    assert len(lips)==1
+    assert sorted([lips[0].a[2],lips[0].b[2]])==pytest.approx([-2.02,2.02])
+    assert any(which=='rolling_contact_unproved' and ball=='paper' for (_,_,ball),(which,*_) in g.info['terrain_step_checks'].items())
+    assert not any(which=='static_torque' and ball=='stone' for (_,_,ball),(which,*_) in g.info['terrain_step_checks'].items())
+
+
+def test_nominal_paper_cutoff_and_friction_are_separate():
+    f=np.array([1.,0.]);ball=ph.PAPER;k=.277
+    limit=ball.radius*(1-1/math.hypot(1,T.ratio(ball)))
+    assert limit==pytest.approx(.637,abs=.002)
+    assert T.step_verdict(ball,limit-1e-4,ball.radius,f)==1
+    assert T.step_verdict(ball,limit,ball.radius,f)==0
+    assert T.step_verdict(ball,limit+1e-4,ball.radius,f)==-1
+    force=T.ratio(ball)*ph.GRAVITY
+    assert min(T.step_contact_limits(.03,ball.radius,force,k,0.,.35))>0.
+    assert T.step_contact_limits(.6,ball.radius,force,k,0.,.35)[-1]<0.
+    assert T.step_contact_limits(.6,ball.radius,force,k,0.,.05)[-1]<0.
+    assert T.step_contact_limits(.6,ball.radius,force,k,15.,.35)[1]<0.
+
+
+def test_positive_energy_does_not_imply_available_runup():
+    ball=ph.WOOD; f=np.array([1.,0.]); h=1.45
+    need=T.step_entry_speed(ball,h,f,.4)
+    assert T.step_energy(ball,h,need,f,.4)[0]==pytest.approx(0.)
+    axis=sc.law(ball,np.array([0.,1.,0.]),f).along(np.array([1.,0.,0.]))
+    assert not T.step_runup(axis,0.,.25,need)[1]
+    assert T.step_runup(axis,0.,30.,need)[1]
