@@ -134,11 +134,13 @@ def kind_labels(n: int, roll, tk, allow=None) -> np.ndarray:
 
 def roll_labels(sg):
     """Kind-specific regions of the unguarded rolling graph (also used to prune float exits)."""
-    roll = [[v for v, _c, kind, _e, mask in sg.fwd[u]
-             if kind in ROLL and not mask and (u, v, kind) not in sg.guards] for u in range(sg.n)]
-    masks=getattr(sg, "terrain_masks", {})
-    return kind_labels(sg.n, roll, sg.tk,
-                       lambda k,u,v: masks.get((u,v,"roll"),7)&(1<<k))
+    masks=getattr(sg,"terrain_masks",{}); pairs={}; roll=[[] for _ in range(sg.n)]
+    for u,row in enumerate(sg.fwd):
+        for v,_,kind,_,mask in row:
+            if kind in ROLL and not mask and (u,v,kind) not in sg.guards:
+                if (u,v) not in pairs:roll[u].append(v)
+                pairs[u,v]=pairs.get((u,v),0)|masks.get((u,v,kind),7)
+    return kind_labels(sg.n,roll,sg.tk,lambda k,u,v:pairs[u,v]&(1<<k))
 
 
 class Regions:
@@ -176,6 +178,7 @@ def links_of(sg, R: Regions) -> dict:
     out: dict = {}
     guards = getattr(sg, "guards", {})
     lift_guards = getattr(sg, "lift_guards", {})
+    terrain_masks = getattr(sg,"terrain_masks",{})
     flap_bits = sum(1 << m for m, mc in enumerate(getattr(sg, "mechs", ())) if mc["type"] == "flap")
 
     def add(key, c, u, v):
@@ -192,6 +195,8 @@ def links_of(sg, R: Regions) -> dict:
         for u in np.flatnonzero(R.labs[k] >= 0):
             a = R.of(k, u)
             for v, c, kind, ek, mask in sg.fwd[u]:
+                if not terrain_masks.get((u,v,kind),7)&(1<<k):
+                    continue
                 prices = getattr(sg, "launch_cost", {}).get((u, v)) if kind == "launch" else None
                 if prices is not None:
                     if k not in prices:
@@ -332,6 +337,8 @@ def scan(g, info, sector: int, world, entry_kind: str = "wood", operate_cost: fl
         _SG_CACHE.clear()
         _SG_CACHE.update(key=key, value=state_graph_for(g, info, sector, world, operate_cost, cork=True, without=ov.without))
     sg, state_of = _SG_CACHE["value"]
+    mechanism_host = g
+    g = sg.g
     M = sg.M
     P = sg.g.pos[sg.glob]
     R = Regions(sg.float_roll_labels if sg.float_roll_labels is not None else roll_labels(sg), P)
@@ -357,10 +364,16 @@ def scan(g, info, sector: int, world, entry_kind: str = "wood", operate_cost: fl
                 s0 &= ~(1 << m)
     togo = sg.togo(goal, lock=lock)
     reset = np.array(info["reset_points"][sector - 1], float)
-    u0 = nearest_node(g, togo[s0, :len(g.pos)], reset)
+    if g.info.get('native_geometry'):
+        u0=next((u for u in g.patch_ids(reset,25.) if sg.loc[u]>=0),-1)
+        if u0<0:
+            real=sg.glob[sg.glob<len(g.pos)]
+            u0=int(real[np.argmin(np.linalg.norm(g.pos[real]-reset,axis=1))])
+    else:
+        u0=nearest_node(g,togo[s0,:len(g.pos)],reset)
     # no place by the reset point reaches the goal in this state: start at the reset point all the same, not at some
     # place far off that does (which would make a way that the ball under the reset point does not have)
-    if np.linalg.norm(g.pos[u0] - reset) > 3.0 or sg.loc[u0] < 0:
+    if (not g.info.get('native_geometry') and np.linalg.norm(g.pos[u0] - reset) > 3.0) or sg.loc[u0] < 0:
         real = sg.glob[sg.glob < len(g.pos)]
         u0 = int(real[np.argmin(np.linalg.norm(g.pos[real] - reset, axis=1))])
     l0 = int(sg.loc[u0])
@@ -378,7 +391,7 @@ def scan(g, info, sector: int, world, entry_kind: str = "wood", operate_cost: fl
                 goal_regions=sorted(R.of(k, gl) for k in range(3) if gl >= 0 and R.labs[k][gl] >= 0),
                 mechs=[dict(name=m["name"], type=m["type"]) for m in sg.mechs], entry_kind=entry_kind)
     if sg.pendulums or sg.timed:
-        res["_placement_context"] = (info, world, operate_cost, ov, g)
+        res["_placement_context"] = (info, world, operate_cost, ov, mechanism_host)
     return res
 
 
@@ -594,8 +607,6 @@ def describe(key, lang="en", ride=None) -> str:
             "gap": ("break (gap)", "断点(gap)"), "bridge": ("break (bridge)", "断点(bridge)"),
         }
         desc = tr(*text.get(kind, (kind, kind)))
-        if kind == "roll" and t == k:
-            desc = tr("roll down (one way)", "单向滚下")
         if mask:
             desc += tr(", requires bits in mask %d", "，要机关位 %d") % mask
         if off:
@@ -688,7 +699,10 @@ def _r1(v):
 def summary_regions(res: dict) -> dict:
     """Step 1 as plain data: every region of the sector, for each kind of ball."""
     R = res["R"]
+    native=getattr(res.get('sg'),'g',None)
+    node_geometry=native.info.get('node_geometry','coarse_place') if native is not None else 'coarse_place'
     return dict(sector=res["sector"], entry_kind=res["entry_kind"], mechanisms=res["mechs"],
+                node_geometry=node_geometry,
                 transformers=[dict(name=t["name"], kind=t["kind"], pos=_r1(t["pos"])) for t in res["transformers"]],
                 start_region=R.name(res["start"][0]), goal_regions=[R.name(r) for r in res["goal_regions"]],
                 regions={KINDS[k]: {d["name"]: dict(places=d["places"], centre=_r1(d["centre"]), lo=_r1(d["lo"]), hi=_r1(d["hi"]))
@@ -724,7 +738,7 @@ def route_steps(res):
             raise ValueError('regional route endpoints are not joined by the rolling component')
         path=[]; v=goal
         while v!=here:
-            u,kind=prev[v]; path.append(dict(source='coarse_roll' if kind=='roll' else kind,
+            u,kind=prev[v]; path.append(dict(source=_roll_source(sg,u,v,k) if kind in ROLL and sg.g.info.get('native_geometry') else 'coarse_roll' if kind=='roll' else kind,
                 edge_type=kind, ball=KINDS[k], region=R.name(r), at=[P[u].tolist(),P[v].tolist()],
                 anchors=[int(sg.glob[u]),int(sg.glob[v])]))
             v=u
@@ -738,6 +752,67 @@ def route_steps(res):
         here,r,k,bits=v,nr,nk,nb
     inside(int(sg.loc[res['goal']]))
     return result
+
+
+def _roll_source(sg,u,v,k):
+    if sg is None or not sg.g.info.get('native_geometry'):
+        return 'coarse_roll'
+    a,b=int(sg.glob[u]),int(sg.glob[v]); rows=sg.g.info.get('block_roll_proofs',{}).get((a,b),())
+    return next((r['rule'] for r in rows if r['ball']==KINDS[k]),'block_roll')
+
+
+def _connection_geometry(res, key, link):
+    """Display-only path. No representative-to-representative fallback on blocks."""
+    sg = res['sg']; u,v = link['at']
+    if not sg.g.info.get('native_geometry'):
+        return np.asarray(res['places'][[u,v]]), None
+    if key[0]=='mech':
+        ends = getattr(sg,'mechanism_route_anchors',{}).get((u,v,key[4],key[3],key[5]),())
+        return np.asarray(ends), None
+    if key[0]!='plain':
+        return np.empty((0,3)), None
+    kind,k = key[3],key[5]
+    a,b = map(int,sg.glob[[u,v]])
+    row = getattr(sg,'route_evidence',{}).get((u,v,k),{}) if kind=='launch' else {}
+    proof = next((p for p in sg.g.info.get('block_roll_proofs',{}).get((a,b),())
+                  if p['ball']==KINDS[k]), {}) if kind in ROLL else {}
+    curves = row.get('motion',()) or proof.get('motion',())
+    reverse=proof.get('reverse',False)
+    if curves:
+        # Sampling is for rasterization only; the proof is the original curve.
+        pts = np.vstack([piece.point(t) for piece in curves
+                         for t in np.linspace(0.,piece.end, max(2,min(160,int(piece.end)+1)) if piece.kind!='arc' else 25)])
+        return pts[::-1] if reverse else pts, row.get('route_type')
+    if proof and proof.get('span') is not None:
+        return np.asarray(proof['span'],float).reshape(-1,3).mean(axis=0)[None], None
+    if row and 'way' in row:
+        return np.asarray(row['way']), row.get('route_type')
+    return np.empty((0,3)), None
+
+
+def _describe_connection(res,key,link,lang='en',geometry=None):
+    desc=describe(key,lang,ride=link.get('elevator'))
+    if key is None or 'sg' not in res or not res['sg'].g.info.get('native_geometry'):
+        return desc
+    if key[0]=='plain' and key[3] in ('roll','launch'):
+        if geometry is None:
+            # Exact endpoints are sufficient for the direction label.
+            sg=res['sg']; u,v=link['at']; a,b=map(int,sg.glob[[u,v]])
+            row=getattr(sg,'route_evidence',{}).get((u,v,key[5]),{}) if key[3]=='launch' else {}
+            proof=next((p for p in sg.g.info.get('block_roll_proofs',{}).get((a,b),()) if p['ball']==KINDS[key[5]]),{})
+            curves=proof.get('motion',())
+            pts=np.array((curves[0].point(0.),curves[-1].point(curves[-1].end))) if curves else ()
+            geometry=(pts[::-1] if proof.get('reverse') else pts,row.get('route_type'))
+        pts,route_type=geometry; zh=lang=='zh'
+        if route_type=='supported_drop':
+            desc=desc.replace('launch','drop',1) if not zh else desc.replace('起飞','下落',1)
+        if key[3]=='roll':
+            rise=pts[-1][1]-pts[0][1] if len(pts)>1 else 0.
+            if abs(rise)>.02:
+                desc=desc.replace('roll','roll uphill' if rise>0 else 'roll downhill',1) if not zh else desc.replace('滚','爬坡' if rise>0 else '下坡滚动',1)
+            if key[5]==key[6] and not any(('plain',key[2],key[1],kind,*key[4:]) in res['links'] for kind in ROLL):
+                desc+='；反向未证实' if zh else '; reverse not certified'
+    return desc
 
 
 def summary_links(res: dict, *, only_way=False) -> dict | list:
@@ -764,15 +839,15 @@ def summary_links(res: dict, *, only_way=False) -> dict | list:
             return dict(source=status,edge_type=row.get('route_type',kind),at=at,witness_status=status,
                         reference=row.get('retained_reference'),support_patches=row.get('support_patches'),
                         witness_at=[_r1(row['launch_position']),_r1(row['landing_position'])] if 'launch_position' in row else None)
-        return dict(source='coarse_roll' if kind=='roll' else kind,edge_type=kind,at=at)
+        return dict(source=_roll_source(sg,u,v,key[5]) if kind in ROLL and sg.g.info.get('native_geometry') else 'coarse_roll' if kind=='roll' else kind,edge_type=kind,at=at)
     way=[dict(region=R.name(r), kind=KINDS[k], mechanism_bits=b, by=what,
-              link=describe(key, ride=res['links'].get(key, {}).get('elevator')),
+              link=_describe_connection(res,key,res['links'].get(key, {})),
               **launch_proof(key,res['links'].get(key))) for r,k,b,what,key in res['path']]
     if only_way:
         return way
     for key, e in sorted(res["links"].items(), key=lambda kv: (kv[0][1], kv[0][2], str(kv[0]))):
         ride = e.get("elevator")
-        desc = describe(key, ride=ride)
+        desc = _describe_connection(res,key,e)
         if ride and not ride["flight"]:
             flights = [r["gap"] for r in e["elevator_exits"].values() if r["flight"]]
             if flights:
@@ -782,6 +857,7 @@ def summary_links(res: dict, *, only_way=False) -> dict | list:
                           is_break=bool(key[0] == "plain" and key[3] in BREAK), big=bool(min(res["regions"][key[1]]["places"], res["regions"][key[2]]["places"]) >= BIG)))
     return dict(sector=res["sector"], entry_kind=res["entry_kind"], exit_kind=res.get("exit_kind"), start_region=R.name(res["start"][0]), goal_regions=[R.name(r) for r in res["goal_regions"]],
                 fewest_breaks=res["breaks"], breaks_by_entry_and_exit_kind=res.get("options"),
+                node_geometry=getattr(getattr(res.get('sg'),'g',None),'info',{}).get('node_geometry','coarse_place'),
                 way=way,
                 coarse_plan=[dict(region=R.name(p["region"]) if p["region"] >= 0 else None, kind=p["kind"], mechanism_bits=p["bits"], by=p["how"], at=_r1(p["at"]))
                              for p in res["plan"]],
@@ -1583,9 +1659,15 @@ def _fill(v, res, regions, alpha):
     order = sorted(regions, key=lambda r: -res["regions"][r]["places"])
     for i, r in enumerate(order):
         c = PALETTE[i % len(PALETTE)]
-        for p in res["places"][res["R"].members(r)]:
-            x, y = v.P(p[0], p[2])
-            v.pen.rectangle((x - 2, y - 2, x + 2, y + 2), fill=c + (alpha(r),))
+        sg=res['sg']; native=sg.g.info.get('native_geometry')
+        if native:
+            surface=sg.g.info['conformal']
+            faces=[t for u in sg.glob[res['R'].members(r)] if u<len(surface.patches) for t in surface.patches[u].faces]
+            for tri in sorted(surface.triangles[faces],key=lambda t:t[:,1].mean()):
+                v.pen.polygon([v.P(p[0],p[2]) for p in tri],fill=c+(alpha(r),))
+        else:
+            for p in res["places"][res["R"].members(r)]:
+                x,y=v.P(p[0],p[2]);v.pen.rectangle((x-2,y-2,x+2,y+2),fill=c+(alpha(r),))
 
 
 def _names(v, res, regions, least: int):
@@ -1629,26 +1711,40 @@ def draw_regions(mesh, res: dict, path, title: str = ""):
     v.save(path)
 
 
-def draw(mesh, res: dict, path, title: str = ""):
-    """Step 2: the regions of the entry kind faint, the links between them as thin lines, and the way with the fewest
-    breaks: the regions it goes through (of whichever kind) filled and outlined, each of its links a numbered arrow
-    from where it leaves one region to where it lands in the next. Within a region nothing is drawn: rolling gets the
-    ball anywhere in it."""
+def draw(mesh, res: dict, path, title: str = "", *, overlays=()):
+    """Show selected links, original triangle regions and optional record overlays.
+
+    Draw checked motion to its actual endpoint. Where only an attachment
+    feature or an unresolved anchor is known, mark it without a travel arrow.
+    """
     from .render import INK, SURFACE, _font
     P, R = res["places"], res["R"]
-    v = _view(mesh, res, title)
+    extents=[q for entry in overlays for q in entry['parts'] if len(q)]
+    v = _view(mesh, res, title, np.vstack((P,*extents)) if extents else None)
     on_way = list(dict.fromkeys(p[0] for p in res["path"]))
+    native=res['sg'].g.info.get('native_geometry')
+    if native and not on_way:
+        on_way=list(dict.fromkeys(r for r in (res['start'][0],*res['goal_regions']) if r in res['regions']))
     back = [r for r, d in res["regions"].items() if d["kind"] == res["entry_kind"] and d["places"] >= BIG and r not in on_way]
     _fill(v, res, back + on_way, lambda r: 220 if r in on_way else 70)
-    for r in on_way:                                       # the regions of the way, outlined
+    for r in ([] if res["sg"].g.info.get("native_geometry") else on_way):  # legacy place rim only
         for p in _rim(P[R.members(r)]):
             x, y = v.P(p[0], p[2])
             v.pen.rectangle((x - 3, y - 3, x + 3, y + 3), fill=INK + (255,))
-    shown = set(back) | set(on_way)
-    for key, e in res["links"].items():
-        if key[1] not in shown or key[2] not in shown or (key[0] == "plain" and key[3] in BREAK):
-            continue
-        v.halo_line([P[e["at"][0]], P[e["at"][1]]], _link_colour(key), 2, ring=1, alpha=110)
+    if native:
+        from shapely import union_all
+        from .conformal import polygon_parts
+        sg=res['sg']; surface=sg.g.info['conformal']
+        for r in on_way:
+            area=union_all([surface.patches[u].polygon for u in sg.glob[R.members(r)] if u<len(surface.patches)])
+            for poly in polygon_parts(area):
+                for ring in (poly.exterior,*poly.interiors):
+                    v.line([(x,0.,z) for x,z in ring.coords],INK,width=2)
+    for entry in overlays:
+        for part in entry['parts']:
+            if len(part)>1:v.halo_line(part,entry['colour'],4,ring=1,alpha=170)
+        for item in entry.get('pickups',()):
+            v.dot(item['position'],item['label'],colour=entry['colour'],r=5,size=16)
     _trafos(v, res)
     _names(v, res, back, 300)
     _names(v, res, on_way, 0)
@@ -1659,11 +1755,21 @@ def draw(mesh, res: dict, path, title: str = ""):
             continue
         n += 1
         e = res["links"][key]
-        a, bp = P[e["at"][0]], P[e["at"][1]]
-        _arrow(v, a, bp, _link_colour(key), 6)
+        geometry = _connection_geometry(res,key,e)
+        points, _ = geometry
+        bp = points[-1] if len(points) else P[e['at'][1]]
+        if len(points)>1 and key[0]!='mech':
+            v.halo_line(points, _link_colour(key), 6, ring=1)
+            tip = next((p for p in reversed(points[:-1])
+                        if np.linalg.norm((bp-p)[[0,2]]) > .1),None)
+            if tip is not None:
+                _arrow(v, tip, bp, _link_colour(key), 6)
+        else:
+            x0,y0=v.P(bp[0],bp[2]);v.pen.ellipse((x0-4,y0-4,x0+4,y0+4), fill=_link_colour(key)+(255,))
         x, y = v.P(bp[0], bp[2])
         x, y = x + 18, y - 18
-        rows.append("%d　%s → %s　%s" % (n, R.name(key[1], "zh"), R.name(key[2], "zh"), describe(key, "zh", ride=res["links"][key].get("elevator"))))
+        rows.append('%d　%s → %s　%s' % (n,R.name(key[1],'zh'),R.name(key[2],'zh'),
+                     _describe_connection(res,key,e,'zh',geometry)))
         while any(abs(x - qx) < 30 and abs(y - qy) < 30 for qx, qy in discs):
             y += 32
         discs.append((x, y))
@@ -1673,8 +1779,13 @@ def draw(mesh, res: dict, path, title: str = ""):
     sg = res["sg"]
     v.dot(sg.g.pos[res["start_place"]], "起点", colour=(208, 59, 59))
     v.dot(sg.g.pos[res["goal"]], "目标", colour=(20, 28, 40))
-    v.legend([(LINK["launch"], "起飞"), (LINK["drop"], "下落"), (LINK["step"], "台阶"), (LINK["lift"], "风扇上升"), (LINK["mech"], "机关"),
-              (LINK["transform"], "变球"), ((20, 28, 40), "断点"), (INK, "黑框：走法经过的区域；号码：它的连接（列在图下）")])
+    legend=[(LINK["launch"], "起飞"), (LINK["drop"], "下落"), (LINK["step"], "台阶"), (LINK["lift"], "风扇上升"), (LINK["mech"], "机关"),
+              (LINK["transform"], "变球"), ((20, 28, 40), "断点"), (INK, "黑框：走法经过的区域；号码：它的连接（列在图下）")]
+    if overlays:
+        legend=legend[:-1]+[(e['colour'],e['label']) for e in overlays]+[(INK,'编号见下；圆点为吃球')]
+    v.legend(legend)
+    if native and not res['path']:
+        rows.append('本节块图没有到终点的路线；彩线为纪录。')
     v.save(path)
     _list_under(path, rows)
 

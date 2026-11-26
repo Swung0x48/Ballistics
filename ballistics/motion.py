@@ -32,7 +32,8 @@ class Piece(NamedTuple):
         if self.kind=='rolling':return self.p+cf.RollingLaw(self.b,self.loss).at(self.v,t)[0]
         start,turn,axis,c,a,b,initial = self.arc
         z=start+turn*t
-        return self.p+self.v*math.cos(z)+self.b*math.sin(z)+axis*self.axial(t)
+        point=self.p+self.v*math.cos(z)+self.b*math.sin(z)
+        return point+axis*self.axial(t) if np.any(axis) else point
 
     def duration(self,t):
         start,turn,_,energy,a,b,_ = self.arc
@@ -64,6 +65,9 @@ class Piece(NamedTuple):
                     if math.ceil((x-peak)/(2*math.pi))<=math.floor((y-peak)/(2*math.pi)):
                         if sign>0:hi[j]=math.hypot(s,t)
                         else:lo[j]=-math.hypot(s,t)
+            if not np.any(axis):
+                base=n@self.p
+                return base+lo,base+hi
             coef=n@axis
             ya,yb = coef*self.axial(a),coef*self.axial(b)
             low_axis,high_axis=np.minimum(ya,yb),np.maximum(ya,yb)

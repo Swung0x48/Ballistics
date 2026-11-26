@@ -149,7 +149,8 @@ def _lip_track(tf,ball,patch,obs,f,a,b,*,bend=None,on_release=None, key_index=No
     if why!='land' or flight<=EPS:return None,'air_'+why
     all_ticks=ticks+rim.seconds/ph.DT+flight
     geom=(motion.rolling(start,law.impulse,law.loss,ticks),rim.motion(),*(tf.air_geometry(ball,p,k,t) for p,k,t in air.parts))
-    return dict(face=int(face),source_face=int(f),origin=origin,position=at,launch=st.pos,velocity=st.vel,
+    mode = 'supported_drop' if st.vel[1] <= 0. and at[1] < st.pos[1] else 'lip_flight'
+    return dict(mode=mode,face=int(face),source_face=int(f),origin=origin,position=at,launch=st.pos,velocity=st.vel,
                 flight_ticks=flight,ticks=all_ticks,key_table=((math.ceil(all_ticks),push.copy()),),
                 motion=geom,contacts=air.contacts,runup=distance,rim_ticks=rim.seconds/ph.DT), 'first_support'
 
@@ -175,6 +176,24 @@ def release_features(surface,layout):
                 angle=min(math.acos(float(np.clip(n@p.normal,-1.,1.))) for n in ns)
                 out[k].append((f,a,b,angle))
     return out
+
+
+def rail_end_keys(ball, normal, span, tip_vectors):
+    """A literal aim per nearby finite rail end, plus the ordinary run-up.
+
+    Only used to propose a representative; outbound thrust has to advance
+    out of the source chart. Aim by cosine, never by a sampled flight.
+    """
+    out=sc.unit(np.cross(span,normal))
+    force=np.array([sc.law(ball,normal,k).impulse for k in KEYS])
+    adm=np.flatnonzero(force@out>EPS)
+    if not len(adm):return (None,)
+    heads=np.array([sc.unit(force[i])[XZ] for i in adm])
+    chosen={int(adm[np.argmax(force[adm]@out)])}
+    for tip in tip_vectors:
+        if tip@out<=EPS or np.linalg.norm(tip[XZ])<=EPS:continue
+        chosen.add(int(adm[np.argmax(heads@tip[XZ])]))
+    return tuple(sorted(chosen))
 
 
 def _terrain_speed(ball,normals):
@@ -230,6 +249,8 @@ def _build_index(surface,layout,chains,ball):
 
 
 def _mapping(g,layout,surface):
+    if g.info.get('native_geometry'):
+        return lambda patch,pos: int(patch) if 0<=patch<len(surface.patches) else -1
     # Ground graph membership is consulted only after an actual trajectory.
     by_patch=defaultdict(list)
     for i,ks in enumerate(g.info.get('terrain_support',())):
@@ -262,6 +283,12 @@ def add(tf, g,obs,layout, *, log=lambda *_:None, target_priorities=(), rail_outl
     """
     surface=g.info['conformal']; t0=perf_counter(); chains,parts=chain_nodes(layout)
     features=release_features(surface,layout)
+    # A neighbouring rail end can receive a released ball when the
+    # same-height bearing join cannot. Try literal thrust directions only
+    # in the physical end neighbourhood, not over the whole mesh.
+    rail_ends=np.array([c for lane in g.lanes if len(lane['segments'])>1
+                       for c in lane['segments'][[0,-1]]]).reshape(-1,3)
+    rail_index=cKDTree(rail_ends) if g.info.get('native_geometry') and len(rail_ends) else None
     from .targetinverse import Priorities
     priority=Priorities(layout,surface,g,target_priorities)
     stats=Counter(); candidates=defaultdict(set); witnesses=defaultdict(list); envelope={}; example=None; momentum_seeds=[]
@@ -289,16 +316,27 @@ def add(tf, g,obs,layout, *, log=lambda *_:None, target_priorities=(), rail_outl
                     # Prioritized target polygons also see the other true
                     # input combinations. Maximizing outward acceleration
                     # alone can aim the launch outside a finite landing strip.
-                    keys=(None,) if inverse is None else range(len(KEYS))
+                    aims=()
+                    if rail_index is not None and inverse is None:
+                        span=b-a; mid=(a+b)*.5+r*p.normal
+                        near=rail_index.query_ball_point(mid,2*r+np.linalg.norm(span)*.5)
+                        if near:
+                            x=rail_ends[near]-(a+r*p.normal)
+                            t=np.clip(x@span/(span@span),0.,1.)
+                            delta=x-t[:,None]*span
+                            aims=rail_ends[np.asarray(near)[np.einsum('ij,ij->i',delta,delta)<=(2*r)**2]]-mid
+                    nearby=len(aims)>0
+                    keys=range(len(KEYS)) if inverse is not None else (rail_end_keys(ball,p.normal,b-a,aims) if nearby else (None,))
                     for key_index in keys:
                         for full_runway in ((False,) if inverse is None else (False,True)):
                             result,why=_lip_track(tf,ball,p,obs,f,a,b,bend=bend,on_release=inverse,key_index=key_index,pressure_family=inverse is not None,full_runway=full_runway);stats[why]+=1
                             if result is None:continue
                             result['source_patch']=k
+                            if nearby and obs.mesh.rail[result['face']]:result['inlet_kind']='finite_lip_first_contact'
                             momentum_seeds.append((node,result))
                             k2=int(surface.face_patch[result['face']]); other=layout.patch_nodes[name].get(k2)
                             if other is None:
-                                stats['unsupported_motion_transfer']+=1
+                                stats['rail_end_lip_first_contact' if nearby and obs.mesh.rail[result['face']] else 'unsupported_motion_transfer']+=1
                                 continue
                             if other==node:continue
                             result.update(source_patch=k,target_patch=k2)
@@ -358,8 +396,13 @@ def add(tf, g,obs,layout, *, log=lambda *_:None, target_priorities=(), rail_outl
     for (a,b),rows in crest_carry.items():
         witnesses[a,b].extend(rows);candidates[a].add(b)
     outlet_targets=sharedrail.outlet_priorities(g,chains,(*target_priorities,*rail_outlet_targets))
+    crown_seeds=()
+    if g.info.get('native_geometry'):
+        from . import crowninlet
+        crown_seeds=crowninlet.seeds(tf,g,obs,layout,features,by_ball,stats)
+        log('crown inlet inverse: %d checked rail contacts' % len(crown_seeds))
     rail_witnesses,rail_stats,rail_entries,rail_example=sharedrail.wave(
-        tf,g,obs,layout,chains,(*momentum_seeds,*crest_rail,*priority.rail_seeds),log=log,targets=outlet_targets)
+        tf,g,obs,layout,chains,(*momentum_seeds,*crest_rail,*priority.rail_seeds,*crown_seeds),log=log,targets=outlet_targets)
     outlet_rows,outlet_attempts,outlet_stats=sharedrail.inverse_outlets(tf,g,obs,layout,chains,outlet_targets)
     for pair,rows in outlet_rows.items():rail_witnesses.setdefault(pair,[]).extend(rows)
     rail_stats['outlet_inverse']=outlet_stats
@@ -380,8 +423,16 @@ def add(tf, g,obs,layout, *, log=lambda *_:None, target_priorities=(), rail_outl
                                        momentum_entries=entries,momentum_example=momentum_example,target_inverse=priority.attempts,
                                        rolling=rolling,rolling_pending=rolling_pending,rail_witnesses=dict(rail_witnesses),
                                        rail_entries=rail_entries,rail_example=rail_example,outlet_attempts=outlet_attempts)
-    from . import routeprojection
-    projection = routeprojection.attach(tf, g)
+    if g.info.get('native_geometry'):
+        from . import blockroute
+        log('block offset contact certificates: checking finite features')
+        blockroute.attach(g,layout,obs=obs)
+        log('block offset contact certificates: %d checked ball-feature pairs' %
+            sum(map(len,g.info.get('block_offset_certificates',{}).values())))
+        projection={}
+    else:
+        from . import routeprojection
+        projection = routeprojection.attach(tf,g)
     detail=dict(stats,rail_nodes_before=len(parts),rail_nodes_after=len(chains),road_nodes=len(layout.roads),
                 candidate_edges=sum(map(len,candidates.values())),witness_edges=len(witnesses),projected_edges=len(g.info['launches']),route_projection=projection,
                 expanded_abstract_labels=len(expanded),covered_abstract_labels=covered,live_joint_entrance_families=len(entries),momentum=momentum_stats,rolling=rolling_stats,crest_momentum=crest_stats,rail=rail_stats,inverse_attempts=len(priority.attempts),inverse_witnesses=len(priority.rows),seconds=perf_counter()-t0)

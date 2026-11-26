@@ -234,7 +234,7 @@ def _held(mesh: Mesh, contacts) -> bool:
     return horizontal_balance(H)
 
 
-def build(mesh: Mesh, avoid=(), radius: float = BALL_R, log=lambda *a: None) -> Graph:
+def build(mesh: Mesh, avoid=(), radius: float = BALL_R, log=lambda *a: None, *, lane_metadata=None) -> Graph:
     """avoid: [(x, y, z, distance)] places the ball must stay out of (see `keep_out`)."""
     floor = ~mesh.rail
     lo = np.minimum(np.minimum(mesh.A, mesh.B), mesh.C)[floor]
@@ -282,7 +282,7 @@ def build(mesh: Mesh, avoid=(), radius: float = BALL_R, log=lambda *a: None) -> 
             pos.append((x, y, z))
     n_floor = len(pos)
     log("rest places: %d over %d columns, %d of them moved onto a border" % (n_floor, len(X), snapped))
-    lns = rails.lanes(mesh.tubes, radius)
+    lns = rails.lanes(mesh.tubes, radius) if lane_metadata is None else lane_metadata
     kind, lane_of, chains = [0] * n_floor, [-1] * n_floor, []
     for li, l in enumerate(lns):
         ids = list(range(len(pos), len(pos) + len(l["points"])))
@@ -410,7 +410,13 @@ class Relaxed:
         fwd = [list(a) for a in g.adj]
         have = [set(e[0] for e in a) for a in g.adj]
         grid: dict = {}
+        # Extra crown charts are not coarse break anchors; only their
+        # certified motion edges participate. Keep the existing groove and
+        # floor diagnostic breaks unchanged.
+        charts=g.info.get('rail_chart_nodes',{})
+        extra={i for i,(_,kind,_) in charts.items() if kind in ('left_crown','right_crown')}
         for i, p in enumerate(P):
+            if i in extra:continue
             grid.setdefault((int(p[0] // near), int(p[1] // near), int(p[2] // near)), []).append(i)
         for (a, b, c), ids in grid.items():
             other = [k for da in (-1, 0, 1) for db in (-1, 0, 1) for dc in (-1, 0, 1) for k in grid.get((a + da, b + db, c + dc), ())]
@@ -425,6 +431,7 @@ class Relaxed:
         nf = g.info["rest_places"]
         edge[:nf] = g.info["edge_node"][:nf]
         edge[nf:] = True
+        if extra:edge[list(extra)]=False
         E = np.flatnonzero(edge)
         for lo in range(0, len(E), 512):
             chunk = E[lo:lo + 512]

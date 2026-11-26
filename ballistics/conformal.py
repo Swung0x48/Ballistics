@@ -85,7 +85,7 @@ def build(mesh, rails=()):
         graph[i].add(j); graph[j].add(i)
     patches=[]
     triangles_2d=tm.triangles[:,:,XZ]
-    for component in sorted(components,key=lambda x: int(x.min())):
+    for component in sorted(components,key=lambda x: int(min(x))):
         for seed in sorted(component):
             source=eligible[seed]
             if face_patch[source]>=0:continue

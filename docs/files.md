@@ -231,3 +231,22 @@ python -m ballistics route --map data/Level_02-map.json --results data --level 2
 - 还没有的：段开始时机关应处的状态（`states`）、分支、SR 和 HS 的数，都排在后面（见计划）。
 
 `paper_impact_cone` 是未证实的共形路面候选：`verified=false`；`impact_cone` 带接触类别、角度、速度外包和代表目标。绘图线不是经碰撞扫掠验证的后续轨迹。
+
+- `ballistics/blockroute.py`：共形优先的块几何身份、站位多边形、证书边登记、旧共享证据保留及机关端点桥接。
+- `tests/test_v36.py`：站位收缩、管顶回碰切向速度、旧证据留存和机关桥不复制普通滚动的回归。
+- `ballistics/routeprojection.py` 保留用于旧版和诊断；新区域选路不经该模块。
+
+- `ballistics/blockcontacts.py`：有限共边之外的球心偏置证书，区分公共顶点、偏置面重叠与未定。
+- `tests/test_v37.py`：顶点与重叠面连通、逐特征净空、坡顶飞行实际落点及钢轨的球种分量。
+
+闭式测量脚本另含整关计时、旧选中路线逐边复现、钢轨入口诊断和纪录叠图；这些诊断不向生产图注入旧网格证据。`tests/test_v38.py` 覆盖拟合面离棱、固定顶点曲线界和滚动方向标注。
+
+`ballistics/railinlet.py` 用有限路面偏置区间和轨端圆环生成经原网格检查的入口；`tests/test_v39.py` 覆盖区间剪裁及到不了下一轨环时的有限整数换键。闭式测量脚本还包含轨端衔接的离线纪录对照。
+
+`ballistics/railstatic.py` 检查共形钢轨的准静态承载、接头、进出轨和零速出口。`tests/test_v40.py` 覆盖侧向余量、双管承载、有限接头和净空的解析区间。
+
+`ballistics/railtransition.py` 求有限路面棱偏置圆柱与轨线的交点，检查靠近段、绕棱及偏侧管顶到主承载线的连续承载。`tests/test_v41.py` 覆盖有限圆柱根和原路径反向。闭式测量脚本包含端环、护轨与路面剖面，以及原版纪录的原网格净距对照。
+
+- `ballistics/crowncontrol.py`：走单轨的截面事件反解、整数换键、独立单管截面与轨迹净空复核。
+- `ballistics/crowninlet.py`：有限轨端的离唇助跑和短飞入口反解。
+- `tests/test_v42.py`：管顶转向、反解入口、真实按键表回归测试。

@@ -107,7 +107,13 @@ def _trace(tf,paths,ball,dep,key,clock,*,rail_arrival=False,diagnostic=None,flig
                           trajectory=(*[x for r in dep.pieces for x in r['motion']],
                                       *(tf.air_geometry(ball,a,k,n) for a,k,n in q.get('air_parts',()))))
     if q['reason']!='land':return None,'rail_'+q['reason']
-    if not dep.pieces and dep.kind!='rail_rebound':return None,'rail_empty_ride'
+    if not dep.pieces and dep.kind!='rail_rebound':
+        # A checked bearing can lose pressure at the entrance or a key
+        # boundary. There is no positive-length rolling prefix in this
+        # case, but a strictly later swept contact is still a flight.
+        if not (dep.kind=='crown_pressure' and dep.source.crown
+                and dep.source.crown.get('supported') and q['ticks']>EPS):
+            return None,'rail_empty_ride'
     if q['ticks']<=EPS:
         if paths.obs.mesh.rail[q['face']]:
             joined=_rail_join(paths,ball,dep,q) if rail_arrival else None
@@ -298,7 +304,7 @@ def wave(tf,g,obs,layout,chains,seeds,*,log,targets=None):
     paths=railride.RailPaths(g,obs,SimpleNamespace(near=near))
     balls={b.name:b for b in ph.BALLS.values()}
     targets=targets or {}
-    def run(src,ball,seed,c,key,interval,kind,relay=False,next_key=None,history=frozenset(),steered=False):
+    def run(src,ball,seed,c,key,interval,kind,relay=False,next_key=None,history=frozenset(),steered=False,feedback=False):
         nonlocal example
         chart=chart_station(paths,c)
         if chart in history:
@@ -318,10 +324,10 @@ def wave(tf,g,obs,layout,chains,seeds,*,log,targets=None):
             return ((switch-when,key),) if next_key is not None and when<switch-EPS else ((math.inf,following),)
         target_crown=(paths.lanes[c.lane].axis is not None
                       and any(x.ball==src.ball and x.chain==paths.lanes[c.lane].parent for x in targets))
-        if target_crown:
+        if target_crown or (feedback and paths.lanes[c.lane].axis is not None):
             entry.update(crown_events=[],supported_track=[])
             departures=paths.walk_crown(tf,ball,c,controls,seed['ticks'],diagnostics=entry['crown_events'],
-                                        supported_track=entry['supported_track'])
+                                        supported_track=entry['supported_track'],steering_key=key if feedback else None)
         else:
             departures=paths.walk(tf,ball,c,controls=controls,clock=seed['ticks'],search_side=False,require_groove_stability=True)
         # A real rebound is a separate branch with the already computed
@@ -333,17 +339,60 @@ def wave(tf,g,obs,layout,chains,seeds,*,log,targets=None):
         def trial_controls():
             for dep in departures:
                 yield dep,None
-                if nominated and not steered and next_key is None and dep.pieces and dep.kind in (
+                if nominated and feedback and dep.kind!='crown_twin':
+                    # The polygon inverse proposes one literal flight key
+                    # per target slice; the normal first-contact sweep
+                    # still decides whether that proposed target is reached.
+                    from .targetinverse import polygon_slice
+                    from . import runfamily
+                    tick=seed['ticks']+dep.tick; wait=math.ceil(tick)-tick
+                    body=dep.body
+                    if wait>EPS:
+                        dp,vel=cf._motion(wait,body.vel,cf.air_impulse(ball,push=dep.push),ball.lin_damp*ph.DT)
+                        body=ph.State(body.pos+dp,vel,body.omega)
+                    physical=paths.lanes[dep.source.lane].parent
+                    options={k for rail,ks in targets.items() if rail.chain==physical and rail.ball==ball.name for k in ks}
+                    seen_keys={tuple(dep.push)}
+                    for k in sorted(options):
+                        result=polygon_slice(tf,ball,body,surface.patches[k])
+                        if result is None:continue
+                        table=runfamily.literal_schedule(((1.,result[2]),))
+                        if not table:continue
+                        push=table[0][1]; control=tuple(push)
+                        if control not in seen_keys:
+                            seen_keys.add(control);stats['crown_outlet_inverse_keys']+=1
+                            yield dep,push
+                if nominated and not feedback and not steered and next_key is None and dep.pieces and dep.kind in (
                         'crown_pressure','crown_open','convex','chain_end'):
                     from . import supportededges as se
                     for second in (*se.KEYS,np.zeros(2)):
                         if not np.array_equal(second,following):yield dep,second
+        if (g.info.get('native_geometry') and not feedback and not relay and next_key is None
+                and seed.get('source_patch',-1)>=0 and paths.line_for(c.lane) in ('groove','single')):
+            # Preserve the independently checked entrance for routing; the
+            # launch prefix and its first land are not new simulated motion.
+            # Only publish if this arrival actually gives a supported run.
+            from itertools import tee
+            departures, certificate = tee(departures)
+            runup=next((d for d in certificate if any(p.get('ticks',0.)>EPS for p in d.pieces)),None)
+            if runup is not None:
+                lane=paths.lanes[c.lane]; target=Rail(ball.name,lane.parent,lane.line,-1,c.direction)
+                if target in chains:
+                    out[src,target].append(dict(seed,target_patch=-1,position=c.body.pos,rail_parts=(),mode='supported_rail_inlet'))
         for dep, flight_key in trial_controls():
             trace={}
             if next_key is not None and seed['ticks']+dep.tick<switch-EPS:continue
-            hits+=1; q,why=_trace(tf,paths,ball,dep,following,seed['ticks'],rail_arrival=True,diagnostic=trace,flight_key=flight_key,prior_bounces=seed.get('episode_bounces',0));stats[why]+=1
+            applied=dep.push if feedback else following
+            hits+=1; q,why=_trace(tf,paths,ball,dep,applied,seed['ticks'],rail_arrival=True,diagnostic=trace,flight_key=flight_key,prior_bounces=seed.get('episode_bounces',0));stats[why]+=1
             def prefix_to_contact():
-                row=_held_prefix(seed,dep,q,following)
+                row=_held_prefix(seed,dep,q,applied)
+                if feedback:
+                    from . import crowncontrol
+                    table=crowncontrol.execution_table(seed,dep,applied,row['ticks'])
+                    if table is None:return None
+                    row['key_table']=table
+                    row['crown_ride']=bool(seed.get('crown_ride') or seed.get('crown_inverse') or any(
+                        z['event']=='crown_key_applied' for z in entry.get('crown_events',())))
                 if next_key is not None:
                     table=[]
                     for end,held in seed['key_table']:
@@ -368,10 +417,15 @@ def wave(tf,g,obs,layout,chains,seeds,*,log,targets=None):
                 lane=paths.lanes[c.lane]
                 target=any(x.ball==src.ball and x.chain==lane.parent for x in targets)
                 prefix=prefix_to_contact()
+                if prefix is None:
+                    stats['crown_noninteger_schedule_rejected']+=1;continue
                 switched=steered or next_key is not None or 'flight_switch_tick' in q
-                receive_key=q.get('arrival_key',following)
-                run(src,ball,prefix,other,receive_key,_arc(paths,other),'rail_relay',relay=True,history=branch,steered=switched)
-                if target and not switched and paths.lanes[other.lane].axis is not None:
+                receive_key=q.get('arrival_key',applied)
+                if feedback and paths.lanes[other.lane].axis is None and q.get('contacts'):
+                    from . import crowncontrol
+                    other=crowncontrol.standalone(paths,ball,other,q['contacts'][-1]) or other
+                run(src,ball,prefix,other,receive_key,_arc(paths,other),'rail_relay',relay=True,history=branch,steered=switched,feedback=feedback)
+                if target and not feedback and not switched and paths.lanes[other.lane].axis is not None:
                     from . import supportededges as se
                     for second in se.KEYS:
                         if not np.array_equal(second,receive_key):
@@ -380,9 +434,24 @@ def wave(tf,g,obs,layout,chains,seeds,*,log,targets=None):
                 continue
             k=int(surface.face_patch[q['face']]); dest=layout.patch_nodes[ball.name].get(k)
             if dest is None or dest==src:continue
-            row=prefix_to_contact();row['target_patch']=k;out[src,dest].append(row)
+            row=prefix_to_contact()
+            if row is None:stats['crown_noninteger_schedule_rejected']+=1;continue
+            if feedback:
+                if not row.get('crown_ride') or not any(p.get('rail_line') in ('left_crown','right_crown','single_crown') and
+                                                         p['ticks']>EPS for p in row['rail_parts']):continue
+                from . import crowncontrol
+                if not crowncontrol.verify_track(tf,obs,ball,row['rail_parts']):
+                    stats['crown_full_mesh_clearance_rejected']+=1;continue
+                stats['crown_ride_witnesses']+=1
+            row['target_patch']=k;out[src,dest].append(row)
             if example is None and any(x['kind'] in ('rail','rail_crown') for x in dep.pieces):
                 example=dict(entry=entries[-1],trajectory=row['rail_parts'],landing=row['position'],keys=row['key_table'])
+        if feedback:
+            events=Counter(x['event'] for x in entry.get('crown_events',()))
+            stats['crown_feedback_runs']+=1;stats['crown_feedback_switches']+=events['crown_key_applied']
+            stats['crown_feedback_pressure']+=events['pressure']
+            if events['crown_key_applied'] and any(not np.array_equal(p['push'],key) and p['ticks']>EPS for p in entry.get('supported_track',())):
+                stats['crown_corrected_supported_runs']+=1
         if not hits:
             stats['rail_no_supported_release']+=1
             entry['outcomes'].append(dict(reason='rail_no_supported_release'))
@@ -461,8 +530,19 @@ def wave(tf,g,obs,layout,chains,seeds,*,log,targets=None):
         ball=balls[src.ball]; contact=row['contacts'][-1]; c=paths.capture(ball,contact,-1)
         if c is None:stats['rail_capture_unproved']+=1;continue
         key=row['key_table'][-1][1]
-        run(src,ball,row,c,key,_arc(paths,c),'first_impact')
+        if not row.get('crown_inverse'):
+            run(src,ball,row,c,key,_arc(paths,c),'first_impact')
+        if g.info.get('native_geometry'):
+            from . import crowncontrol
+            steering=crowncontrol.standalone(paths,ball,c,contact)
+            if steering is not None and steering.crown and steering.crown.get('supported'):
+                run(src,ball,row,steering,key,_arc(paths,steering),'crown_feedback',feedback=True)
+        if row.get('crown_inverse'):continue
         lane=paths.lanes[c.lane]
+        if row.get('inlet_kind')=='finite_lip_first_contact':
+            forward=sc.keys_along(c.direction*lane.tangent[c.j])
+            if not np.array_equal(forward,key):
+                run(src,ball,row,c,key,_arc(paths,c),'integer_input_after_end_lip',next_key=forward,steered=True)
         if any(rail.ball==src.ball and rail.chain==lane.parent for rail in targets):
             from . import supportededges as se
             for following in se.KEYS:
@@ -471,6 +551,18 @@ def wave(tf,g,obs,layout,chains,seeds,*,log,targets=None):
         moving_outlet(src,ball,row,c,key)
     for args in road_inlets(tf,paths,surface,layout,chains,balls,stats):
         run(*args)
+    if g.info.get('native_geometry'):
+        from . import railinlet
+        for args in railinlet.supported_inlets(tf,paths,surface,layout,chains,balls,stats):
+            run(*args)
+            moving_outlet(*args[:5])
+            if args[3].crown and args[3].crown.get('supported'):
+                run(*args[:6],'crown_feedback_road_entry',feedback=True)
+            src,ball,seed,c,key,span,kind=args
+            t=c.direction*paths.lanes[c.lane].tangent[c.j]
+            forward=sc.keys_along(t)
+            if not np.array_equal(forward,key):
+                run(src,ball,seed,c,key,span,kind,next_key=forward,steered=True)
     for src,chain in chains.items():
         if src.line!='groove':continue
         ball=balls[src.ball]; lane=paths.lanes.get(src.chain)
@@ -484,9 +576,13 @@ def wave(tf,g,obs,layout,chains,seeds,*,log,targets=None):
         arc=float(chain.knots[-1]-lane.length[j]*.5); c=railride.Catch(src.chain,j,src.direction,ph.State(point,np.zeros(3)),0.,face)
         # This seed is a local road-graph anchor, not an invented landing
         # impulse. Mapping to the coarse groove happens only on publication.
-        ix=np.asarray(lane.ids); n=int(ix[np.linalg.norm(g.pos[ix]-point,axis=1).argmin()])
-        if np.linalg.norm(g.pos[n]-point)>3.:
-            stats['rail_anchor_unmapped']+=1;n=-1  # mapping is not a condition on support
+        if g.info.get('native_geometry'):
+            n=g.rail_at(point,3.,chain=src.chain)
+            n=-1 if n is None else n
+        else:
+            ix=np.asarray(lane.ids); n=int(ix[np.linalg.norm(g.pos[ix]-point,axis=1).argmin()])
+            if np.linalg.norm(g.pos[n]-point)>3.:
+                stats['rail_anchor_unmapped']+=1;n=-1  # mapping is not a condition on support
         seed=dict(source_patch=-1,source_node=n,origin=point,launch=point,velocity=np.zeros(3),face=face,ticks=0.,flight_ticks=0.,
                   runup=0.,rim_ticks=0.,motion=(),contacts=())
         run(src,ball,seed,c,key,(arc,arc),'supported_groove_rest')

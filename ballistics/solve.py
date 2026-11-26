@@ -1816,6 +1816,8 @@ def state_graph_for(g, info: dict, sector: int, world, operate_cost: float, cork
     cork bridge, push board or seesaw no way over it; a gate is no obstacle (the ways it clears are always there).
     A removed rock has no upper bridge and never seals the lower route; a removed T board leaves only the
     supported crossings of its old foot. No change to the cached places or edges."""
+    native=g.info.get('block_graph') if cork else None
+    original_host_size=len(g.pos)
     without = {str(w) for w in without}
     stacks = list(_fan_box_stacks(info, sector)) if cork else []
     absent = {nm for _, stack in stacks if without.intersection(stack) for nm in stack}
@@ -1965,6 +1967,10 @@ def state_graph_for(g, info: dict, sector: int, world, operate_cost: float, cork
                            floats=active_floats, pendulums=pendulums, timed=timed, launch_eligible=launch_eligible,
                            gate_launch_eligible=launch_eligible)
     sg.float_row_names = {r["name"] for r in floats}
+    if native is not None:
+        from . import blockroute
+        sg = blockroute.mechanism_state(g,sg,native,info,sector,trafos,R.radius,operate_cost,
+                                        original_host_size=original_host_size)
     M = len(mechs)
 
     def state_of(kind: str, scene) -> int:
@@ -2024,7 +2030,7 @@ def graph_for(mesh: Mesh, info: dict, cache: Path | None = None, log=print, *, l
     parts = props_parts(info, mesh)                       # the mechanisms' box-shaped parts, where their shapes are
     mesh = coarse.without_loose(mesh)                     # the loose bodies are bodies: no obstacles, but going through one costs (below)
     fixed = mesh.meta.get("fixed_bodies")
-    from . import props, trafo, retained
+    from . import blockroute, props, trafo, retained
     archive=retained.archive_for(info,retained_archive) if not legacy_takeoff else None
     rolling_archive=retained.rolling_archive_for(info) if not legacy_takeoff else None
     priorities=retained.priority_points(info) if not legacy_takeoff else ()
@@ -2039,9 +2045,10 @@ def graph_for(mesh: Mesh, info: dict, cache: Path | None = None, log=print, *, l
                  launch_rule=TAKEOFF_RULE,
                  retained_archive_version=retained.version(archive),
                  retained_rolling_version=retained.version(rolling_archive),
+                 retained_shared_version=retained.version(blockroute.archive_for(info)) if not legacy_takeoff else None,
                  target_priorities=priorities,
                  rail_outlet_targets=rail_outlet_targets,
-                 launch_backend="legacy_diagnostic" if legacy_takeoff else "shared_nodes",
+                 launch_backend="legacy_diagnostic" if legacy_takeoff else "block_graph",
                  lift_rule="fan lifts for a paper ball, ridden by their legs, with the kind they end in (exits 4 to 32 out, -1.5 to 25 up, always those by a transformer; two fans in a row within %.0f, braking %s): waits %s, %d entries and %d exits per fan, unsure x%.1f" % (LIFT_CHAIN, LIFT_CHAIN_BRAKES, LIFT_WAITS, LIFT_ENTRIES, LIFT_EXITS, LIFT_UNSURE))
     if cache is not None and cache.exists():
         g = pickle.load(open(cache, "rb"))
@@ -2049,26 +2056,34 @@ def graph_for(mesh: Mesh, info: dict, cache: Path | None = None, log=print, *, l
         if (n == len(mesh.A) or (n is None and not mesh.meta.get("bodiless_dropped"))) and all(g.info.get(k) == v for k, v in marks.items()):
             return g
         log("the cached coarse graph %s was made by other rules (fans, markers, domes or transformers were obstacles in it): building it again" % cache.name)
-    g = coarse.build(mesh, avoid=coarse.keep_out(info["placements"]), log=log)
-    from . import conformal, rails, terrain
-    g.info['conformal'] = conformal.build(mesh, rails.physical_lanes(g, mesh))
-    surface = g.info['conformal']
+    from . import blockroute, conformal, rails, terrain, conformalsearch, sharedsearch, takeoff
+    metadata=rails.lanes(mesh.tubes)
+    surface=conformal.build(mesh,[lane['segments'] for lane in metadata])
     log('conformal: %d road faces, %d plane patches, %d rail chains' %
         ((surface.face_patch >= 0).sum(),len(surface.patches),len(surface.rails)))
-    terrain.rebuild(g,mesh,surface,log=log)
-    from . import conformalsearch, sharedsearch, takeoff
     obs=takeoff.Obstacles(mesh,info.get('death_boxes', ()))
-    layout=conformalsearch.build(takeoff,obs,surface,parts=parts,metadata=g.lanes,lips=g.info['terrain_lips'])
-    g.info['conformal_search'] = layout
+    lips=terrain.step_lips(mesh,surface,terrain.neighbours(surface)[0])
+    layout=conformalsearch.build(takeoff,obs,surface,parts=parts,metadata=metadata,lips=lips)
     log('conformal search: %d road nodes, %d rail pieces, %d geometric portals' %
         (len(layout.roads),len(layout.rail_segments),len(layout.portals)))
     if not legacy_takeoff:
-        sharedsearch.add(takeoff,g,obs,layout,log=log,target_priorities=priorities,rail_outlet_targets=rail_outlet_targets)
-        g.info['takeoff_stats']['retained']=retained.attach(takeoff,g,archive,info)
+        native=blockroute.geometry_graph(surface,metadata,lips)
+        native.info['conformal_search']=layout
+        native.info['standing_ranges']=blockroute.stand_ranges(surface,mesh,layout)
+        log('block standing ranges: %d ball-patch polygons' % sum(map(len,native.info['standing_ranges'].values())))
+        sharedsearch.add(takeoff,native,obs,layout,log=log,target_priorities=priorities,rail_outlet_targets=rail_outlet_targets)
+    # The remaining grid belongs to the mechanism host. Its ordinary graph
+    # is not injected into the block state graph.
+    g=coarse.build(mesh,avoid=coarse.keep_out(info['placements']),log=log,lane_metadata=metadata)
+    g.info.update(conformal=surface,conformal_search=layout)
+    terrain.rebuild(g,mesh,surface,log=log)
+    if not legacy_takeoff:
+        g.info.update({k:v for k,v in native.info.items() if k in (
+            'shared_motion_graph','portal_verdicts','takeoff_stats','block_roll_proofs','standing_ranges')})
+        g.info['block_graph']=native
+        g.info['takeoff_stats']['retained_shared']=blockroute.retain_shared(native,info)
         g.info['takeoff_stats']['retained_rolling']=retained.attach_rolling(g,rolling_archive,info)
-        from . import routeprojection
-        g.info['takeoff_stats']['retained_rolling_projection']=routeprojection.attach(takeoff,g,flights=False,rolling=False)
-        log("retained witnesses: %s" % g.info['takeoff_stats']['retained'])
+        blockroute.retain_rolling(native,g.info['shared_motion_graph'].get('retained_rolling',{}))
     else:
         R = trafo.rules()
         ball_at = {}

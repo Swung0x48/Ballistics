@@ -204,6 +204,8 @@ class RailPaths:
         t=lane.tangent[j]; up=support_normal(t)
         a,b=lane.axis[j:j+2]
         center=a+np.clip((p-a)@t,0.,lane.length[j])*t
+        if lane.twin is None:
+            return center,t,up,sc.unit(np.cross(up,t)),ball.radius+lane.tube+sc.SKIN,-math.pi/2
         _,other=rails.project_pieces(lane.twin,center)
         w=other-center; w=w-(w@t)*t
         side=sc.unit(np.cross(up,t)); side*=1 if side@w<0. else -1
@@ -225,23 +227,46 @@ class RailPaths:
         contacts.append(dict(triangle=hit['triangle'],point=hit.get('point',default),normal=hit['normal']))
         return [x for x in contacts if m.rail[x['triangle']] and m.owner[x['triangle']]==owner and x['normal'][1]>EPS]
 
+    def contact_tube(self, ids, contact):
+        """Associate a mesh feature with a finite tube, not the ball centre."""
+        q=contact['point']; scores=[]
+        for h in ids:
+            lane=self.lanes[h]; _,at=rails.project_pieces(lane.axis,q)
+            scores.append(abs(np.linalg.norm(q-at)-lane.tube))
+        k=int(np.argmin(scores))
+        return k if scores[k]<=FIT else None
+
     def paired_capture(self,ball,hit,omega,li,contacts):
         p=hit['position']; omega=hit.get('incoming_omega',omega); ids=self.pairs[li]; groups=[[],[]]; sections=[]
         for h in ids:
             l=self.lanes[h]; j,_=rails.project_pieces(l.axis,p)
             sections.append((j,self.cross_section(l,j,p,ball)))
+        first=hit.get('first_rail_feature')
+        first_tube=None
+        if first is not None:
+            first_tube=self.contact_tube(ids,first)
+            if first_tube is None:return None
+            owner=self.obs.mesh.owner[first['triangle']]
+            contacts=[c for c in hit['coactive_rail_features'] if self.obs.mesh.owner[c['triangle']]==owner]
         for contact in contacts:
-            q=contact['point']
-            scores=[]
-            for h in ids:
-                l=self.lanes[h]; _,at=rails.project_pieces(l.axis,q)
-                scores.append(abs(np.linalg.norm(q-at)-l.tube))
-            k=int(np.argmin(scores))
-            if scores[k]<=FIT:groups[k].append(contact)
+            k=self.contact_tube(ids,contact)
+            if k is not None and contact['normal'][1]>EPS:groups[k].append(contact)
         if not any(groups):return None
-        both=all(groups) and any(sc.unit(a['normal']+b['normal'])[1]>=WALK_NY
-                    and (a['normal']@sections[0][1][3])*(b['normal']@sections[0][1][3])<-EPS
-                    for a in groups[0] for b in groups[1])
+        side=sections[0][1][3]
+        def opposing(a,b):
+            n,m=a['normal'],b['normal']; x,y=float(n@side),float(m@side)
+            if x*y>=-EPS:return False
+            # Eliminate the cross-track component with two positive
+            # reactions; proximity by itself supplies no second reaction.
+            return sc.unit(abs(y)*n+abs(x)*m)[1]>=WALK_NY
+        if first is None:
+            # Supported snapshots have no swept root; retain the v16
+            # simultaneous observation rule for their unordered normals.
+            both=all(groups) and any(sc.unit(a['normal']+b['normal'])[1]>=WALK_NY
+                        and (a['normal']@side)*(b['normal']@side)<-EPS
+                        for a in groups[0] for b in groups[1])
+        else:
+            both=all(groups) and any(opposing(a,b) for a in groups[0] for b in groups[1])
         owner=int(self.obs.mesh.owner[hit['triangle']]); material=self.obs.mesh.entities[owner]
         incoming=ph.State(p,hit['incoming'],np.zeros(3) if omega is None else omega)
         if both:
@@ -255,17 +280,23 @@ class RailPaths:
             if rebound.vel@n<=EPS:rebound=None
             else:rebound.pos=rebound.pos+8*EPS*n
             return Catch(li,j,d,b,float(v@np.cross(up,d*t)),hit['triangle'],rebound)
-        k=max(range(2),key=lambda k:max((n['normal'][1] for n in groups[k]),default=-1.))
+        k=first_tube if first is not None else max(range(2),key=lambda k:max((n['normal'][1] for n in groups[k]),default=-1.))
+        if not groups[k]:return None
+        impact=first if first is not None else hit
         h=ids[k]; l=self.lanes[h]; j,(axis,t,up,side,r,inner)=sections[k]
         radial=p-axis; theta=math.atan2(float(radial@side),float(radial@up))
         n=sc.unit(up*math.cos(theta)+side*math.sin(theta)); sx=side*math.cos(theta)-up*math.sin(theta)
-        rolled=sc.rolling_entry(ball,incoming.vel,n,omega); u=float(rolled@t); v=float(rolled@sx)
+        # A swept return has a normal collision, not an instantaneous
+        # no-slip constraint. The following supported law applies inertia.
+        rolled = (incoming.vel - (incoming.vel @ n)*n if first is not None else
+                  sc.rolling_entry(ball,incoming.vel,n,omega))
+        u=float(rolled@t); v=float(rolled@sx)
         if abs(u)<=EPS:return None
         d=1 if u>0 else -1
-        bounce,regime=cf.collision_impulse(ball,incoming,hit['normal'],float(material.get('elasticity',.3)))
-        if bounce.vel@hit['normal']<=EPS:bounce=None
-        else:bounce.pos=bounce.pos+8*EPS*hit['normal']
-        at=ph.State(axis+r*n,u*t+v*sx,ph.rolling_spin(u*t+v*sx,n,ball.radius))
+        bounce,regime=cf.collision_impulse(ball,incoming,impact['normal'],float(material.get('elasticity',.3)))
+        if bounce.vel@impact['normal']<=EPS:bounce=None
+        else:bounce.pos=bounce.pos+8*EPS*impact['normal']
+        at=ph.State(axis+r*n,u*t+v*sx,incoming.omega.copy() if first is not None else ph.rolling_spin(u*t+v*sx,n,ball.radius))
         data=dict(line=l.line,contact='one_tube',angle=theta,lateral_offset=float(radial@side),lateral_speed=v,
                   incoming_lateral_speed=float(incoming.vel@sx),inner_angle=inner,
                   tube_axis=axis, travel_side='right' if side@np.cross(d*t,up)>0. else 'left')
@@ -281,7 +312,7 @@ class RailPaths:
         data['barrier']=angular[0].barrier if angular else 0.
         data['decision']='rebound' if not adjoining else angular[-1].event if angular else 'balance'
         if not adjoining and bounce is None:return None
-        return Catch(h,j,d,at,v,hit['triangle'],bounce,data)
+        return Catch(h,j,d,at,v,impact['triangle'],bounce,data)
 
     def capture(self, ball, hit, node, omega=None):
         """Inelastic normal constraint for the *additional* rail-ride path."""
@@ -637,7 +668,7 @@ class RailPaths:
         if load<=EPS:return reject('receiving_normal_load_nonpositive')
         return ph.State(state.pos,v,ph.rolling_spin(v,n,ball.radius)), int(real[0].triangle), load
 
-    def walk_crown(self,tf,ball,c,controls,clock,*,diagnostics=None,supported_track=None):
+    def walk_crown(self,tf,ball,c,controls,clock,*,diagnostics=None,supported_track=None,steering_key=None):
         """Separate exact axial recurrence and fixed-input cross-section events."""
         if not c.crown['supported']:return
         from scipy.optimize import brentq
@@ -648,6 +679,7 @@ class RailPaths:
                 q*sc.unit(np.cross(UP,lane.tangent[c.j]))*max(1.,np.linalg.norm(c.body.vel)) for q in (-1,1)])))
         for choice in holds:
             j=c.j; at=c.body; elapsed=0.; pieces=[]; way=[at.pos]; face=c.triangle
+            active=steering_key; pending=None
             for _ in range(sc.MAX_SUPPORT_PIECES):
                 axis,t,up,side,r,inner=self.cross_section(lane,j,at.pos,ball)
                 t=sign*t; radial=at.pos-axis
@@ -661,8 +693,25 @@ class RailPaths:
                 push=np.array(choice) if controls is None else controls(clock+elapsed)[0][1]
                 limit=math.inf if controls is None else controls(clock+elapsed)[0][0]
                 if limit<=EPS:break
-                law=sc.law(ball,up,push).along(t)
                 finish=lane.axis[j+1 if sign>0 else j]; avail=max(0.,float((finish-axis)@t))
+                if active is not None:
+                    from . import crowncontrol
+                    when=clock+elapsed
+                    switched=False
+                    if pending is not None and abs(when-pending[0])<=5e-6:
+                        active=pending[1];note('crown_key_applied',absolute_tick=pending[0],push=active);switched=True
+                    pending=crowncontrol.correction(ball,when,theta,v,u,t,up,side,r,inner,avail,active)
+                    if pending is not None:
+                        dt=pending[0]-when
+                        if abs(dt)<=5e-6 and not switched:
+                            active=pending[1];note('crown_key_applied',absolute_tick=pending[0],push=active)
+                            pending=None
+                        elif dt>EPS:
+                            limit=min(limit,dt)
+                        else:
+                            pending=None
+                    push=active
+                law=sc.law(ball,up,push).along(t)
                 end=law.over(u,avail)
                 stopped=end is None
                 n=cf._turn(u,law.impulse,law.loss) if stopped and law.impulse<0. else math.inf if stopped else end[1]/ph.DT
@@ -751,7 +800,7 @@ class RailPaths:
                                        rail_line=lane.line,barrier=action.barrier,lateral_start=action.speed,lateral_end=v1))
                     if supported_track is not None:supported_track.append(pieces[-1])
                     way.append(body.pos)
-                    if event!='turn':break
+                    if event!='turn' or active is not None:break
                 else:
                     if actions:event='invalid'
                 if obstructed:note('crown_mesh_obstruction');break
@@ -762,6 +811,12 @@ class RailPaths:
                     pieces[-1].update(crown_joint=dict(incoming_piece=j,receiving_piece=k,face=face,normal_load=load))
                     note('miter_supported',at.pos,receiving_piece=k,normal_load=load,velocity=at.vel)
                     j=k; continue
+                if event=='turn' and active is not None:
+                    # The zero of transverse speed is a decision event.
+                    # The next choice still holds the old key until an
+                    # integer; do not run the uncorrected return swing.
+                    at=body;continue
+                if event=='twin' and lane.twin is None:event='open'
                 if event in ('pressure','open','twin'):
                     note(event,body.pos)
                     source=replace(c,j=j,body=body,triangle=face,rebound=None)
@@ -789,13 +844,16 @@ class RailPaths:
                     break
                 at=body;j=k
 
-    def walk(self, tf, ball, c, controls=None, clock=0., *, search_side=True, require_groove_stability=False):
+    def walk(self, tf, ball, c, controls=None, clock=0., *, search_side=True, require_groove_stability=False, diagnostics=None, supported_track=None):
         """Advance between analytic key changes and geometric rail events."""
         lane=self.lanes[c.lane]; j,sign=c.j,c.direction; b=c.body
         if lane.axis is not None:
-            yield from self.walk_crown(tf,ball,c,controls,clock)
+            yield from self.walk_crown(tf,ball,c,controls,clock,diagnostics=diagnostics,supported_track=supported_track)
             return
         parts=[]; way=[b.pos]; clock0=clock; elapsed=0.; count=0
+        def note(reason):
+            if diagnostics is not None:
+                diagnostics.append(dict(reason=reason,piece=j,tick=elapsed,position=b.pos,velocity=b.vel))
         while 0<=j<len(lane.length) and count<sc.MAX_SUPPORT_PIECES:
             count+=1; t=sign*lane.tangent[j]; up=support_normal(t)
             initial=b; speed=float(b.vel@t)
@@ -811,14 +869,25 @@ class RailPaths:
             if lane.double and require_groove_stability:
                 cross=sc.unit(np.cross(up,t))
                 if any(crest(ball,lane,up,sign*cross,max(0.,sign*c.lateral),push) is not None for sign in (-1,1)):
+                    note('groove_side_release_not_excluded')
                     return  # a possible side release is not a same-groove witness
             law=sc.law(ball,up,push).along(t)
             end=law.over(speed,avail)
-            if end is None:return
-            dur=end[1]/ph.DT; move_tick=min(limit,dur)
+            if end is None:
+                # Failure to reach the ring under a forever-held key says
+                # nothing about an earlier, finite integer switch. Only
+                # advance up to it if the axial displacement is monotone.
+                stop=cf._turn(speed,law.impulse,law.loss)
+                if not math.isfinite(limit) or limit>=stop-EPS or law.at(speed,limit)[1]<=EPS:
+                    note('rail_axial_work_insufficient');return
+                dur=math.inf
+            else:
+                dur=end[1]/ph.DT
+            move_tick=min(limit,dur)
             distance,end_speed=law.at(speed,move_tick) if limit<dur else (avail,end[0]); dest=b.pos+distance*t
             owner=self.obs.mesh.owner[c.triangle]; name=self.surface.name(c.triangle)
-            if not self.surface.clear(tf,ball,[b.pos,dest],owner,up):return
+            if not self.surface.clear(tf,ball,[b.pos,dest],owner,up):
+                note('rail_corridor_obstructed');return
             if search_side:
                 yield from self.forward_joints(tf,ball,replace(c,j=j,body=b),law,push,move_tick,parts,way,elapsed,
                                                recorded=controls is not None)
@@ -830,6 +899,7 @@ class RailPaths:
             if move_tick>EPS:
                 parts.append(sc.segment('rail',name,initial,b,move_tick,push,'key_change' if limit<dur else 'track_piece'))
                 way.append(b.pos)
+                if supported_track is not None:supported_track.append(parts[-1])
             if limit<dur-EPS:continue
             if not 0<=k<len(lane.length):
                 source=Catch(c.lane,j,sign,b,c.lateral,c.triangle)
@@ -852,6 +922,7 @@ class RailPaths:
                     return
             # Project momentum at a concave kink; it does not force release.
             b=ph.State(b.pos,(b.vel@t1)*t1,ph.rolling_spin((b.vel@t1)*t1,n1,ball.radius)); j=k
+        if count>=sc.MAX_SUPPORT_PIECES:note('rail_piece_budget')
 
     def fixed_aims(self, tf, ball, dep):
         """A physical chain end/kink is a degenerate inverse interval."""

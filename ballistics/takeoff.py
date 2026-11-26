@@ -24,7 +24,7 @@ from .sweep import chord as _chord, curve as _curve
 
 FOLLOW_SPEED = 9.0
 STOP_COST = 9.0
-RULE = "closed form ledges and rail ends, three balls, supported momentum continuation and analytic manifolds and mesh rail corridors and conformal road slopes, finite rail joints, local step support and paired rail crowns, normal impulses, confirmed rail goals and joint conformal runways and feature rim clearance and conformal search catalogue v34 first-impact rail admission and multi-hop continuations"
+RULE = "closed form ledges and rail ends, three balls, supported momentum continuation and analytic manifolds and mesh rail corridors and conformal road slopes, finite rail joints, local step support and paired rail crowns, normal impulses, confirmed rail goals and joint conformal runways and feature rim clearance and conformal search catalogue v42 dynamic crown riding and integer lateral correction"
 GRAVITY_IMPULSE = ph.GRAVITY * ph.DT
 FLOOR = ph.Params().floor
 XZ = [0, 2]
@@ -964,6 +964,12 @@ def trace_air(obs, ball, start, schedule, *, rim=None, departure=None,
                 event['triangle']=int(f)
                 event['object']=obs.mesh.entities[obs.mesh.owner[f]].get('name','')
                 event['kind'] = 'dual_rail' if dual is not None else 'land'
+                if accept_support is not None and obs.mesh.rail[i] and obs.mesh.rail[f] and obs.mesh.owner[i]==obs.mesh.owner[f]:
+                    # Keep the swept feature separate from the best upward
+                    # support and the legacy, wider two-rail proximity band.
+                    event['first_rail_feature']=dict(triangle=int(i),point=point,normal=normal)
+                    event['coactive_rail_features']=tuple(dict(triangle=int(k),point=q,normal=m)
+                                                         for k,q,m,_ in rows if obs.mesh.rail[k])
                 if accept_support is None or accept_support(event):
                     if same_psi:
                         event['subcontacts']=[prior,*prior['subcontacts'][:-1]]

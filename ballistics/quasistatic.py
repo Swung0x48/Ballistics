@@ -35,10 +35,25 @@ def open_leg(tf,obs,at,far,radius):
     """
     from . import sweep
     lo=np.minimum(at,far)-radius;hi=np.maximum(at,far)+radius
-    fs=tf._box_triangles(lo[None],hi[None],obs.lo,obs.hi,obs.mesh._grid)
+    fs=np.asarray(tf._box_triangles(lo[None],hi[None],obs.lo,obs.hi,obs.mesh._grid),dtype=int)
     d=far-at; first=1.
+    # A finite triangle cannot be nearer than its infinite plane. The
+    # oriented distance is affine along this leg, so endpoint ranges
+    # reject whole triangles before any Voronoi/sphere quadratics.
+    normals=obs.mesh.N[fs]; origins=obs.tris[fs,0]
+    a=np.einsum('ij,ij->i',at-origins,normals)
+    b=np.einsum('ij,ij->i',far-origins,normals)
+    fs=fs[np.maximum(np.minimum(a,b),-np.maximum(a,b))<=radius+EPS]
+    from .geometry import _closest
+    mid=(at+far)*.5
+    # Distance to a closed triangle is 1-Lipschitz. A segment lies
+    # inside the ball of radius |d|/2 around this centre.
+    reach2=(radius+.5*np.linalg.norm(d)+EPS)**2
     for f in fs:
         tri=obs.tris[f]; normal=obs.mesh.N[f]
+        delta=mid-_closest(*mid,*tri.ravel())[:3]
+        if delta@delta>reach2:
+            continue
         for feature in range(7):
             a,b,w,v=sweep.feature_span(tri,normal,feature,at,d)
             a,b=sweep.sphere_span(w,v,radius,max(a,0.),min(b,first))
