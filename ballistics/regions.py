@@ -74,7 +74,7 @@ MECH = {coarse.GATE_THROUGH: "through_gate", coarse.GATE_OPERATE: "push_gate_ope
         coarse.T_OVER: "over_t_board", coarse.T_PUSH: "push_t_board", coarse.T_CLEAR: "past_t_board",
         coarse.FLAP_OVER: "over_flap", coarse.FLAP_PUSH: "push_flap", coarse.PENDULUM: "push_pendulum",
         coarse.PENDULUM_BOARD: "pendulum_board", coarse.PENDULUM_BOX: "pendulum_box", coarse.ELEVATOR: "ride_elevator",
-        coarse.SWING: "ride_swing", coarse.SANDBAG: "pass_sandbag"}
+        coarse.SWING: "ride_swing", coarse.SANDBAG: "pass_sandbag", coarse.BOX_PUSH: "push_loose_box"}
 BIG = 30                  # a region of fewer places is drawn only where a way goes through it (and its breaks are not listed)
 
 
@@ -219,9 +219,9 @@ def links_of(sg, R: Regions) -> dict:
                 if (typ == coarse.ROCK_PUSH and k != coarse.STONE) or (typ == coarse.GATE_OPERATE and k != coarse.STONE and not (k == coarse.WOOD and side == coarse.GATE_WOOD)) or (typ in (coarse.BOARD_PUSH, coarse.T_PUSH, coarse.FLAP_PUSH, *coarse.PENDULUM_OPERATE) and k == coarse.PAPER) \
                         or (typ == coarse.CORK and k == coarse.STONE) or (typ == coarse.FLOAT_ROW and not (side & (1 << k))):
                     continue
-                if (typ == coarse.ELEVATOR or (typ == coarse.GATE_THROUGH and side)) and not side & (1 << k):
+                if (typ in (coarse.ELEVATOR, coarse.BOX_PUSH) or (typ == coarse.GATE_THROUGH and side)) and not side & (1 << k):
                     continue
-                t = int(sg.tk[v]) if sg.tk[v] >= 0 and typ not in coarse.PENDULUM_OPERATE else k
+                t = int(sg.tk[v]) if sg.tk[v] >= 0 and typ not in (*coarse.PENDULUM_OPERATE, coarse.BOX_PUSH) else k
                 b = R.of(t, v)
                 if b >= 0 and (b != a or typ not in (*coarse.STATE_OVER, coarse.FLAP_OVER)):
                     e = add(("mech", a, b, int(typ), int(m), int(side), k, t), c, u, v)
@@ -262,6 +262,8 @@ def _moves_free(key, bits: int):
         return [(t, bits | (1 << m), MECH[typ])]
     if typ in (coarse.GATE_THROUGH, *coarse.STATE_OVER) and bit == 1:
         return [(t, bits, MECH[typ])]
+    if typ == coarse.BOX_PUSH and bit == 0 and side & (1 << k):
+        return [(t, bits | (1 << m), MECH[typ])]
     if typ in coarse.OPERATE and bit == 0 and (k == coarse.STONE or (k == coarse.WOOD and (typ == coarse.T_PUSH or (typ == coarse.GATE_OPERATE and side == coarse.GATE_WOOD)))):
         return [(t, bits | (1 << m), MECH[typ])]
     if typ in coarse.PENDULUM_OPERATE and bit == 0 and k != coarse.PAPER:
@@ -642,6 +644,8 @@ def describe(key, lang="en", ride=None) -> str:
         desc = (tr("%s pushes the flap from local +X and crosses lane B; lane A closes", "%s球从本地 +X 一侧推翻双向挡板并过 B 路，A 路断开") if side == 0 else
                 tr("%s pushes the flap back from local -X and crosses lane A; lane B closes [DERIVED: not measured]",
                    "%s球从本地 −X 一侧推回双向挡板并过 A 路，B 路断开【推：未实测】")) % ball[k]
+    elif typ == coarse.BOX_PUSH:
+        desc = tr("pushes the loose box to a checked rest pose", "将箱子推到已验停位")
     elif typ == coarse.PENDULUM_BOARD:
         desc = tr("%s pushes pendulum, its other end pushes board down", "%s球推单摆，另一端推倒推板") % ball[k]
     elif typ == coarse.PENDULUM_BOX:
@@ -866,6 +870,7 @@ def summary_links(res: dict, *, only_way=False) -> dict | list:
                 breaks_all=sum(1 for l in links if l["is_break"]),
                 note=("mechanism_bits: bit m is mechanism m's state (gate open, push board down, seesaw low at its other end, rock dropped, T board down"
                       + (", elevator used" if any(m["type"] == "elevator" for m in res["mechs"]) else "")
+                      + (", box pushed" if any(m["type"] == "loose_box" for m in res["mechs"]) else "")
                       + (", flap in pose B" if any(m["type"] == "flap" for m in res["mechs"]) else "") + ")") if res["mechs"] else "")
 
 
@@ -993,6 +998,7 @@ STATES = {
     "flap": (_Text("pose A", "A 姿态"), _Text("pose B", "B 姿态")),
 }
 STATES["t_board"] = STATES["board"]
+STATES["loose_box"] = (_Text("original", "原位"), _Text("pushed", "推移后"))
 NO_STATE_BIT = _Text("no state bit", "无状态位")
 NEED = {
     "unreachable": _Text("goal not reached", "到不了目标"),
@@ -1080,6 +1086,8 @@ def _needs(key, k: int, bits: int):
     _m, _a, _b, typ, m, side, kk, _t = key
     if typ in (coarse.GATE_THROUGH, *coarse.STATE_OVER):
         return [("bit", m, 1)]
+    if typ == coarse.BOX_PUSH:
+        return [("kind", {j for j in range(3) if side & (1 << j)}), ("bit", m, 0)]
     if typ in coarse.OPERATE:
         wood = typ == coarse.T_PUSH or (typ == coarse.GATE_OPERATE and side == coarse.GATE_WOOD)
         return [("kind", {coarse.WOOD, coarse.STONE} if wood else {coarse.STONE}), ("bit", m, 0)]
@@ -1436,6 +1444,15 @@ def mechanisms(res: dict) -> dict:
             opens = {1: pairs(lambda k: k[3] == coarse.BOARD_OVER)}
             switch = pairs(lambda k: k[3] == coarse.BOARD_PUSH)
             changes = [k for k in keys if k[3] == coarse.BOARD_PUSH]
+        elif typ == "loose_box":
+            states = list(STATES[typ])
+            changes = [k for k in keys if k[0]=='mech' and k[3]==coarse.BOX_PUSH]
+            switch = pairs(lambda k: k in changes)
+            keys += [k for k in res['links'] if (k[0]=='plain' and (k[4] | (k[7] if len(k)>7 else 0)) & (1<<m))]
+            opens = {}
+            for value in (0,1):
+                guard = 4 if value else 7
+                opens[value] = pairs(lambda k: k[0]=='plain' and len(k)>guard and bool(k[guard] & (1<<m)))
         elif typ == "box":
             states = list(STATES[typ])
             lift_keys = _box_lift_links(res, m)
@@ -1524,6 +1541,9 @@ def mechanisms(res: dict) -> dict:
         if typ == "box":
             d = res["sg"].mechs[m]
             out[-1].update(placements=d["placements"], fan=d["fan"])
+        if typ == "loose_box":
+            d = res["sg"].mechs[m]
+            out[-1].update(pushed_position=d['push']['box_end'].tolist(),push_rule=d['push']['end_reason'])
         if typ == "elevator":
             d = res["sg"].mechs[m]
             absent = {k: e for k, e in held.items() if not (

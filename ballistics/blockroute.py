@@ -270,7 +270,7 @@ def retain_shared(g, info):
     return dict(out)
 
 
-def mechanism_state(host, old, base, info, sector, trafos, radius, operate_cost, *, original_host_size):
+def mechanism_state(host, old, base, info, sector, trafos, radius, operate_cost, *, original_host_size, box_mesh=None, box_bodies=()):
     """Translate mechanism endpoints and state guards only, not host rolls.
 
     ``old`` is the mechanism host's normalized StateGraph. Its state bits
@@ -350,13 +350,62 @@ def mechanism_state(host, old, base, info, sector, trafos, radius, operate_cost,
             hits=[e for e in takeoff.variants(view,u,v) if solve._hits(motion.guard_path_for(e),pieces,0.1)]
             if hits and len(hits)==len(takeoff.variants(view,u,v)):
                 guards[u,v,'launch']=(1<<j,0)
+    from . import boxmotion
+    box_mesh=base.info.get('box_mesh',box_mesh)
+    boxes=[]; skip=set(); box_anchors={}
+    if box_mesh is not None and box_bodies and np.array_equal(box_mesh.A,base.info['conformal'].triangles[:,0]):
+        boxes=boxmotion.state_config(base,box_mesh,box_bodies,info.get('placements',()),sector)
+    if boxes:
+        radius_ball=max(b.radius for b in ph.BALLS.values())+sc.SKIN
+        ids={}
+        for item in boxes:
+            w=item['push']
+            if w is None:continue
+            j=w['patch']
+            if not region[j] or tk[j]>=0:continue
+            cost=max(sc.EPS,w['ticks']*ph.DT*takeoff.FOLLOW_SPEED)
+            mask=1<<coarse.KIND_INDEX[w['ball']]; m=len(config)
+            ids[item['name']]=m
+            item['edges']=[(coarse.BOX_PUSH,j,j,cost,mask,'push_loose_box')]
+            config.append(item)
+            box_anchors[j,j,m,coarse.BOX_PUSH,mask]=(w['ball_motion'][0].p,w['ball_end'])
+        def guard_box(u,v,kind,paths):
+            if not paths:return
+            for item in boxes:
+                m=ids.get(item['name']); q=item['origin']; h=item['half']
+                def blocked(c):return any(boxmotion.intersects(path,c,h,radius_ball) for path in paths)
+                a=blocked(q); b=a if m is None else blocked(item['push']['box_end'])
+                if a and b:
+                    skip.add((u,v,kind)); continue
+                on,off=guards.get((u,v,kind),(0,0))
+                if a:on|=1<<m
+                if b:off|=1<<m
+                if on or off:guards[u,v,kind]=on,off
+        for u in np.flatnonzero(region):
+            for v,_,kind in rel.fwd[u]:
+                if not region[v] or kind in ('gap','bridge'):continue
+                if kind in ('roll','rail'):
+                    proofs=base.info.get('block_roll_proofs',{}).get((u,v),())
+                    keys=[]
+                    for w in proofs:
+                        ps=w.get('motion')
+                        if ps:keys.append((motion.line(view.pos[u],ps[0].point(0.)),*ps,motion.line(ps[-1].point(ps[-1].end),view.pos[v])))
+                    paths=tuple(keys) or motion.edge_paths(view,u,v,kind)
+                else:paths=motion.edge_paths(view,u,v,kind)
+                guard_box(u,v,kind,paths)
+        for u,v,*_ in lifts:
+            if region[u] and region[v]:guard_box(u,v,'lift',motion.edge_paths(view,u,v,'lift') or ((motion.line(view.pos[u],view.pos[v]),),))
     sg=coarse.StateGraph(rel,view,region,tk,old.tcost,lifts,config,operate_cost,links=links,guards=guards,
-                         launch_eligible=eligible)
+                         skip=skip,launch_eligible=eligible)
+    sg.loose_boxes=boxes
+    sg.box_edge_guards={k:v for k,v in guards.items() if (v[0]|v[1])>>len(old.mechs)}
+    sg.box_edge_blocked=sorted(skip)
+
     sg.bridges=old.bridges;sg.floats=old.floats;sg.timed=old.timed
     sg.pendulums=[dict(rod,blocked=[(mapping[u],mapping[v]) for u,v in rod['blocked'] if u in mapping and v in mapping])
                   for rod in old.pendulums]
     sg.float_row_names=old.float_row_names
-    seen=set(); sg.mechanism_route_anchors={}
+    seen=set(); sg.mechanism_route_anchors={(int(sg.loc[a]),int(sg.loc[b]),m,t,s):v for (a,b,m,t,s),v in box_anchors.items()}
     for (u,v,c,m,typ,side),kind in zip(old._cond,old._cond_kind):
         a,b=loc(u),loc(v)
         if a is None or b is None:

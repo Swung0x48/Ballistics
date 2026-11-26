@@ -250,3 +250,6 @@ python -m ballistics route --map data/Level_02-map.json --results data --level 2
 - `ballistics/crowncontrol.py`：走单轨的截面事件反解、整数换键、独立单管截面与轨迹净空复核。
 - `ballistics/crowninlet.py`：有限轨端的离唇助跑和短飞入口反解。
 - `tests/test_v42.py`：管顶转向、反解入口、真实按键表回归测试。
+
+- `ballistics/boxmotion.py`：松散箱子冲量、有限支撑上平移、墙面和落边事件，以及共形块推箱证书。
+- `tests/test_v43.py`：箱体特征、冲量、滑动、有限支撑与选路状态测试。

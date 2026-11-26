@@ -1970,8 +1970,9 @@ def state_graph_for(g, info: dict, sector: int, world, operate_cost: float, cork
     if native is not None:
         from . import blockroute
         sg = blockroute.mechanism_state(g,sg,native,info,sector,trafos,R.radius,operate_cost,
-                                        original_host_size=original_host_size)
-    M = len(mechs)
+                                        original_host_size=original_host_size, box_mesh=getattr(world, "mesh", None),
+                                        box_bodies=[b for b in props if b["name"] not in without])
+    M = sg.M
 
     def state_of(kind: str, scene) -> int:
         bits = 0
@@ -2069,6 +2070,8 @@ def graph_for(mesh: Mesh, info: dict, cache: Path | None = None, log=print, *, l
     if not legacy_takeoff:
         native=blockroute.geometry_graph(surface,metadata,lips)
         native.info['conformal_search']=layout
+        if any(p['type']=='P_Box' for p in info.get('placements',())):
+            native.info['box_mesh']=mesh
         native.info['standing_ranges']=blockroute.stand_ranges(surface,mesh,layout)
         log('block standing ranges: %d ball-patch polygons' % sum(map(len,native.info['standing_ranges'].values())))
         sharedsearch.add(takeoff,native,obs,layout,log=log,target_priorities=priorities,rail_outlet_targets=rail_outlet_targets)

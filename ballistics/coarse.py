@@ -492,6 +492,7 @@ PENDULUM = 15
 PENDULUM_BOARD, PENDULUM_BOX = 16, 17
 ELEVATOR = 18
 SWING, SANDBAG = 19, 20
+BOX_PUSH = 21
 TIMED = (SWING, SANDBAG)
 # Elevator side: ball mask (3 bits), blocks (4 bits), then the destination elevator's bit mask.
 ELEVATOR_SHIFT = 7
@@ -657,6 +658,9 @@ def _state_togo(n, M, bptr, bsrc, bcost, bek, bmask, bclear, breq, tk, tcost, lp
                         if nd2 < togo[s2, u]:
                             togo[s2, u] = nd2
                             heapq.heappush(heap, (nd2, s2, u))
+            elif typ == BOX_PUSH:
+                if bit == 1 and not (lock & (1 << m)) and cside[e] & (1 << k):
+                    preds = (s & ~(1 << m), -1)
             elif typ == ROCK_PUSH or typ == T_PUSH or typ == PENDULUM_BOARD or typ == PENDULUM_BOX:
                 if bit == 1 and not (lock & (1 << m)) and (k == STONE or (typ != ROCK_PUSH and k == WOOD)):
                     preds = (s & ~(1 << m), -1)
@@ -983,6 +987,8 @@ class StateGraph:
                 out.append(((t << M) | bits, v, c + (self.tcost if t != k else 0.), kind))
             elif typ in OPERATE and bit == 0 and not (lock & (1 << m)) and (k == STONE or (k == WOOD and (typ == T_PUSH or (typ == GATE_OPERATE and side == GATE_WOOD)))):
                 out.append((s | (1 << m), v, c, "operate" if typ == GATE_OPERATE else kind))
+            elif typ == BOX_PUSH and bit == 0 and side & (1 << k) and not (lock & (1 << m)):
+                out.append((s | (1 << m), v, c, kind))
             elif typ in PENDULUM_OPERATE and bit == 0 and k != PAPER and not (lock & (1 << m)):
                 out.append((s | (1 << m), v, c, kind))
             elif typ == BOARD_PUSH and k != PAPER and (bit or not (lock & (1 << m))):
