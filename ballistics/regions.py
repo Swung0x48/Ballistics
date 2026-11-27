@@ -1918,7 +1918,7 @@ def draw_mechanisms(mesh, res: dict, path, title: str = ""):
         if m["type"] == "pendulum":
             rows.extend(_pendulum_notes(m, details=False, lang="zh"))
             continue
-        rows.append("%s（%s）：%s；开局%s；%s。%s" % (m["name"], {"gate": "栅栏", "board": "推板", "box": "箱子", "seesaw": "跷跷板", "cork_bridge": "软木桥", "falling_rock": "落石", "t_board": "T 型板", "flap": "双向挡板"}[m["type"]],
+        rows.append("%s（%s）：%s；开局%s；%s。%s" % (m["name"], {"gate": "栅栏", "board": "推板", "box": "箱子", "seesaw": "跷跷板", "cork_bridge": "软木桥", "falling_rock": "落石", "t_board": "T 型板", "flap": "双向挡板", "loose_box": "活动箱子"}[m["type"]],
                                                    " / ".join(m["states"]), m["initial"], m["need"], m["switch_note"]))
         if m["type"] == "box":
             rows.append("  " + _stack_note(m, lang="zh"))
